@@ -566,6 +566,7 @@ class RigidSolver(Solver):
             cfrc_ext_vel=gs.ti_vec3,
             # net force from external contacts
             contact_force=gs.ti_vec3,
+            contact_torque=gs.ti_vec3,
             # Flag for links that converge into a static state (hibernation)
             hibernated=gs.ti_int,
         )
@@ -4623,7 +4624,7 @@ class RigidSolver(Solver):
 
     @ti.kernel
     def _kernel_inverse_dynamics_for_sensors(self):
-        self._func_system_update_acc(True)
+        self._func_system_update_acc(False) # WARNING: changed for torque
         self._func_system_update_force()
         self._func_inverse_link_force()
 
@@ -4665,6 +4666,49 @@ class RigidSolver(Solver):
             final_acc = self.links_state[i_l, i_b].cdd_vel
             for i in range(3):
                 tensor[i_b_, i_l_, i] = final_acc[i]
+
+    def get_links_force_torque(self, links_idx=None, envs_idx=None, *, unsafe=False):
+        _tensor, links_idx, envs_idx = self._sanitize_2D_io_variables(
+            None, links_idx, self.n_links, 6, envs_idx, idx_name="links_idx", unsafe=unsafe
+        )
+        # self._kernel_inverse_dynamics_for_sensors()
+        tensor = _tensor.unsqueeze(0) if self.n_envs == 0 else _tensor
+        self._kernel_get_links_force_torque(tensor, links_idx, envs_idx)
+        return _tensor
+    
+    @ti.kernel
+    def _kernel_get_links_force_torque(
+            self,
+            tensor   : ti.types.ndarray(),   # shape [n_env, n_link, 6]
+            links_idx: ti.types.ndarray(),   # link list
+            envs_idx : ti.types.ndarray()):  # env list
+
+        ti.loop_config(serialize=self._para_level < gs.PARA_LEVEL.PARTIAL)
+        for i_l_, i_b_ in ti.ndrange(links_idx.shape[0], envs_idx.shape[0]):
+            i_l = links_idx[i_l_]
+            i_b = envs_idx[i_b_]
+            l_st = self.links_state[i_l, i_b]
+            # quat = gu.ti_inv_quat(self.links_state[i_l, i_b].j_quat)
+            # dpos = self.links_state[i_l, i_b].pos - self.links_state[i_l, i_b].COM
+            # quat = gu.ti_inv_quat(l_st.cinr_quat)
+            quat = gu.ti_inv_quat(l_st.j_quat)  # joint quat
+            # print("force", l_st.contact_force)
+            # force = gu.ti_transform_by_quat(  # world → joint
+            #     l_st.contact_force, 
+            #     quat,
+            # )
+            contact_force = l_st.contact_force
+            internal_force = l_st.cfrc_flat_vel
+            contact_torque = l_st.contact_torque
+            internal_torque = l_st.cfrc_flat_ang
+            internal_torque -= ti.math.cross(l_st.pos, internal_force)  # centrifugal force
+            force = contact_force + internal_force
+            torque = contact_torque + internal_torque
+            force = gu.ti_transform_by_quat(force, quat)  
+            torque = gu.ti_transform_by_quat(torque, quat)
+            for i in range(3):
+                tensor[i_b_, i_l_, i] = force[i]
+                tensor[i_b_, i_l_, i + 3] = torque[i]
 
     def get_links_COM(self, links_idx=None, envs_idx=None, *, unsafe=False):
         tensor = ti_field_to_torch(self.links_state.COM, envs_idx, links_idx, transpose=True, unsafe=unsafe)
