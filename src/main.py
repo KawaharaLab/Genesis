@@ -8,8 +8,8 @@ import numpy as np
 import torch
 
 # CSVファイルを読み込む
-file_path = 'object_sheet.csv'
-#file_path = 'src/object_sheet.csv'
+#file_path = 'object_sheet.csv'
+file_path = 'src/object_sheet.csv'
 object_data_list = load_object_sheet(file_path)
 
 """
@@ -31,7 +31,7 @@ qpos_init = torch.tensor([-2.0894, -0.2523,  2.8358, -1.5729,  0.0775,  1.8133, 
 
 photo_interval = 500  # フォトの間隔
 
-for object_data in object_data_list[50:51]:
+for object_data in object_data_list[50:]:
     if os.path.exists(f"data/videos/{object_data['id']}/{object_data['id']}_aluminium_2.5.mp4"):
         print(f"skipping {object_data['id']}")
         continue
@@ -46,8 +46,8 @@ for object_data in object_data_list[50:51]:
         #print(f"Using Google 16k path for object ID: {object_data['id']}")
     else:
         object_path = f"data/objects/{object_data['id']}/poisson/textured.obj"
-    #for i in range(len(coup_friction_list)):
-    for i in range(1):  # ここを1にして、coup_friction_listの最初の要素だけを使用
+    for i in range(len(coup_friction_list)):
+    #for i in range(1):  # ここを1にして、coup_friction_listの最初の要素だけを使用
         coup_friction = coup_friction_list[i]
         #print(f"Processing object ID: {object_data['id']} with coup_friction: {coup_friction}")
         """
@@ -60,7 +60,7 @@ for object_data in object_data_list[50:51]:
             qpos_init=qpos_init,
             coup_friction=coup_friction,
         )
-        """
+        
         materials.aluminium(
             object_name=object_data['id'],
             object_euler=object_data['object_euler'],
@@ -83,7 +83,7 @@ for object_data in object_data_list[50:51]:
             photo_interval=photo_interval,
             coup_friction=coup_friction,
         )
-        
+        """
         materials.pet(
             object_name=object_data['id'],
             object_euler=object_data['object_euler'],
