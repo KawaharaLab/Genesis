@@ -1,9 +1,8 @@
 import argparse
-import numpy as np
 import genesis as gs
 import pandas as pd
-import os
-
+import torch
+from . import sim
 
 def pet(object_name, object_euler, object_scale, grasp_pos, object_path, qpos_init, photo_interval, coup_friction=0.5):
     default_video_path, default_outfile_path, base_photo_name = sim.set_path(
