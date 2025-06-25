@@ -1,8 +1,5 @@
 from load_object_data import load_object_sheet 
-from pet import pet
-from pp import pp
-from rubber import rubber
-from aluminium import aluminium
+import materials
 import os
 #from test2 import test2
 
@@ -11,7 +8,8 @@ import numpy as np
 import torch
 
 # CSVファイルを読み込む
-file_path = 'src/object_sheet.csv'
+file_path = 'object_sheet.csv'
+#file_path = 'src/object_sheet.csv'
 object_data_list = load_object_sheet(file_path)
 
 """
@@ -31,7 +29,9 @@ google16k_list = ["003_cracker_box", "022_windex_bottle", "028_skillet_lid", "02
 
 qpos_init = torch.tensor([-2.0894, -0.2523,  2.8358, -1.5729,  0.0775,  1.8133,  1.5222,  0.0400, 0.0400])
 
-for object_data in object_data_list[50:]:
+photo_interval = 500  # フォトの間隔
+
+for object_data in object_data_list[50:51]:
     if os.path.exists(f"data/videos/{object_data['id']}/{object_data['id']}_aluminium_2.5.mp4"):
         print(f"skipping {object_data['id']}")
         continue
@@ -46,8 +46,8 @@ for object_data in object_data_list[50:]:
         #print(f"Using Google 16k path for object ID: {object_data['id']}")
     else:
         object_path = f"data/objects/{object_data['id']}/poisson/textured.obj"
-    for i in range(len(coup_friction_list)):
-    # for i in range(1):  # ここを1にして、coup_friction_listの最初の要素だけを使用
+    #for i in range(len(coup_friction_list)):
+    for i in range(1):  # ここを1にして、coup_friction_listの最初の要素だけを使用
         coup_friction = coup_friction_list[i]
         #print(f"Processing object ID: {object_data['id']} with coup_friction: {coup_friction}")
         """
@@ -61,54 +61,59 @@ for object_data in object_data_list[50:]:
             coup_friction=coup_friction,
         )
         """
-        aluminium(
+        materials.aluminium(
             object_name=object_data['id'],
             object_euler=object_data['object_euler'],
             object_scale=object_data['object_scale'],
             grasp_pos=object_data['franka_pos'],
             object_path=object_path,
             qpos_init=qpos_init,
+            photo_interval=photo_interval,
             coup_friction=coup_friction,
         )
-        """
+        
         # 各関数を呼び出す
-        steel(
+        materials.steel(
             object_name=object_data['id'],
             object_euler=object_data['object_euler'],
             object_scale=object_data['object_scale'],
             grasp_pos=object_data['franka_pos'],
             object_path=object_path,
             qpos_init=qpos_init,
+            photo_interval=photo_interval,
             coup_friction=coup_friction,
         )
         
-        pet(
+        materials.pet(
             object_name=object_data['id'],
             object_euler=object_data['object_euler'],
             object_scale=object_data['object_scale'],
             grasp_pos=object_data['franka_pos'],
             object_path=object_path,
             qpos_init=qpos_init,
+            photo_interval=photo_interval,
             coup_friction=coup_friction,
         )
         
-        pp(
+        materials.pp(
             object_name=object_data['id'],
             object_euler=object_data['object_euler'],
             object_scale=object_data['object_scale'],
             grasp_pos=object_data['franka_pos'],
             object_path=object_path,
             qpos_init=qpos_init,
+            photo_interval=photo_interval,
             coup_friction=coup_friction,
         )
         
-        rubber(
+        materials.rubber(
             object_name=object_data['id'],
             object_euler=object_data['object_euler'],
             object_scale=object_data['object_scale'],
             grasp_pos=object_data['franka_pos'],
             object_path=object_path,
             qpos_init=qpos_init,
+            photo_interval=photo_interval,
             coup_friction=coup_friction,
         )
-        """
+        

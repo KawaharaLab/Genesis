@@ -1,15 +1,14 @@
 import argparse
-import numpy as np
 import genesis as gs
 import pandas as pd
-import os
+import torch
+from . import sim
 
-
-def pet(object_name, object_euler, object_scale, grasp_pos, object_path, qpos_init, photo_interval, coup_friction=0.5):
+def steel(object_name, object_euler, object_scale, grasp_pos, object_path, qpos_init, photo_interval, coup_friction=0.5):
     default_video_path, default_outfile_path, base_photo_name = sim.set_path(
                                                                     object_name=object_name,
                                                                     coup_friction=coup_friction,
-                                                                    material_type="pet",
+                                                                    material_type="steel",
                                                                 )
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--video", default=default_video_path)
@@ -68,12 +67,10 @@ def pet(object_name, object_euler, object_scale, grasp_pos, object_path, qpos_in
         gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
     )
     chips_can = scene.add_entity(
-        material=gs.materials.MPM.ElastoPlastic( #PET
-            E=2.45e6,
-            nu=0.4,
-            rho=1400,
-            use_von_mises=True,
-            von_mises_yield_stress=18000,
+        material=gs.materials.Rigid( #steel
+            rho=7860,
+            coup_friction=1e-2,
+            friction=1e-2,
         ),
         morph=gs.morphs.Mesh(
             file=object_path,
@@ -84,7 +81,7 @@ def pet(object_name, object_euler, object_scale, grasp_pos, object_path, qpos_in
     )
     franka = scene.add_entity(
         gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"),
-        material=gs.materials.Rigid(coup_friction=coup_friction),
+        material=gs.materials.Rigid(coup_friction=coup_friction, friction=coup_friction),
     )
 
     ########################## build ##########################

@@ -1,32 +1,31 @@
 import argparse
-import numpy as np
 import genesis as gs
 import pandas as pd
-def make_step(scene, cam, franka, df):
-    """フランカを目標位置に移動させるステップ関数"""
-    scene.step()
-    cam.render()
-    links_force_torque = franka.get_links_force_torque([9, 10]) # 手先のlocal_indexは9, 10
-    links_force_torque = [x.item() for x in links_force_torque[0]] + [x.item() for x in links_force_torque[1]]
-    df.loc[len(df)] = [
-        scene.t,
-        links_force_torque[0], links_force_torque[1], links_force_torque[2],
-        links_force_torque[3], links_force_torque[4], links_force_torque[5],
-        links_force_torque[6], links_force_torque[7], links_force_torque[8],
-        links_force_torque[9], links_force_torque[10], links_force_torque[11],
-    ]
-    # #force
+import torch
+from . import sim
 
-def main():
+def pp(object_name, object_euler, object_scale, grasp_pos, object_path, qpos_init, photo_interval, coup_friction=0.5):
+    default_video_path, default_outfile_path, base_photo_name = sim.set_path(
+                                                                    object_name=object_name,
+                                                                    coup_friction=coup_friction,
+                                                                    material_type="pp",
+                                                                )
     parser = argparse.ArgumentParser()
-    parser.add_argument("-v", "--video", default="data/videos/grasp_can_pp.mp4")
-    parser.add_argument("-o", "--outfile", default="data/csv/grasp_can_pp.csv")
+    parser.add_argument("-v", "--video", default=default_video_path)
+    parser.add_argument("-o", "--outfile", default=default_outfile_path)
     args = parser.parse_args()
     df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz",
-                           "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz"])
+                           "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz",
+                           "dof_0", "dof_1", "dof_2", "dof_3", "dof_4", "dof_5", "dof_6", "dof_7", "dof_8"])
     ########################## init ##########################
-    # gs.init(backend=gs.cpu, debug=True, logging_level="error")
-    gs.init(backend=gs.cpu)
+    # if torch.cuda.is_available():
+    #     device = torch.device("cuda")
+    #     gs.init(backend=gs.gpu)
+    # else:
+    #     device = torch.device("cpu")
+    #     gs.init(backend=gs.cpu, debug=True)
+    device = torch.device("cpu")
+    gs.init(backend=gs.cpu, logging_level="debug")
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
         camera_pos=(3, -1, 1.5),
@@ -76,96 +75,34 @@ def main():
             von_mises_yield_stress=33000,
         ),
         morph=gs.morphs.Mesh(
-            file="data/objects/002_master_chef_can/poisson/textured.obj",
-            scale=0.6, #record
+            file=object_path,
+            scale=object_scale, #record
             pos=(0.45, 0.45, 0.0),
-            euler=(0, 0, 0), #record
+            euler=object_euler, #record
         ),
     )
     franka = scene.add_entity(
         gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"),
-        material=gs.materials.Rigid(coup_friction=1.0),
+        material=gs.materials.Rigid(coup_friction=coup_friction),
     )
 
     ########################## build ##########################
     scene.build()
-    motors_dof = np.arange(7)
-    fingers_dof = np.arange(7, 9)
-    # Optional: set control gains
-    franka.set_dofs_kp(
-        np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]),
-    )
-    franka.set_dofs_kv(
-        np.array([450, 450, 350, 350, 200, 200, 200, 10, 10]),
-    )
-    franka.set_dofs_force_range(
-        np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]),
-        np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]),
-    )
-    end_effector = franka.get_link("hand")
-    # move to pre-grasp pose
-    x = 0.45
-    y = 0.45
-    z = 0.6
-    qpos = franka.inverse_kinematics(
-        link=end_effector,
-        pos=np.array([x, y, z]),
-        quat=np.array([0, 1, 0, 0]),
-    )
-    qpos[-2:] = 0.04
-    franka.set_dofs_position(qpos[:-2], motors_dof)
-    franka.set_dofs_position(qpos[-2:], fingers_dof)
-    cam.start_recording()
-    #=================この中を調整========================
-    # reach
-    for i in range(1190):
-        #record optimized moments
-        z -= 0.0004
-        qpos = franka.inverse_kinematics(
-            link=end_effector,
-            pos=np.array([x, y, z]),
-            quat=np.array([0, 1, 0, 0]),
-        )
-        qpos[-2:] = 0.04
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_position(qpos[-2:], fingers_dof)
-        make_step(scene, cam, franka, df)
-    print("x, y, z: ", x, y, z)
-    # grasp
-    for i in range(300):
-        qpos = franka.inverse_kinematics(
-            link=end_effector,
-            pos=np.array([x, y, z]),
-            quat=np.array([0, 1, 0, 0]),
-        )
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_force(np.array([-0.01*i, -0.01*i]), fingers_dof)
-        make_step(scene, cam, franka, df)
     
-    for i in range(1200):
-        z += 0.0004
-        qpos = franka.inverse_kinematics(
-            link=end_effector,
-            pos=np.array([x, y, z]),
-            quat = np.array([0, 1, 0, 0]),
-        )
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_force(np.array([-3, -3]), fingers_dof)
-        make_step(scene, cam, franka, df)
-    
-    for i in range(300):
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_force(np.array([-3+0.01*i, -3+0.01*i]), fingers_dof)
-        make_step(scene, cam, franka, df)
-    for i in range(100):
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_position(np.array([0.0004*i, 0.0004*i]), fingers_dof)
-        make_step(scene, cam, franka, df)
+    sim.control_franka(
+        scene, 
+        cam, 
+        franka, 
+        grasp_pos, 
+        qpos_init, 
+        df, 
+        base_photo_name,
+        photo_interval
+    )
     # ---- 追加: 録画終了・保存 -------------------------------
-    cam.stop_recording(save_to_filename=args.video, fps=1000)
+    cam.stop_recording(save_to_filename=args.video, fps=1000/photo_interval)
     print(f"saved -> {args.video}")
     df.to_csv(args.outfile, index=False)
     print(f"saved -> {args.outfile}")
+    gs.destroy()
     # --------------------------------------------------------
-if __name__ == "__main__":
-    main()
