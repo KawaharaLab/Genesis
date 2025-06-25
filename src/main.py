@@ -60,7 +60,7 @@ for object_data in object_data_list[50:]:
             qpos_init=qpos_init,
             coup_friction=coup_friction,
         )
-        
+        """
         materials.aluminium(
             object_name=object_data['id'],
             object_euler=object_data['object_euler'],
@@ -71,7 +71,7 @@ for object_data in object_data_list[50:]:
             photo_interval=photo_interval,
             coup_friction=coup_friction,
         )
-        
+
         # 各関数を呼び出す
         materials.steel(
             object_name=object_data['id'],
@@ -83,7 +83,7 @@ for object_data in object_data_list[50:]:
             photo_interval=photo_interval,
             coup_friction=coup_friction,
         )
-        """
+        
         materials.pet(
             object_name=object_data['id'],
             object_euler=object_data['object_euler'],
