@@ -2,32 +2,43 @@ import argparse
 
 import numpy as np
 import genesis as gs
+import pandas as pd
 
-def make_step(scene, cam, franka):
+def make_step(scene, cam, franka, df):
     """フランカを目標位置に移動させるステップ関数"""
     scene.step()
     cam.render()
-    scene.clear_debug_objects()
+    # scene.clear_debug_objects()
     links_force_torque = franka.get_links_force_torque([9, 10]) # 手先のlocal_indexは9, 10
-    print(links_force_torque)
-    #force
-    scale = 0.1
-    scene.draw_debug_arrow(
-        pos=franka.get_link("left_finger").get_pos().tolist(),
-        vec=(links_force_torque[0][:3]*scale).tolist(),
-        color=(1, 0, 0),
-    )
-    scene.draw_debug_arrow(
-        pos=franka.get_link("right_finger").get_pos().tolist(),
-        vec=(links_force_torque[1][:3]*scale).tolist(),
-        color=(1, 0, 0),
-    )
+    links_force_torque = [x.item() for x in links_force_torque[0]] + [x.item() for x in links_force_torque[1]]
+    print(links_force_torque[1])
+    df.loc[len(df)] = [
+        scene.t,
+        links_force_torque[0], links_force_torque[1], links_force_torque[2],
+        links_force_torque[3], links_force_torque[4], links_force_torque[5],
+        links_force_torque[6], links_force_torque[7], links_force_torque[8],
+        links_force_torque[9], links_force_torque[10], links_force_torque[11],
+    ]
+    # #force
+    # scale = 0.1
+    # scene.draw_debug_arrow(
+    #     pos=franka.get_link("left_finger").get_pos().tolist(),
+    #     vec=(links_force_torque[0][:3]*scale).tolist(),
+    #     color=(1, 0, 0),
+    # )
+    # scene.draw_debug_arrow(
+    #     pos=franka.get_link("right_finger").get_pos().tolist(),
+    #     vec=(links_force_torque[1][:3]*scale).tolist(),
+    #     color=(1, 0, 0),
+    # )
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-o", "--outfile", default="grasp_bottle.mp4")
+    parser.add_argument("-v", "--video", default="grasp_bottle_joint.mp4")
+    parser.add_argument("-o", "--outfile", default="grasp_bottle_joint.csv")
     args = parser.parse_args()
-
+    df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz",
+                           "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz"])
     ########################## init ##########################
     gs.init(backend=gs.cpu, precision="32", debug=True, logging_level="error")
 
@@ -106,9 +117,9 @@ def main():
     path = franka.plan_path(qpos)
     for waypoint in path:
         franka.control_dofs_position(waypoint)
-        make_step(scene, cam, franka)             # ← 変更
+        make_step(scene, cam, franka, df)             # ← 変更
     for _ in range(30):
-        make_step(scene, cam, franka)             # ← 変更
+        make_step(scene, cam, franka, df)             # ← 変更
 
     # reach
     qpos = franka.inverse_kinematics(
@@ -118,13 +129,13 @@ def main():
     )
     franka.control_dofs_position(qpos[:-2], motors_dof)
     for _ in range(100):
-        make_step(scene, cam, franka)             # ← 変更
+        make_step(scene, cam, franka, df)             # ← 変更
 
     # grasp
     franka.control_dofs_position(qpos[:-2], motors_dof)
     franka.control_dofs_position(np.array([0, 0]), fingers_dof)
     for _ in range(100):
-        make_step(scene, cam, franka)             # ← 変更
+        make_step(scene, cam, franka, df)             # ← 変更
 
     # lift
     qpos = franka.inverse_kinematics(
@@ -135,12 +146,12 @@ def main():
     franka.control_dofs_position(qpos[:-2], motors_dof)
     franka.control_dofs_force(np.array([-5, -5]), fingers_dof)
     for _ in range(250):
-        make_step(scene, cam, franka)             # ← 変更
+        make_step(scene, cam, franka, df)             # ← 変更
 
     franka.control_dofs_position(qpos[:-2], motors_dof)
     franka.control_dofs_force(np.array([-10, -10]), fingers_dof)
     for _ in range(100):
-        make_step(scene, cam, franka)             # ← 変更
+        make_step(scene, cam, franka, df)             # ← 変更
 
     # ── 5. ハンドを 90度 回転 ──────────────────────────
     n_rot = 90      # 2π を 180 ステップ ⇒ 1 ステップ 2°
@@ -153,10 +164,12 @@ def main():
             np.array([6]),
         )
         franka.control_dofs_force(np.array([-10, -10]), fingers_dof)
-        make_step(scene, cam, franka)
+        make_step(scene, cam, franka, df)
 
     # ---- 追加: 録画終了・保存 -------------------------------
-    cam.stop_recording(save_to_filename=args.outfile, fps=60)
+    cam.stop_recording(save_to_filename=args.video, fps=60)
+    print(f"saved -> {args.video}")
+    df.to_csv(args.outfile, index=False)
     print(f"saved -> {args.outfile}")
     # --------------------------------------------------------
 if __name__ == "__main__":
