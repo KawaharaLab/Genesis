@@ -87,16 +87,16 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
 
     ########################## build ##########################
     scene.build()
-    
     sim.control_franka(
-        scene, 
-        cam, 
-        franka, 
-        grasp_pos, 
-        qpos_init, 
-        df, 
-        base_photo_name,
-        photo_interval
+        scene=scene,
+        cam=cam,
+        franka=franka,
+        grasp_pos=grasp_pos,
+        qpos_init=qpos_init,
+        strength=30,
+        df=df,
+        base_photo_name=base_photo_name,
+        photo_interval=photo_interval
     )
     
     # ---- 追加: 録画終了・保存 -------------------------------

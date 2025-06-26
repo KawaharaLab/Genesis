@@ -90,14 +90,15 @@ def rubber(object_name, object_euler, object_scale, grasp_pos, object_path, qpos
     scene.build()
     
     sim.control_franka(
-        scene, 
-        cam, 
-        franka, 
-        grasp_pos, 
-        qpos_init, 
-        df, 
-        base_photo_name,
-        photo_interval
+        scene=scene,
+        cam=cam,
+        franka=franka,
+        grasp_pos=grasp_pos,
+        qpos_init=qpos_init,
+        strength=3,
+        df=df,
+        base_photo_name=base_photo_name,
+        photo_interval=photo_interval
     )
     # ---- 追加: 録画終了・保存 -------------------------------
     cam.stop_recording(save_to_filename=args.video, fps=1000/photo_interval)

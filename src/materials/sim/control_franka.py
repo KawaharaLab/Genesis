@@ -2,7 +2,7 @@ import torch
 import genesis as gs
 from .make_step import make_step
 
-def control_franka(scene, cam, franka, grasp_pos, qpos_init, df, base_photo_name, photo_interval):
+def control_franka(scene, cam, franka, grasp_pos, qpos_init, strength, df, base_photo_name, photo_interval):
     motors_dof = torch.arange(7, dtype=gs.tc_int, device=gs.device)
     fingers_dof = torch.arange(7, 9, dtype=gs.tc_int, device=gs.device)
     # Optional: set control gains
@@ -60,7 +60,7 @@ def control_franka(scene, cam, franka, grasp_pos, qpos_init, df, base_photo_name
             pos=pos_tensor,
             quat=quat_tensor,
         )
-        force_tensor.fill_(-0.1 * i)
+        force_tensor.fill_(-strength/300 * i)
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(force_tensor, fingers_dof)
         make_step(scene, cam, franka, df, base_photo_name, photo_interval)
@@ -74,7 +74,7 @@ def control_franka(scene, cam, franka, grasp_pos, qpos_init, df, base_photo_name
             pos=pos_tensor,
             quat=quat_tensor,
         )
-        force_tensor.fill_(-30)
+        force_tensor.fill_(-strength)
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(force_tensor, fingers_dof)
         make_step(scene, cam, franka, df, base_photo_name, photo_interval)
@@ -99,7 +99,7 @@ def control_franka(scene, cam, franka, grasp_pos, qpos_init, df, base_photo_name
         make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
     for i in range(1000):
-        force_tensor.fill_(-30 + 0.03 * i)
+        force_tensor.fill_(-strength + strength/1000 * i)
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(force_tensor, fingers_dof)
         make_step(scene, cam, franka, df, base_photo_name, photo_interval)
