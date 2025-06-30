@@ -73,11 +73,11 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
             coup_friction=coup_friction,
             friction=coup_friction,
         ),
-        morph=gs.morphs.Mesh(
-            file=object_path,
-            scale=object_scale, #record
-            pos=(0.45, 0.45, 0.0),
-            euler=object_euler, #record
+        morph=gs.morphs.URDF(
+            file="urdf/3763/mobility_vhacd.urdf",
+            scale=0.09,
+            pos=(0.45, 0.45, 0.036),
+            euler=(0, 90, 0),
         ),
     )
     franka = scene.add_entity(
@@ -85,7 +85,7 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
         material=gs.materials.Rigid(coup_friction=coup_friction, friction=coup_friction),
     )
 
-    ########################## build ##########################
+    ########################## build ###########################
     scene.build()
     sim.control_franka(
         scene=scene,

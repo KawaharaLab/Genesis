@@ -45,7 +45,7 @@ def pet(object_name, object_euler, object_scale, grasp_pos, object_path, qpos_in
         ),
         show_viewer=False,
         vis_options=gs.options.VisOptions(
-            visualize_mpm_boundary=True,
+            visualize_mpm_boundary=False,
         ),
         mpm_options=gs.options.MPMOptions(
             lower_bound=(0.0, -0.1, -0.05),

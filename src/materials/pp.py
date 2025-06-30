@@ -64,7 +64,7 @@ def pp(object_name, object_euler, object_scale, grasp_pos, object_path, qpos_ini
     # --------------------------------------------------------
     ########################## entities ##########################
     plane = scene.add_entity(
-        gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
+        gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=False),
     )
     chips_can = scene.add_entity(
         material=gs.materials.MPM.ElastoPlastic( #PP
