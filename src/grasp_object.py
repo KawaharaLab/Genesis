@@ -2,11 +2,53 @@ import argparse
 import numpy as np
 import genesis as gs
 import pandas as pd
-def make_step(scene, cam, franka, df):
+import os
+# def make_step(scene, cam, franka, df):
+#     """フランカを目標位置に移動させるステップ関数"""
+#     scene.step()
+#     cam.render()
+#     dofs = franka.get_dofs_position()
+#     links_force_torque = franka.get_links_force_torque([9, 10]) # 手先のlocal_indexは9, 10
+#     links_force_torque = [x.item() for x in links_force_torque[0]] + [x.item() for x in links_force_torque[1]]
+#     df.loc[len(df)] = [
+#         scene.t,
+#         links_force_torque[0], links_force_torque[1], links_force_torque[2],
+#         links_force_torque[3], links_force_torque[4], links_force_torque[5],
+#         links_force_torque[6], links_force_torque[7], links_force_torque[8],
+#         links_force_torque[9], links_force_torque[10], links_force_torque[11],
+#         dofs[0], dofs[1], dofs[2], dofs[3], dofs[4], dofs[5], dofs[6], dofs[7], dofs[8]
+#     ]
+#     # #force
+
+obj_path = "/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/gso_obj/models/3D_Dollhouse_Happy_Brother/model.obj"
+
+def set_photo_path():
+    arr = obj_path.split('/')
+    return arr[-2]
+
+name = set_photo_path()
+os.makedirs('/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name, exist_ok=True)
+
+photo_path = '/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name + '/'
+
+
+
+import imageio.v3 as iio
+"""https://pypi.org/project/imageio/"""
+
+def make_step(scene, cam, franka, df, photo_path, photo_interval):
     """フランカを目標位置に移動させるステップ関数"""
     scene.step()
-    cam.render()
+    t = int(scene.t) - 1
+    # if t % 20 == 0:
+    #     cam.render()
+    if t % photo_interval == 0:
+        rgb, _, _, _ = cam.render(rgb=True)
+        if photo_path is not None:
+            filepath = photo_path + f"{name}_{t:05d}.png"
+            iio.imwrite(filepath, rgb)
     dofs = franka.get_dofs_position()
+    dofs = [x.item() for x in dofs]
     links_force_torque = franka.get_links_force_torque([9, 10]) # 手先のlocal_indexは9, 10
     links_force_torque = [x.item() for x in links_force_torque[0]] + [x.item() for x in links_force_torque[1]]
     df.loc[len(df)] = [
@@ -39,7 +81,7 @@ def main():
     )
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=5e-3,
+            dt=1e-3,
             substeps=15,
         ),
         viewer_options=gs.options.ViewerOptions(
@@ -71,7 +113,7 @@ def main():
         gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
     )
     chips_can = scene.add_entity(
-        # material=gs.materials.Rigid(),
+        material=gs.materials.Rigid(),
         # material=gs.materials.MPM.Elastic( #Rubber
         #     E=2500,
         #     nu=0.499,
@@ -79,13 +121,13 @@ def main():
         #     sampler="pbs",
         #     model="neohooken"
         # ),
-        material=gs.materials.MPM.ElastoPlastic( #PET
-            E=2.45e6,
-            nu=0.4,
-            rho=1400,
-            use_von_mises=True,
-            von_mises_yield_stress=18000,
-        ),
+        # material=gs.materials.MPM.ElastoPlastic( #PET
+        #     E=2.45e6,
+        #     nu=0.4,
+        #     rho=1400,
+        #     use_von_mises=True,
+        #     von_mises_yield_stress=18000,
+        # ),
         # material=gs.materials.MPM.ElastoPlastic( #PP
         #     E=2.0e6,
         #     nu=0.42,
@@ -93,22 +135,22 @@ def main():
         #     use_von_mises=True,
         #     von_mises_yield_stress=33000,
         # ),
-        material=gs.materials.MPM.ElastoPlastic( #aluminum
-            E=69e6,
-            nu=0.33,
-            rho=2700,
-            use_von_mises=True,
-            von_mises_yield_stress=95000,
-        ),
-        material=gs.materials.MPM.ElastoPlastic( #steel
-            E=180e6,
-            nu=0.25,
-            rho=7860,
-            use_von_mises=True,
-            von_mises_yield_stress=502000,
-        ),
+        #material=gs.materials.MPM.ElastoPlastic( #aluminum
+        #    E=69e6,
+        #    nu=0.33,
+        #    rho=2700,
+        #    use_von_mises=True,
+        #    von_mises_yield_stress=95000,
+        #),
+        #material=gs.materials.MPM.ElastoPlastic( #steel
+        #    E=180e6,
+        #    nu=0.25,
+        #    rho=7860,
+        #    use_von_mises=True,
+        #    von_mises_yield_stress=502000,
+        #),
         morph=gs.morphs.Mesh(
-            file="data/objects/002_master_chef_can/poisson/textured.obj",
+            file= obj_path,
             scale=0.6, #record
             pos=(0.45, 0.45, 0.0),
             euler=(0, 0, 0), #record
@@ -153,7 +195,7 @@ def main():
     for i in range (100):
         franka.set_dofs_position(qpos[:-2], motors_dof)
         franka.set_dofs_position(qpos[-2:], fingers_dof)
-        make_step(scene, cam, franka, df)
+        make_step(scene, cam, franka, df, photo_path, 500)
     for i in range(190):
         #record optimized moments
         z -= 0.0025
@@ -165,7 +207,7 @@ def main():
         qpos[-2:] = 0.04
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_position(qpos[-2:], fingers_dof)
-        make_step(scene, cam, franka, df)
+        make_step(scene, cam, franka, df, photo_path, 500)
     print("x, y, z: ", x, y, z)
     # grasp
     for i in range(400):
@@ -176,7 +218,7 @@ def main():
         )
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-0.01*i, -0.01*i]), fingers_dof)
-        make_step(scene, cam, franka, df)
+        make_step(scene, cam, franka, df, photo_path, 500)
     
     for i in range(200):
         z += 0.0025
@@ -187,12 +229,12 @@ def main():
         )
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-5, -5]), fingers_dof)
-        make_step(scene, cam, franka, df)
+        make_step(scene, cam, franka, df, photo_path, 500)
     
     for i in range(100):
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-5+0.05*i, -5+0.05*i]), fingers_dof)
-        make_step(scene, cam, franka, df)
+        make_step(scene, cam, franka, df, photo_path, 500)
     # ---- 追加: 録画終了・保存 -------------------------------
     cam.stop_recording(save_to_filename=args.video, fps=1000)
     print(f"saved -> {args.video}")
