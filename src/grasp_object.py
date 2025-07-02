@@ -4,7 +4,7 @@ import genesis as gs
 import pandas as pd
 import os
 
-DEBUG = 1
+DEBUG = 0
 
 
 obj_path = "/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/gso_obj/models/3D_Dollhouse_Refrigerator/model.obj"
@@ -22,6 +22,9 @@ if DEBUG:
 else:
     photo_path = '/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name + '/'
     os.makedirs('/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name, exist_ok=True)
+    csv_path = "/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/csv/" + name + '.csv'
+    with open(csv_path, 'w'):
+        pass
 
 import imageio.v3 as iio
 """https://pypi.org/project/imageio/"""
@@ -195,7 +198,7 @@ def main():
         franka.set_dofs_position(qpos[:-2], motors_dof)
         franka.set_dofs_position(qpos[-2:], fingers_dof)
         make_step(scene, cam, franka, df, photo_path, 125)
-        print(chips_can.get_pos())
+        #print(chips_can.get_pos())
     for i in range(200):
         #record optimized moments
         z -= 0.0025
@@ -208,7 +211,7 @@ def main():
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_position(qpos[-2:], fingers_dof)
         make_step(scene, cam, franka, df, photo_path, 125)
-        print(chips_can.get_pos())
+        #print(chips_can.get_pos())
     # grasp
     for i in range(400):
         qpos = franka.inverse_kinematics(
@@ -219,7 +222,7 @@ def main():
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-0.01*i, -0.01*i]), fingers_dof)
         make_step(scene, cam, franka, df, photo_path, 125)
-        print(chips_can.get_pos())
+        #print(chips_can.get_pos())
     
     for i in range(200):
         z += 0.0025
@@ -231,18 +234,18 @@ def main():
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-5, -5]), fingers_dof)
         make_step(scene, cam, franka, df, photo_path, 125)
-        print(chips_can.get_pos())
+        #print(chips_can.get_pos())
     
     for i in range(101):
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-5+0.05*i, -5+0.05*i]), fingers_dof)
         make_step(scene, cam, franka, df, photo_path, 125)
-        print(chips_can.get_pos())
+        #print(chips_can.get_pos())
     # ---- 追加: 録画終了・保存 -------------------------------
     cam.stop_recording(save_to_filename=args.video, fps=1000)
     print(f"saved -> {args.video}")
-    df.to_csv(args.outfile, index=False)
-    print(f"saved -> {args.outfile}")
+    df.to_csv(csv_path, index=False)
+    print(f"saved -> {csv_path}")
     # --------------------------------------------------------
 if __name__ == "__main__":
     main()
