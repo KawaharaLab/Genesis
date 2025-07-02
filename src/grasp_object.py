@@ -1,5 +1,9 @@
 import argparse
+import sys
 import numpy as np
+sys.path.insert(0, "/Users/nick/Desktop/Forked_Genesis/Genesis")
+
+
 import genesis as gs
 import pandas as pd
 import os
@@ -7,9 +11,11 @@ import os
 DEBUG = 0
 
 
-obj_path = "/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/gso_obj/models/3D_Dollhouse_Refrigerator/model.obj"
+obj_path = "/Users/nick/Desktop/Forked_Genesis/Genesis/data/gso_obj/ACE_Coffee_Mug_Kristen_16_oz_cup/model.obj"
 
-photo_interval = 125
+photo_interval = 250
+material_type = "Rigid"
+frc = 0.5 #0.5, 1.5, 2.5
 
 def set_photo_path():
     arr = obj_path.split('/')
@@ -17,14 +23,15 @@ def set_photo_path():
 
 name = set_photo_path()
 
-if DEBUG:
+'''if DEBUG:
     photo_path = None
 else:
-    photo_path = '/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name + '/'
-    os.makedirs('/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name, exist_ok=True)
-    csv_path = "/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/csv/" + name + '.csv'
+    photo_path = '/Users/nick/Desktop/Forked_Genesis/Genesis/data/photos/' + name + '/' + material_type + '/' + str(frc) + '/'
+    os.makedirs('/Users/nick/Desktop/Forked_Genesis/Genesis/data/photos/' + name + '/' + material_type  + '/' + str(frc), exist_ok=True)
+    os.makedirs(f'/Users/nick/Desktop/Forked_Genesis/Genesis/data/csv/{name}', exist_ok=True)
+    csv_path = f'/Users/nick/Desktop/Forked_Genesis/Genesis/data/csv/{name}/{name}_{material_type}_{frc}.csv'
     with open(csv_path, 'w'):
-        pass
+        pass'''
 
 import imageio.v3 as iio
 """https://pypi.org/project/imageio/"""
@@ -33,6 +40,7 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval):
     """フランカを目標位置に移動させるステップ関数"""
     scene.step()
     t = int(scene.t) - 1
+    #cam.render()
     if DEBUG:
         rgb, _, _, _  = cam.render(rgb=True)
     else:
@@ -63,7 +71,16 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval):
     # #force
 
 
-def main():
+def main(frc_arg):
+
+    name = set_photo_path()
+    photo_path = f'/Users/nick/Desktop/Forked_Genesis/Genesis/data/photos/{name}/{material_type}/{frc_arg}/'
+    os.makedirs(photo_path, exist_ok=True)
+    os.makedirs(f'/Users/nick/Desktop/Forked_Genesis/Genesis/data/csv/{name}', exist_ok=True)
+    csv_path = f'/Users/nick/Desktop/Forked_Genesis/Genesis/data/csv/{name}/{name}_{material_type}_{frc_arg}.csv'
+    with open(csv_path, 'w'):
+        pass
+
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--video", default="data/videos/grasp_can.mp4")
     parser.add_argument("-o", "--outfile", default="data/csv/grasp_can.csv")
@@ -83,7 +100,7 @@ def main():
     )
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=1e-3,
+            dt=5e-3,
             substeps=15,
         ),
         viewer_options=gs.options.ViewerOptions(
@@ -114,7 +131,7 @@ def main():
     plane = scene.add_entity(
         gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
     )
-    chips_can = scene.add_entity(
+    gso_object = scene.add_entity(
         material=gs.materials.Rigid(),
         # material=gs.materials.MPM.Elastic( #Rubber
         #     E=2500,
@@ -160,11 +177,11 @@ def main():
     )
     franka = scene.add_entity(
         gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"),
-        material=gs.materials.Rigid(coup_friction=1.0),
+        material=gs.materials.Rigid(coup_friction=frc_arg),
     )
-
     ########################## build ##########################
     scene.build()
+
     motors_dof = np.arange(7)
     fingers_dof = np.arange(7, 9)
     # Optional: set control gains
@@ -179,10 +196,14 @@ def main():
         np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]),
     )
     end_effector = franka.get_link("hand")
+    print("BBBB",gso_object.get_AABB())
+
+    lower_obj_bound, upper_obj_bound = gso_object.get_AABB()
+    print("AAAA",upper_obj_bound[2].item())
     # move to pre-grasp pose
     x = 0.45
     y = 0.45
-    z = 0.65
+    z = upper_obj_bound[2].item() + 0.08
     qpos = franka.inverse_kinematics(
         link=end_effector,
         pos=np.array([x, y, z]),
@@ -197,11 +218,11 @@ def main():
     for i in range (100):
         franka.set_dofs_position(qpos[:-2], motors_dof)
         franka.set_dofs_position(qpos[-2:], fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 125)
+        make_step(scene, cam, franka, df, photo_path, photo_interval)
         #print(chips_can.get_pos())
     for i in range(200):
         #record optimized moments
-        z -= 0.0025
+        #z -= 0.0025
         qpos = franka.inverse_kinematics(
             link=end_effector,
             pos=np.array([x, y, z]),
@@ -210,7 +231,7 @@ def main():
         qpos[-2:] = 0.04
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_position(qpos[-2:], fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 125)
+        make_step(scene, cam, franka, df, photo_path, photo_interval)
         #print(chips_can.get_pos())
     # grasp
     for i in range(400):
@@ -221,11 +242,11 @@ def main():
         )
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-0.01*i, -0.01*i]), fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 125)
+        make_step(scene, cam, franka, df, photo_path, photo_interval)
         #print(chips_can.get_pos())
-    
+
     for i in range(200):
-        z += 0.0025
+        z += 0.0005
         qpos = franka.inverse_kinematics(
             link=end_effector,
             pos=np.array([x, y, z]),
@@ -233,13 +254,13 @@ def main():
         )
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-5, -5]), fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 125)
+        make_step(scene, cam, franka, df, photo_path, photo_interval)
         #print(chips_can.get_pos())
-    
+
     for i in range(101):
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-5+0.05*i, -5+0.05*i]), fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 125)
+        make_step(scene, cam, franka, df, photo_path, photo_interval)
         #print(chips_can.get_pos())
     # ---- 追加: 録画終了・保存 -------------------------------
     cam.stop_recording(save_to_filename=args.video, fps=1000)
@@ -247,5 +268,17 @@ def main():
     df.to_csv(csv_path, index=False)
     print(f"saved -> {csv_path}")
     # --------------------------------------------------------
+from multiprocessing import Process
+
 if __name__ == "__main__":
-    main()
+    frc_values = [0.5, 1.5, 2.5]
+    processes = []
+
+    for frc_arg in frc_values:
+        p = Process(target=main, args=(frc_arg,))
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
+
