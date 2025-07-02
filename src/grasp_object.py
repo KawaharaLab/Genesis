@@ -3,35 +3,25 @@ import numpy as np
 import genesis as gs
 import pandas as pd
 import os
-# def make_step(scene, cam, franka, df):
-#     """フランカを目標位置に移動させるステップ関数"""
-#     scene.step()
-#     cam.render()
-#     dofs = franka.get_dofs_position()
-#     links_force_torque = franka.get_links_force_torque([9, 10]) # 手先のlocal_indexは9, 10
-#     links_force_torque = [x.item() for x in links_force_torque[0]] + [x.item() for x in links_force_torque[1]]
-#     df.loc[len(df)] = [
-#         scene.t,
-#         links_force_torque[0], links_force_torque[1], links_force_torque[2],
-#         links_force_torque[3], links_force_torque[4], links_force_torque[5],
-#         links_force_torque[6], links_force_torque[7], links_force_torque[8],
-#         links_force_torque[9], links_force_torque[10], links_force_torque[11],
-#         dofs[0], dofs[1], dofs[2], dofs[3], dofs[4], dofs[5], dofs[6], dofs[7], dofs[8]
-#     ]
-#     # #force
 
-obj_path = "/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/gso_obj/models/3D_Dollhouse_Happy_Brother/model.obj"
+DEBUG = 1
+
+
+obj_path = "/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/gso_obj/models/3D_Dollhouse_Refrigerator/model.obj"
+
+photo_interval = 125
 
 def set_photo_path():
     arr = obj_path.split('/')
     return arr[-2]
 
 name = set_photo_path()
-os.makedirs('/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name, exist_ok=True)
 
-photo_path = '/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name + '/'
-
-
+if DEBUG:
+    photo_path = None
+else:
+    photo_path = '/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name + '/'
+    os.makedirs('/Users/hh/Desktop/genesis/genesis_forked/Genesis/data/photos/' + name, exist_ok=True)
 
 import imageio.v3 as iio
 """https://pypi.org/project/imageio/"""
@@ -40,26 +30,35 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval):
     """フランカを目標位置に移動させるステップ関数"""
     scene.step()
     t = int(scene.t) - 1
-    # if t % 20 == 0:
-    #     cam.render()
-    if t % photo_interval == 0:
-        rgb, _, _, _ = cam.render(rgb=True)
-        if photo_path is not None:
-            filepath = photo_path + f"{name}_{t:05d}.png"
-            iio.imwrite(filepath, rgb)
-    dofs = franka.get_dofs_position()
-    dofs = [x.item() for x in dofs]
-    links_force_torque = franka.get_links_force_torque([9, 10]) # 手先のlocal_indexは9, 10
-    links_force_torque = [x.item() for x in links_force_torque[0]] + [x.item() for x in links_force_torque[1]]
-    df.loc[len(df)] = [
-        scene.t,
-        links_force_torque[0], links_force_torque[1], links_force_torque[2],
-        links_force_torque[3], links_force_torque[4], links_force_torque[5],
-        links_force_torque[6], links_force_torque[7], links_force_torque[8],
-        links_force_torque[9], links_force_torque[10], links_force_torque[11],
-        dofs[0], dofs[1], dofs[2], dofs[3], dofs[4], dofs[5], dofs[6], dofs[7], dofs[8]
-    ]
+    if DEBUG:
+        rgb, _, _, _  = cam.render(rgb=True)
+    else:
+        if t % photo_interval == 0:
+            for i in range(3):
+                rgb, _, _, _  = cam.render(rgb=True)
+                if i == 0:
+                    cam.set_pose(pos = (2.1, -1.2, 0.1), lookat = (0.45, 0.45, 0.5))
+                elif i == 1:
+                    cam.set_pose(pos = (-1.5, 1.5, 0.25), lookat = (0.45, 0.45, 0.4))
+                elif i == 2:
+                    cam.set_pose(pos = (2, 2, 0.1), lookat = (0, 0, 0.1))
+                if photo_path is not None:
+                    filepath = photo_path + f"{name}{t:05d}Angle{i}.png"
+                    iio.imwrite(filepath, rgb)
+        dofs = franka.get_dofs_position()
+        dofs = [x.item() for x in dofs]
+        links_force_torque = franka.get_links_force_torque([9, 10]) # 手先のlocal_indexは9, 10
+        links_force_torque = [x.item() for x in links_force_torque[0]] + [x.item() for x in links_force_torque[1]]
+        df.loc[len(df)] = [
+            scene.t,
+            links_force_torque[0], links_force_torque[1], links_force_torque[2],
+            links_force_torque[3], links_force_torque[4], links_force_torque[5],
+            links_force_torque[6], links_force_torque[7], links_force_torque[8],
+            links_force_torque[9], links_force_torque[10], links_force_torque[11],
+            dofs[0], dofs[1], dofs[2], dofs[3], dofs[4], dofs[5], dofs[6], dofs[7], dofs[8]
+        ]
     # #force
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -180,7 +179,7 @@ def main():
     # move to pre-grasp pose
     x = 0.45
     y = 0.45
-    z = 0.6
+    z = 0.65
     qpos = franka.inverse_kinematics(
         link=end_effector,
         pos=np.array([x, y, z]),
@@ -195,8 +194,9 @@ def main():
     for i in range (100):
         franka.set_dofs_position(qpos[:-2], motors_dof)
         franka.set_dofs_position(qpos[-2:], fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 500)
-    for i in range(190):
+        make_step(scene, cam, franka, df, photo_path, 125)
+        print(chips_can.get_pos())
+    for i in range(200):
         #record optimized moments
         z -= 0.0025
         qpos = franka.inverse_kinematics(
@@ -207,8 +207,8 @@ def main():
         qpos[-2:] = 0.04
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_position(qpos[-2:], fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 500)
-    print("x, y, z: ", x, y, z)
+        make_step(scene, cam, franka, df, photo_path, 125)
+        print(chips_can.get_pos())
     # grasp
     for i in range(400):
         qpos = franka.inverse_kinematics(
@@ -218,7 +218,8 @@ def main():
         )
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-0.01*i, -0.01*i]), fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 500)
+        make_step(scene, cam, franka, df, photo_path, 125)
+        print(chips_can.get_pos())
     
     for i in range(200):
         z += 0.0025
@@ -229,12 +230,14 @@ def main():
         )
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-5, -5]), fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 500)
+        make_step(scene, cam, franka, df, photo_path, 125)
+        print(chips_can.get_pos())
     
-    for i in range(100):
+    for i in range(101):
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([-5+0.05*i, -5+0.05*i]), fingers_dof)
-        make_step(scene, cam, franka, df, photo_path, 500)
+        make_step(scene, cam, franka, df, photo_path, 125)
+        print(chips_can.get_pos())
     # ---- 追加: 録画終了・保存 -------------------------------
     cam.stop_recording(save_to_filename=args.video, fps=1000)
     print(f"saved -> {args.video}")
