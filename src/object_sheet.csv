@@ -1,6 +1,6 @@
  ,skip,able to hold,franka pos,object euler,object scale,frankaの最初のz軸のデータ（zを変えた場合）,備考,
-bottle,no,yes,0.45 0.45 0.06,0 0 0,1,z=0.59,grasp_bottle.mp4,
 cube,no,yes,0.45 0.45 0.135,0 0 0,1,z=0.59,grasp_cube.mp4,
+bottle,no,yes,0.45 0.45 0.06,0 0 0,1,z=0.59,grasp_bottle.mp4,
 001_chips_can,no,yes,"0.45, 0.45, 0.225","0, 0, 0",0.8,z=0.7,,
 002_master_chef_can,no,yes,"0.45, 0.45, 0.125","0, 0, 0",0.6,,,
 003_cracker_box,no,yes,"0.45, 0.45, 0.275","0, 0, 80",1.2,z = 0.79,,
