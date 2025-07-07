@@ -216,6 +216,7 @@ class MPMSolver(Solver):
                     )
 
             self.init_particle_fields()
+            self.deformation_metric = ti.field(dtype=gs.ti_float, shape=self._batch_shape(self._n_particles))
             self.init_grid_fields()
             self.init_vvert_fields()
             self.init_ckpt()
@@ -271,6 +272,15 @@ class MPMSolver(Solver):
     # ------------------------------------------------------------------------------------
     # ----------------------------------- simulation -------------------------------------
     # ------------------------------------------------------------------------------------
+
+    # Add this as a new method in the MPMSolver class
+    @ti.kernel
+    def get_deformation_metric(self, f: ti.i32):
+        for i_p, i_b in ti.ndrange(self._n_particles, self._B):
+            # Using the determinant of F at the next frame (f+1)
+            # because p2g calculates F for f+1.
+            J = self.particles[f, i_p, i_b].F_tmp.determinant()
+            self.deformation_metric[i_b, i_p] = abs(J - 1.0)
 
     @ti.kernel
     def compute_F_tmp(self, f: ti.i32):
