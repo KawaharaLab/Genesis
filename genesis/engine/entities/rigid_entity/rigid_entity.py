@@ -703,9 +703,9 @@ class RigidEntity(Entity):
             friction = self.material.friction
             if friction is None:
                 friction = g_info.get("friction", self.material.friction)
-            print("Using friction:", friction)
+            # print("Using friction:", friction)
             if friction is None:
-                print("Using default friction")
+                # print("Using default friction")
                 friction = gu.default_friction()
             pos = g_info.get("pos", gu.zero_pos())
             quat = g_info.get("quat", gu.identity_quat())
