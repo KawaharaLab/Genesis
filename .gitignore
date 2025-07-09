@@ -5,6 +5,8 @@ imgui.ini
 .DS_Store
 sftp-config.json
 genesis/assets/terrain/
+csv/
+*.zip
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
