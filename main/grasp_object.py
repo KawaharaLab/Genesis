@@ -41,18 +41,18 @@ photo_path = "/tmp/photos/"
 def main(frc_arg):
 
     name = set_photo_path()
-    photo_path = f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/photos/{name}/{material_type}/{frc_arg}/'
+    photo_path = f'{base_path}/data/photos/{name}/{material_type}/{frc_arg}/'
     os.makedirs(photo_path, exist_ok=True)
-    os.makedirs(f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/csv/{name}', exist_ok=True)
-    csv_path = f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/csv/{name}/{name}_{material_type}_{frc_arg}N.csv'
-    deform_csv_path = f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/csv/{name}/{name}_{material_type}_deform_{frc_arg}N.csv'
+    os.makedirs(f'{base_path}/data/csv/{name}', exist_ok=True)
+    csv_path = f'{base_path}/data/csv/{name}/{name}_{material_type}_{frc_arg}N.csv'
+    deform_csv_path = f'{base_path}/data/csv/{name}/{name}_{material_type}_deform_{frc_arg}N.csv'
     with open(csv_path, 'w'):
         pass
     with open(deform_csv_path, 'w'):
         pass
 
     parser = argparse.ArgumentParser()
-    os.makedirs(f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/videos/{name}', exist_ok=True)
+    os.makedirs(f'{base_path}/data/videos/{name}', exist_ok=True)
     parser.add_argument("-v", "--video", default=f'data/videos/{name}/{name}_{material_type}_{frc_arg}N.mp4')
     parser.add_argument("-o", "--outfile", default=f'data/csv/{name}/{name}_{material_type}_{frc_arg}N.csv')
     args = parser.parse_args()
