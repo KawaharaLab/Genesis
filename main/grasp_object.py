@@ -2,6 +2,7 @@
 import argparse
 import sys
 import numpy as np
+import random
 import genesis as gs
 import pandas as pd
 import os
@@ -26,21 +27,16 @@ frc = 0.5 #0.5, 1.5, 2.5
 scl = 0.6 # scaling factor for the object
 
 ####################### object path ##########################
-
-obj_path = "/Users/no.166/Documents/Azka's Workspace/Genesis/data/mujoco_scanned_objects/models/adistar_boost_m/model.obj"
-
-def set_photo_path():
-    arr = obj_path.split('/')
-    return arr[-2]
-
-name = set_photo_path()
 photo_path = "/tmp/photos/"
 
 ####################### record csv ##########################
 
-def main(frc_arg):
+def main(frc_arg, obj_path):
 
-    name = set_photo_path()
+    #obj_path = "/Users/no.166/Documents/Azka's Workspace/Genesis/data/mujoco_scanned_objects/models/adistar_boost_m/model.obj"
+
+    name = obj_path.split('/')[-2]
+
     photo_path = f'{base_path}/data/photos/{name}/{material_type}/{frc_arg}/'
     os.makedirs(photo_path, exist_ok=True)
     os.makedirs(f'{base_path}/data/csv/{name}', exist_ok=True)
@@ -309,16 +305,22 @@ def main(frc_arg):
 from multiprocessing import Process
 
 if __name__ == "__main__":
+
+    folder_path = "/Users/no.166/Documents/Azka's Workspace/Genesis/data/mujoco_scanned_objects/models/"
+    all_files = os.listdir(folder_path)
+    selected_files = random.sample(all_files, 10)
     
     print("Available attributes in master_movement:", dir(mm))
     frc_values = [1,3,10,30,75]
     # [1,3,5,8,10,20,30,50,100]
     processes = []
-
-    for frc_arg in frc_values:
-        p = Process(target=main, args=(frc_arg,))
-        p.start()
-        processes.append(p)
+    for obj in selected_files:
+        obj_path = os.path.join(folder_path, obj, "model.obj")
+        print(f"Processing object: {obj_path}")
+        for frc_arg in frc_values:
+            p = Process(target=main, args=(frc_arg,obj_path))
+            p.start()
+            processes.append(p)
 
     for p in processes:
         p.join()
