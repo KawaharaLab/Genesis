@@ -34,15 +34,17 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, de
     
     # generate clean video from one of the camera angles
     camera_angle = 1
+
+    if camera_angle == 0:
+        cam.set_pose(pos = (2.1, -1.2, 0.1), lookat = (0.45, 0.45, 0.5))
+    elif camera_angle == 1:
+        cam.set_pose(pos = (-1.5, 1.5, 0.25), lookat = (0.45, 0.45, 0.4))
+    elif camera_angle == 2:
+        cam.set_pose(pos = (2, 2, 0.1), lookat = (0, 0, 0.1))
+
+    rgb, _, _, _  = cam.render(rgb=True)
+
     if t % photo_interval == 0:
-        # cam.render()
-        rgb, _, _, _  = cam.render(rgb=True)
-        if camera_angle == 0:
-            cam.set_pose(pos = (2.1, -1.2, 0.1), lookat = (0.45, 0.45, 0.5))
-        elif camera_angle == 1:
-            cam.set_pose(pos = (-1.5, 1.5, 0.25), lookat = (0.45, 0.45, 0.4))
-        elif camera_angle == 2:
-            cam.set_pose(pos = (2, 2, 0.1), lookat = (0, 0, 0.1))
         if photo_path is not None:
             filepath = photo_path + f"{name}{t:05d}Camera{camera_angle}.png"
             iio.imwrite(filepath, rgb)
