@@ -9,12 +9,11 @@ import master_movement as mm
 import matplotlib.pyplot as plt
 from make_step import make_step # importing make_step from main file including all relevant functions
 
-base_path = "/Users/no.166/Documents/Azka's Workspace/Genesis"
-sys.path.insert(0, f"{base_path}/genesis")
+base_path = "/Users/no.166/Documents/Azka\'s Workspace/Genesis"
 
-
-sys.path.insert(0, f"{base_path}/main")
-sys.path.insert(0, f"{base_path}")
+# sys.path.insert(0, "/Users/no.166/Documents/Azka\'s Workspace/Genesis/genesis")
+# sys.path.insert(0, "/Users/no.166/Documents/Azka\'s Workspace/Genesis/main")
+# sys.path.insert(0, "/Users/no.166/Documents/Azka\'s Workspace/Genesis")
 
 import imageio.v3 as iio
 """https://pypi.org/project/imageio/"""
@@ -24,11 +23,11 @@ import imageio.v3 as iio
 photo_interval = 250
 material_type = "Elastic"
 frc = 0.5 #0.5, 1.5, 2.5
-scl = 2.0 # scaling factor for the object
+scl = 0.6 # scaling factor for the object
 
 ####################### object path ##########################
 
-obj_path = "/Users/no.166/Documents/Azka's Workspace/Genesis/data/mujoco_scanned_objects/models/Android_Figure_Panda/model.obj"
+obj_path = "/Users/no.166/Documents/Azka's Workspace/Genesis/data/mujoco_scanned_objects/models/adistar_boost_m/model.obj"
 
 def set_photo_path():
     arr = obj_path.split('/')
@@ -42,18 +41,18 @@ photo_path = "/tmp/photos/"
 def main(frc_arg):
 
     name = set_photo_path()
-    photo_path = f'{base_path}/data/photos/{name}/{material_type}/{frc_arg}/'
+    photo_path = f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/photos/{name}/{material_type}/{frc_arg}/'
     os.makedirs(photo_path, exist_ok=True)
-    os.makedirs(f'{base_path}/data/csv/{name}', exist_ok=True)
-    csv_path = f'{base_path}/data/csv/{name}/{name}_{material_type}_{frc_arg}N.csv'
-    deform_csv_path = f'{base_path}/data/csv/{name}/{name}_{material_type}_deform_{frc_arg}N.csv'
+    os.makedirs(f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/csv/{name}', exist_ok=True)
+    csv_path = f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/csv/{name}/{name}_{material_type}_{frc_arg}N.csv'
+    deform_csv_path = f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/csv/{name}/{name}_{material_type}_deform_{frc_arg}N.csv'
     with open(csv_path, 'w'):
         pass
     with open(deform_csv_path, 'w'):
         pass
 
     parser = argparse.ArgumentParser()
-    os.makedirs(f'{base_path}/data/videos/{name}', exist_ok=True)
+    os.makedirs(f'/Users/no.166/Documents/Azka\'s Workspace/Genesis/data/videos/{name}', exist_ok=True)
     parser.add_argument("-v", "--video", default=f'data/videos/{name}/{name}_{material_type}_{frc_arg}N.mp4')
     parser.add_argument("-o", "--outfile", default=f'data/csv/{name}/{name}_{material_type}_{frc_arg}N.csv')
     args = parser.parse_args()
@@ -153,7 +152,7 @@ def main(frc_arg):
             file= obj_path,
             scale=scl, #record
             pos=(0.45, 0.45, 0),
-            euler=(0, 0, 0), #record
+            euler=(0, 0, 90), #record
         ),
     )
     
@@ -312,7 +311,7 @@ from multiprocessing import Process
 if __name__ == "__main__":
     
     print("Available attributes in master_movement:", dir(mm))
-    frc_values = [3,10,30]
+    frc_values = [1,3,10,30,75]
     # [1,3,5,8,10,20,30,50,100]
     processes = []
 
