@@ -55,7 +55,8 @@ def grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, pho
             # close the gripper
             franka.control_dofs_position(qpos[:-2], motors_dof)
             # grip_force = -0.025 * i
-            grip_frc = grip_force/steps*i
+            grip_frc = grip_force
+            print(f"grip_frc = {grip_frc}")
         else:
             # open the gripper
             grip_frc = -grip_force/steps*i
