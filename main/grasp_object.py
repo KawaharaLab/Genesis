@@ -56,6 +56,9 @@ def main(frc_arg, obj_path, target_choice='soft'):
                            "dof_0", "dof_1", "dof_2", "dof_3", "dof_4", "dof_5", "dof_6", "dof_7", "dof_8"])
     deform_csv = pd.DataFrame(columns=["step","deformations"])
 
+    # Test grip_force dataframe
+    grip_force_df = pd.DataFrame(columns=["step", "grip_force"])
+
     ########################## init ##########################
     # gs.init(backend=gs.cpu, debug=True, logging_level="error")
     gs.init(backend=gs.cpu)
@@ -106,13 +109,32 @@ def main(frc_arg, obj_path, target_choice='soft'):
     )
     gso_object = scene.add_entity(
         # material=gs.materials.Rigid(),
-        material=gs.materials.MPM.Elastic(), #Rubber
+        material=gs.materials.MPM.Elastic(
+            E=1.5e6,
+            nu=0.45,
+            rho=1100.0,
+            lam=None,
+            mu=None,
+            sampler="pbs",
+            model="corotation",
+        ), #Rubber
         #     E=2500,
         #     nu=0.499,
         #     rho=920,
         #     sampler="pbs",
         #     model="neohooken"
         # ),
+        # def __init__(
+        #         self,
+        #         E=3e5,
+        #         nu=0.2,
+        #         rho=1000.0,
+        #         lam=None,
+        #         mu=None,
+        #         sampler="pbs",
+        #         model="corotation",
+        #     ):
+
         # material=gs.materials.MPM.ElastoPlastic( #PET
         #     E=2.45e6,
         #     nu=0.4,
@@ -220,10 +242,15 @@ def main(frc_arg, obj_path, target_choice='soft'):
         for _ in range(25):
             make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
     elif set == 'PD_control_1':
-        # velocity limits
+        # velocity limits for Elastic
         soft_vel_limit = 0.0002
         medium_vel_limit = 0.0006
-        hard_vel_limit = 0.0012
+        hard_vel_limit = 0.0011
+
+        # velocity limits for ElastoPlastic
+        # soft_vel_limit = 0.0010
+        # medium_vel_limit = 0.0030
+        # hard_vel_limit = 0.0060
 
         if target_choice == 'soft':
             target_vel = soft_vel_limit
@@ -251,184 +278,93 @@ def main(frc_arg, obj_path, target_choice='soft'):
         )
 
         # 50-100 steps
-        print("Descending to object...")
+        print("######################### Descending to object... #########################")
         mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
                         end_effector, x, y, z, motors_dof, fingers_dof, steps=50)
         
         current_force = 3.0 # initial force for grasping, will be adjusted during the process
+        # record initial grip force for first 100 steps
+        for i in range(1, 101):
+            grip_force_df.loc[len(grip_force_df)] = [i, 0]
 
         # 100-300 steps
-        print("Grasping object with PD control...")
+        print("######################### Grasping object with PD control... #########################")
         for i in range(200):
             # curr_force = current_force
             mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
                     end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force =-current_force, steps=1)
             current_deformation = deform_csv.iloc[-1, 1]  # get the last deformation value
             deform_velocity = deform_csv.iloc[-1, 1] - deform_csv.iloc[-2,1]  # get the last two deformation values
-            print(f"At step {deform_csv.iloc[-1,0]}. Current force: {current_force} and deformation velocity: {deform_velocity}")
+            
             if i % 2 == 0:  # every few steps, adjust the force
                 if deform_velocity > 1.1*target_vel:
-                    print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} exceeded target {target_vel}. Reducing force.")
+                    # print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} exceeded target {target_vel}. Reducing force.")
                     current_force -= 0.25
+                    action = "Reducing force"
                 elif deform_velocity < 0.9*target_vel:
-                    print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} is below target {target_vel}. Increasing force.")
+                    # print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} is below target {target_vel}. Increasing force.")
                     current_force += 0.25
+                    action = "Increasing force"
                 else:
-                    print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} is within target {target_vel}. Constant force.")
+                    # print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} is within target {target_vel}. Constant force.")
+                    action = "None"
                     pass
+            # record current grip force
+            print(
+                f"At step {int(deform_csv.iloc[-1, 0]):>4}. "
+                f"Force: {current_force:>6.2f} | "
+                f"Deformation velocity: {deform_velocity:>14.8f} | "
+                f"Target velocity: {target_vel:>14.8f} | "
+                f"Deformation: {current_deformation:>7.5f} | "
+                f"Adjustment: {action}"
+            )
+            grip_force_df.loc[len(grip_force_df)] = [deform_csv.iloc[-1, 0], -current_force]
 
         # 300-500 steps
-        print("Lifting object with PD control...")
+        print("######################### Lifting object with PD control... #########################")
         for i in range(200):
             curr_z = upper_obj_bound[2] + 0.08 + (i * 0.00075)  # increment z position
             mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
                             end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1)
             current_deformation = deform_csv.iloc[-1, 1]  # get the last deformation value
             deform_velocity = deform_csv.iloc[-1, 1] - deform_csv.iloc[-2,1]  # get the last two deformation values
-            print(f"At step {deform_csv.iloc[-1,0]}. Current force: {current_force} and deformation velocity: {deform_velocity}")
             if i % 2 == 0:  # every few steps, adjust the force
                 if deform_velocity > 1.1*target_vel:
-                    print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} exceeded target {target_vel}. Reducing force.")
+                    # print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} exceeded target {target_vel}. Reducing force.")
                     current_force -= 0.25
+                    action = "Reducing force"
                 elif deform_velocity < 0.9*target_vel:
-                    print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} is below target {target_vel}. Increasing force.")
+                    # print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} is below target {target_vel}. Increasing force.")
                     current_force += 0.25
+                    action = "Increasing force" 
                 else:
-                    print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} is within target {target_vel}. Constant force.")
+                    # print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} is within target {target_vel}. Constant force.")
+                    action = "None"
                     pass
+            # record current grip force
+            print(
+                f"At step {int(deform_csv.iloc[-1, 0]):>4}. "
+                f"Force: {current_force:>6.2f} | "
+                f"Deformation velocity: {deform_velocity:>14.8f} | "
+                f"Target velocity: {target_vel:>14.8f} | "
+                f"Deformation: {current_deformation:>7.5f} | "
+                f"Adjustment: {action}"
+            )
+            grip_force_df.loc[len(grip_force_df)] = [deform_csv.iloc[-1, 0], -current_force]
         
-        print("Dropping object...")
+        # 500-600 steps
+        print("######################### Dropping object... #########################")
         mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
                     end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force=-5, steps=100)
+        for i in range(500, 601):
+            grip_force_df.loc[len(grip_force_df)] = [i, 0]
         
-        print("Completing motion...")
+        # 600-700 steps
+        print("######################### Completing motion... #########################")
         for _ in range(100):
             make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
-
-        # 300-500 steps
-        # print("Lifting object with PD control...")
-        # for i in range(200):
-        #     curr_z = upper_obj_bound[2] + 0.08 + (i * 0.00075)  # increment z position
-        #     mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-        #                 end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1)
-        #     current_deformation = deform_csv.iloc[-1, 1]  # get the last deformation value
-        #     deform_velocity = deform_csv.iloc[-1, 1] - deform_csv.iloc[-2,1]  # get the last two deformation values
-        #     print(f"At step {deform_csv.iloc[-1,0]}. Current force: {current_force} and deformation velocity: {deform_velocity}")
-        #     if deform_velocity > target_vel:
-        #         print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} exceeded target {target_vel}. Reducing force.")
-        #         current_force -= 0.2
-        #     else:
-        #         print(f"At step {deform_csv.iloc[-1,0]}. Velocity {deform_velocity} is below target {target_vel}. Increasing force.")
-        #         current_force += 0.2
-
-        # print("Dropping object...")
-        # mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-        #             end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force=-5, steps=100)
-
-        # print("Completing motion...")
-        # for _ in range(100):
-        #     make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
-        
-
-    elif set == 'Test linear aim':
-        # 0-50 steps
-        print("Moving to pre-grasp pose...")
-        mm.move_to_pose(
-        scene=scene,
-        cam=cam,
-        franka=franka,
-        gso_object=gso_object,
-        df=df,
-        deform_csv=deform_csv,
-        photo_path=photo_path,
-        photo_interval=photo_interval,
-        name=name,
-        qpos=qpos,
-        motors_dof=motors_dof,
-        fingers_dof=fingers_dof,
-        steps=25
-        )
-
-        # 50-100 steps
-        print("Descending to object...")
-        mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                        end_effector, x, y, z, motors_dof, fingers_dof, steps=50)
-        
-        # 100-200 steps
-        print("Test grasp low force...")
-        test_force_low = 1.5 # low force for testing
-        mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                    end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force =-test_force_low, steps=50)
-        mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                    end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force =-test_force_low, steps=50)
-        low_test_deformation = deform_csv.iloc[-100:, 1].max()  # get the last deformation value
-        print(f"Low test deformation: {low_test_deformation}")
-
-        # 200-300 steps
-        print("Test grasp higher force...")
-        test_force_high = 10.0 # high force for testing
-        mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                    end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force =-test_force_high, steps=50)
-        mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                    end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force =-test_force_high, steps=50)
-        high_test_deformation = deform_csv.iloc[-100:, 1].max()  # get the last deformation value
-        print(f"High test deformation: {high_test_deformation}")
-
-        soft_target_max = low_test_deformation * 1.5
-        medium_target_max = (low_test_deformation + high_test_deformation) / 2.0
-        hard_target_max = high_test_deformation * 0.9
-
-        if target_choice == 'soft':
-            target_deform = soft_target_max
-        elif target_choice == 'medium':
-            target_deform = medium_target_max
-        elif target_choice == 'hard':
-            target_deform = hard_target_max
-
-        current_force = 4.0 # initial force for grasping, will be adjusted during the process
-
-        # 300-500 steps
-        for i in range(200):
-            mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                    end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force =-current_force, steps=1)
-            current_deformation = deform_csv.iloc[-1, 1]  # get the last deformation value
-            print(f"At step {deform_csv.iloc[-1,0]}. Current force: {current_force}")
-            if current_deformation > target_deform:
-                print(f"At step {deform_csv.iloc[-1,0]}. Deformation {current_deformation} exceeded target {target_deform}. Reducing force.")
-                current_force -= 0.1
-            else:
-                print(f"At step {deform_csv.iloc[-1,0]}. Deformation {current_deformation} is below target {target_deform}. Increasing force.")
-                current_force += 0.1
-
-        # 500-700 steps
-        for i in range(200):
-            # 500-700 steps
-            print("Lifting object...")
-            curr_z = upper_obj_bound[2] + 0.08 + (i * 0.00075)  # increment z position
-            mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                        end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1)
-            print(f"At step {deform_csv.iloc[-1,0]}. Current force: {current_force}")
-            current_deformation = deform_csv.iloc[-1, 1]  # get the last deformation value
-            if current_deformation > target_deform:
-                print(f"At step {deform_csv.iloc[-1,0]}. Deformation {current_deformation} exceeded target {target_deform}. Reducing force.")
-                current_force -= 0.05
-            else:
-                print(f"At step {deform_csv.iloc[-1,0]}. Deformation {current_deformation} is below target {target_deform}. Increasing force.")
-                current_force += 0.05
-        
-        # 700-800 steps
-        # added drop_object function call
-        print("Dropping object...")
-        mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                    end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force=-5, steps=100)
-        
-
-        # 800-1000 steps: TOTAL = 1200 steps
-        # buffer time to complete motion
-        print("Completing motion...")
-        for _ in range(200):
-            make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
-        
+        for i in range(600, 701):
+            grip_force_df.loc[len(grip_force_df)] = [i, 0]
 
 
 
@@ -502,61 +438,12 @@ def main(frc_arg, obj_path, target_choice='soft'):
     print(f"saved -> {csv_path}")
     deform_csv.to_csv(deform_csv_path, index=False)
     print(f"saved -> {deform_csv_path}")
-    # --------------------------------------------------------
-
-    # # generate a graph of deformation over time
-    # plt.plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 1], marker='o')
-    # plt.xlabel('Time Step')
-    # plt.ylabel('Deformation Metric')
-    # plt.title('Deformation Over Time Steps')
-    # plt.grid(True)
-    # plt.ylim(0, 0.6)
-    # plt.title(f'force: {frc_arg}N and target choice: {target_choice}')
-
-    # plot_path = deform_csv_path.replace('.csv', '.png')  # same filename but with .png
-    # plt.savefig(plot_path)
-    # print(f"plot saved -> {plot_path}")
-
-    # plt.show()
-
-    # plot_path = csv_path.replace('.csv', '.png')  # same filename but with .png
-    # plt.savefig(plot_path)
-    # print(f"plot saved -> {plot_path}")
-
-
-    # force_columns = [
-    # 'left_fx', 'left_fy', 'left_fz',
-    # 'right_fx', 'right_fy', 'right_fz'
-    # ]
-
-    # # Plot each force component
-    # plt.figure(figsize=(12, 6))
-
-    # for col in force_columns:
-    #     plt.plot(df['step'], df[col], marker='o', label=col)
-
-    # #MIN MAX
-    # data_min = df[force_columns].min().min()
-    # data_max = df[force_columns].max().max()
-    # # Format the plot
-    # plt.xlabel('Time Step')
-    # plt.ylabel('Force (N)')
-    # plt.title('Force Components Over Time')
-    # plt.grid(True)
-    # plt.legend()
-    # plt.tight_layout()
-    # plt.ylim(data_min - 10, data_max + 10)  # Adjust based on your data range
-
-    # # Save the plot
-    # plot_path = csv_path.replace('.csv', '_forces.png')
-    # plt.savefig(plot_path)
-    # print(f"plot saved -> {plot_path}")
 
     # --- SUBPLOTS SETUP ---------------------------------------------------------
     fig, axs = plt.subplots(1, 2, figsize=(16, 6))  # 1 row, 2 columns
 
     # --- FIRST SUBPLOT: Deformation Over Time -----------------------------------
-    axs[0].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 1], marker='o', color='tab:blue')
+    axs[0].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 1], marker='o', color='tab:blue', linewidth=0.5)
     axs[0].set_xlabel('Time Step')
     axs[0].set_ylabel('Deformation Metric')
     axs[0].set_ylim(0, 0.6)
@@ -572,10 +459,16 @@ def main(frc_arg, obj_path, target_choice='soft'):
     for col in force_columns:
         axs[1].plot(df['step'], df[col], marker='o', label=col)
 
-    # Determine min and max for y-axis
-    data_min = df[force_columns].min().min()
-    data_max = df[force_columns].max().max()
-    axs[1].set_ylim(data_min - 5, data_max + 5)
+    axs[1].plot(grip_force_df['step'], grip_force_df['grip_force'], 
+            marker='o', linestyle='-', color='black', label='grip_force', linewidth=0.5)
+    
+    # Update y-axis range
+    # combined_min = min(df[force_columns].min().min(), grip_force_df['grip_force'].min())
+    # combined_max = max(df[force_columns].max().max(), grip_force_df['grip_force'].max())
+    # combined_min = df[force_columns].min().min()
+    # combined_max = df[force_columns].max().max()
+    # axs[1].set_ylim(combined_min - 5, combined_max + 5)
+    axs[1].set_ylim(-30, 25)
 
     axs[1].set_xlabel('Time Step')
     axs[1].set_ylabel('Force (N)')
@@ -600,18 +493,18 @@ if __name__ == "__main__":
 
     folder_path = "/Users/no.166/Documents/Azka's Workspace/Genesis/data/mujoco_scanned_objects/models/"
     all_files = os.listdir(folder_path)
-    selected_files = random.sample(all_files, 3)
+    selected_files = random.sample(all_files, 1)
     
     print("Available attributes in master_movement:", dir(mm))
     frc_values = [999]
     # [1,3,5,8,10,20,30,50,100]
     processes = []
     for obj in selected_files:
-        obj_path = os.path.join(folder_path, obj, "model.obj")
-        # obj_path = "/Users/no.166/Documents/Azka's Workspace/Genesis/data/mujoco_scanned_objects/models/3D_Dollhouse_Refrigerator/model.obj"
+        # obj_path = os.path.join(folder_path, obj, "model.obj")
+        obj_path = "/Users/no.166/Documents/Azka's Workspace/Genesis/data/mujoco_scanned_objects/models/Office_Depot_HP_96_Remanufactured_Ink_Cartridge_Black/model.obj"
         print(f"Processing object: {obj_path}")
         for frc_arg in frc_values:
-            for target_choice in ['soft', 'medium', 'hard']:
+            for target_choice in ['hard', 'medium', 'soft']:
                 print(f"Running with force: {frc_arg}N and target choice: {target_choice}")
                 p = Process(target=main, args=(frc_arg,obj_path, target_choice))
                 p.start()

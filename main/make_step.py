@@ -23,7 +23,7 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, de
     # 4. Calculate the max deformation for just this object
     max_deformation = object_deformation.max()
 
-    if max_deformation > 0.01:
+    if scene.t < 100 or scene.t > 900:
         print(f"Object deformed at step {scene.t}! Max value: {max_deformation:.4f}")
 
     # Record deformation values

@@ -107,7 +107,8 @@ def create_scene(obj_path):
     franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), material=gs.materials.Rigid(coup_friction=1.0))
     
     gso_object = scene.add_entity(
-        material=gs.materials.MPM.Elastic(E=1.5e6, nu=0.45, rho=1100.0, sampler="pbs", model="corotation"),
+        # material=gs.materials.MPM.Elastic(E=1.5e6, nu=0.45, rho=1100.0, sampler="pbs", model="corotation"),
+        material=gs.materials.MPM.Elastic(),
         morph=gs.morphs.Mesh(file=obj_path, scale=OBJECT_SCALE, pos=(0.45, 0.45, 0), euler=OBJECT_EULER)
     )
     
@@ -178,7 +179,7 @@ def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, grip
             current_force, action, deform_velocity = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
         
         current_deformation = deform_csv.iloc[-1, 1]
-        # print(f"Step: {int(deform_csv.iloc[-1, 0]):>4} | Frc: {current_force:>6.2f} | Vel: {deform_velocity:>10.8f} | Tgt Vel: {target_vel:>10.8f} | Deform: {current_deformation:>7.5f} | Adj: {action}")
+        print(f"Step: {int(deform_csv.iloc[-1, 0]):>4} | Frc: {current_force:>6.2f} | Vel: {deform_velocity:>10.8f} | Tgt Vel: {target_vel:>10.8f} | Deform: {current_deformation:>7.5f} | Adj: {action}")
         grip_force_df.loc[len(grip_force_df)] = [deform_csv.iloc[-1, 0], -current_force]
 
     # 300-500: Lift object
@@ -190,7 +191,7 @@ def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, grip
             current_force, action, deform_velocity = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
         current_deformation = deform_csv.iloc[-1, 1]
-        # print(f"Step: {int(deform_csv.iloc[-1, 0]):>4} | Frc: {current_force:>6.2f} | Vel: {deform_velocity:>10.8f} | Tgt Vel: {target_vel:>10.8f} | Deform: {current_deformation:>7.5f} | Adj: {action}")
+        print(f"Step: {int(deform_csv.iloc[-1, 0]):>4} | Frc: {current_force:>6.2f} | Vel: {deform_velocity:>10.8f} | Tgt Vel: {target_vel:>10.8f} | Deform: {current_deformation:>7.5f} | Adj: {action}")
         grip_force_df.loc[len(grip_force_df)] = [deform_csv.iloc[-1, 0], -current_force]
         
     # 500-600: Drop object
@@ -200,6 +201,91 @@ def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, grip
         grip_force_df.loc[len(grip_force_df)] = [i, 0]
     
     # 600-700: Complete motion
+    print("######################### Completing motion... #########################")
+    for _ in range(100):
+        make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name)
+    for i in range(600, 701):
+        grip_force_df.loc[len(grip_force_df)] = [i, 0]
+
+    cam.stop_recording(save_to_filename=paths['video'], fps=1000)
+    print(f"Saved video -> {paths['video']}")
+
+def run_rotation(scene, cam, franka, gso_object, df, deform_csv, grip_force_df, paths, target_choice):
+    """Runs the entire rotation motion sequence."""
+    # This function contains the main robot motion logic.
+    name = os.path.basename(os.path.dirname(paths['csv']))
+    
+    # Setup robot DOFs
+    motors_dof = np.arange(7)
+    fingers_dof = np.arange(7, 9)
+    franka.set_dofs_kp(np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]))
+    franka.set_dofs_kv(np.array([450, 450, 350, 350, 200, 200, 200, 10, 10]))
+    franka.set_dofs_force_range(np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]), np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]))
+    end_effector = franka.get_link("hand")
+    
+    # Determine object height and pre-grasp pose
+    particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()
+    upper_obj_bound = np.max(particle_positions_np[0], axis=0)
+    x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
+    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z]), quat=np.array([0, 1, 0, 0]))
+    qpos[-2:] = 0.04
+    
+    # Velocity limits
+    vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0011}
+    target_vel = vel_limits.get(target_choice, 0.0002) # Default to soft
+
+    # Start motion sequence
+    cam.start_recording()
+    
+    # 0-50: Move to pre-grasp
+    print("Moving to pre-grasp pose...")
+    mm.move_to_pose(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=50)
+
+    # 50-100: Descend
+    print("######################### Descending to object... #########################")
+    mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=50)
+    
+    current_force = 3.0
+    for i in range(1, 101):
+        grip_force_df.loc[len(grip_force_df)] = [i, 0]
+
+    # 100-300: Grasp object
+    print("######################### Grasping object with PD control... #########################")
+    for i in range(200):
+        mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1)
+        if i % 2 == 0:
+            current_force, action, deform_velocity = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
+        
+        current_deformation = deform_csv.iloc[-1, 1]
+        print(f"Step: {int(deform_csv.iloc[-1, 0]):>4} | Frc: {current_force:>6.2f} | Vel: {deform_velocity: >10.8f} | Tgt Vel: {target_vel: >10.8f} | Deform: {current_deformation:>7.5f} | Adj: {action}")
+        grip_force_df.loc[len(grip_force_df)] = [deform_csv.iloc[-1, 0], -current_force]
+
+    # 300-500: Lift object
+    print("######################### Lifting object with PD control... #########################")
+    for i in range(200):
+        curr_z = z + (i * 0.00075)
+        mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1)
+        if i % 2 == 0:
+            current_force, action, deform_velocity = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
+
+        current_deformation = deform_csv.iloc[-1, 1]
+        print(f"Step: {int(deform_csv.iloc[-1, 0]):>4} | Frc: {current_force:>6.2f} | Vel: {deform_velocity: >10.8f} | Tgt Vel: {target_vel: >10.8f} | Deform: {current_deformation:>7.5f} | Adj: {action}")
+        grip_force_df.loc[len(grip_force_df)] = [deform_csv.iloc[-1, 0], -current_force]
+    
+    # 500-2000: Rotate robot by angle
+    print("######################### Rotating robot by angle... #########################")
+    ANGLE_DEGREES = 90  # Example angle for rotation
+    mm.rotate_robot_by_angle(scene, cam, df, paths['photo'], PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv, ANGLE_DEGREES, z_obj=z, gripper_force=-12.0, steps=1000)
+    # mm.rotate_end_effector_z(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name, end_effector, x, y, z, motors_dof, fingers_dof, ANGLE_DEGREES, steps=500, gripper_force=-5.0)
+
+
+    # 2000-2100: Drop object
+    print("######################### Dropping object... #########################")
+    mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force=-5, steps=100)
+    for i in range(500, 601):
+        grip_force_df.loc[len(grip_force_df)] = [i, 0]
+    
+    # 2100-2200: Complete motion
     print("######################### Completing motion... #########################")
     for _ in range(100):
         make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name)
@@ -238,7 +324,8 @@ def generate_plots(df, deform_csv, grip_force_df, paths, target_choice):
     plt.tight_layout()
     plt.savefig(paths['plot'], dpi=300, bbox_inches='tight')
     print(f"Saved plot -> {paths['plot']}")
-    plt.close(fig) # Close the figure to free memory
+    plt.show()  # Show the plot for immediate feedback
+    # plt.close(fig) # Close the figure to free memory
 
 def main(frc_arg, obj_path, target_choice='soft'):
     """
@@ -259,7 +346,10 @@ def main(frc_arg, obj_path, target_choice='soft'):
     scene, cam, franka, gso_object = create_scene(obj_path)
 
     # Run the primary motion sequence
-    run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, grip_force_df, paths, target_choice)
+    # run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, grip_force_df, paths, target_choice)
+
+    # Run secondary motion sequence with rotation
+    run_rotation(scene, cam, franka, gso_object, df, deform_csv, grip_force_df, paths, target_choice)
 
     # Save data and generate plots
     df.to_csv(paths['csv'], index=False)
@@ -273,8 +363,8 @@ def main(frc_arg, obj_path, target_choice='soft'):
 if __name__ == "__main__":
     folder_path = os.path.join(BASE_PATH, "data", "mujoco_scanned_objects", "models")
     all_files = os.listdir(folder_path)
-    # selected_files = ['Diet_Pepsi_Soda_Cola12_Pack_12_oz_Cans']
-    selected_files = random.sample(all_files, 1)
+    selected_files = ['3D_Dollhouse_Refrigerator']
+    # selected_files = random.sample(all_files, 1)
     
     # The 'force' argument seems unused in the PD control logic, so it's set to a placeholder.
     # If it were used, it would be passed to main().
@@ -285,7 +375,7 @@ if __name__ == "__main__":
         obj_path = os.path.join(folder_path, obj_name, "model.obj")
         print(f"Processing object: {obj_path}")
         for frc_arg in frc_values:
-            for target_choice in ['soft','medium','hard']:
+            for target_choice in ['hard']:
                 print(f"--- Starting process for {obj_name} with target: {target_choice} ---")
                 p = Process(target=main, args=(frc_arg, obj_path, target_choice))
                 p.start()

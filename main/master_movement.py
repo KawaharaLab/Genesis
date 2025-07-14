@@ -1,5 +1,5 @@
 from make_step import make_step # importing make_step from main file including all relevant functions
-
+import math
 import numpy as np
 
 
@@ -56,10 +56,11 @@ def grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, pho
             franka.control_dofs_position(qpos[:-2], motors_dof)
             # grip_force = -0.025 * i
             grip_frc = grip_force
-            print(f"grip_frc = {grip_frc}")
+            # print(f"grip_frc = {grip_frc}")
         else:
             # open the gripper
             grip_frc = -grip_force/steps*i
+            # print(f"grip_frc = {grip_frc}")
         franka.control_dofs_force(np.array([grip_frc, grip_frc]), fingers_dof)
         make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
 
@@ -79,12 +80,9 @@ def lift_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, phot
         make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
     
 
-import math
-import numpy as np
-
-def rotate_robot_by_angle(scene, cam, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                          franka, motors_dof, fingers_dof, end_effector,
-                          pos, angle_degrees, z_offset=0.08, gripper_force=-5.0, steps=100):
+def rotate_robot_by_angle(scene, cam, df, photo_path, photo_interval, name,
+                          franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv,
+                           angle_degrees, z_obj, gripper_force=-5.0, steps=100):
     """
     Rotates the Franka robot around the Z axis by a given angle (in degrees) and interpolates joint positions.
 
@@ -106,45 +104,96 @@ def rotate_robot_by_angle(scene, cam, gso_object, df, deform_csv, photo_path, ph
         steps: Number of interpolation steps
     """
     #x, y = pos
-    z = z_offset
-    import math
-    print(angle_degrees)
-    theta = math.radians(angle_degrees + 45)  # convert degrees to radians if necessary
-    r = 1  # or any other length
-    print(theta)
-    x = r * math.cos(theta)
-    y = r * math.sin(theta)
-    print(f"x = {x}, y = {y}")
+    z = z_obj + 0.15 # height gained in lift = 0.15
+    # print(str(angle_degrees) + " or " + str(angle_degrees))
+    theta = math.radians(angle_degrees+45)  # convert degrees to radians if necessary
+    r = 0.6369  # or any other length
+    #print(theta)
+    x = (r * math.cos(theta))
+    y = (r * math.sin(theta))
+    #print(f"x = {x}, y = {y}")
 
-    quat_z = np.array([0, 1, 0, 0], dtype=np.float32)
+    quat = np.array([0, 1, 0, 0])
 
-    # Compute IK target joint config
-    '''q_target = franka.inverse_kinematics(
+    #print("ZVAL"+str(z))
+    q_start = franka.get_qpos()
+    q_target = franka.inverse_kinematics(
+          link=end_effector,
+          pos=np.array([x, y, z]),
+          quat=quat
+    )
+    for i in range(1000):
+        alpha = (i / 900) * 0.8 # interpolation factor from 0 to 1
+        q_interp = (1 - alpha) * q_start + alpha * q_target  # linear interpolation
+        #print(f"(1 - {alpha}) * {q_start} + {alpha} * {q_target}")
+        franka.control_dofs_position(q_interp[:-2], motors_dof)
+        franka.control_dofs_force(np.array([gripper_force, gripper_force]), fingers_dof)
+        make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
+
+# def rotate_robot_by_angle_2(scene, cam, df, photo_path, photo_interval, name,
+#                            franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv,
+#                            angle_degrees, z_obj=0.08, gripper_force=-5.0, steps=100):
+#     """ Rotates the Franka robot around the Z axis by a given angle (in degrees) and interpolates joint positions."""
+    
+#     z = z_obj + 0.1 # 0.1 height gained in lift
+#     r = 0.6369  # or any other length
+#     theta = math.radians(angle_degrees + 45)  # convert degrees to radians
+#     x = (r * math.cos(theta))
+#     y = (r * math.sin(theta))
+
+#     quat = np.array([0, 1, 0, 0])
+
+#     q_target = franka.inverse_kinematics(
+#         link=end_effector,
+#         pos=np.array([x, y, z]),
+#         quat=quat
+#     )
+#     for i in range(steps):
+#         franka.control_dofs_position(q_target[:-2], motors_dof) 
+#         franka.control_dofs_force(np.array([gripper_force, gripper_force]), fingers_dof)
+#         make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
+
+
+
+def rotate_end_effector_z(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name,
+                        end_effector, x, y, z, motors_dof, fingers_dof,
+                        angle_degrees, steps=100, gripper_force=-5.0):
+    """
+    Rotates the end effector in place by updating only the orientation (quaternion)
+    around the Z-axis, keeping position (x, y, z) constant.
+
+    Parameters:
+        scene: Genesis scene object
+        cam: Genesis camera object
+        franka: Franka robot instance
+        df: DataFrame to record force/torque and DOF states
+        photo_path: Path to store images
+        photo_interval: Interval of frames to record
+        name: Name of the object for naming saved files
+        end_effector: The end-effector link
+        x, y, z: Fixed position to maintain
+        motors_dof: indices of arm DOFs
+        fingers_dof: indices of gripper DOFs
+        angle_degrees: Total angle to rotate around Z-axis (in degrees)
+        steps: Number of interpolation steps
+        gripper_force: Gripper holding force applied during rotation
+    """
+
+    q_start = franka.get_qpos()  # current full qpos includes gripper
+    hand = franka.get_link("hand")
+    d,a,b,c = hand.get_quat()
+    theta =  (angle_degrees*math.pi*2)/360#math.radians(angle_degrees)
+    quat = np.array([math.cos(theta/2.0), a * math.sin(theta/2.0), b * math.sin(theta/2.0), c * math.sin(theta/2.0)])
+
+    q_target = franka.inverse_kinematics(
         link=end_effector,
-        pos=np.array([x/2.0, y/2.0, z+0.1]),
-        quat=quat_z
-    )'''
-
-    print(f"HERE x = {x/2.0}, y = {y/2.0}")
-
-    #q_target[-2:] = 0.04  # gripper opening preserved, but we’ll use force
-    '''franka.set_dofs_kp(
-        np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]),
+        pos=np.array([x, y, z+0.15]),
+        quat=quat
     )
-    franka.set_dofs_kv(
-        np.array([450, 450, 350, 350, 200, 200, 200, 10, 10]),
-    )
-    franka.set_dofs_force_range(
-        np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]),
-        np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]),
-    )'''
-    # Interpolate joint motion
-    for i in range(600):
-      q_target = franka.inverse_kinematics(
-            link=end_effector,
-            pos=np.array([x, y, z+0.1]),
-            quat=quat_z
-      )
-      franka.control_dofs_position(q_target[:-2], motors_dof)
-      franka.control_dofs_force(np.array([gripper_force, gripper_force]), fingers_dof)
-      make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
+    for i in range(700):
+        alpha = (i / 1000) * 0.5
+        q_interp = (1 - alpha) * q_start + alpha * q_target  # linear interpolation
+
+        franka.control_dofs_position(q_interp[:-2], motors_dof)
+        franka.control_dofs_force(np.array([gripper_force, gripper_force]), fingers_dof)
+        make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name)
