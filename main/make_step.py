@@ -1,7 +1,7 @@
 import imageio.v3 as iio
 """https://pypi.org/project/imageio/"""
 
-def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name):
+def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name, gripper_force=0.0):
     """フランカを目標位置に移動させるステップ関数"""
     scene.step()
     t = int(scene.t) - 1
@@ -23,17 +23,18 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, de
     # 4. Calculate the max deformation for just this object
     max_deformation = object_deformation.max()
 
-    if scene.t < 100 or scene.t > 900:
-        print(f"Object deformed at step {scene.t}! Max value: {max_deformation:.4f}")
+    # if scene.t < 100 or scene.t > 900:
+    #     print(f"Object deformed at step {scene.t}! Max value: {max_deformation:.4f}")
 
     # Record deformation values
     deform_csv.loc[len(deform_csv)] = [
         scene.t,
-        max_deformation
+        max_deformation,
+        gripper_force 
     ]
     
     # generate clean video from one of the camera angles
-    camera_angle = 1
+    camera_angle = 2
 
     if camera_angle == 0:
         cam.set_pose(pos = (2.1, -1.2, 0.1), lookat = (0.45, 0.45, 0.5))
@@ -61,6 +62,22 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, de
         if photo_path is not None:
             filepath = photo_path + f"{name}{t:05d}Camera{camera_angle}.png"
             iio.imwrite(filepath, rgb)
+    
+    if scene.t < 2:
+        deform_velocity = 0.0
+    else:
+        deform_velocity = deform_csv.iloc[-1, 1] - deform_csv.iloc[-2, 1]
+
+    print(f"Step: {scene.t:>4.0f} | Force: {gripper_force:>5.2f} | Velocity: {deform_velocity:>11.8f} | Deformation: {max_deformation:>7.5f}")
+
+    if abs(df.iloc[-1,8]) > 100:
+        return False
+    else:
+        return True
+    
+    
+
+
         
 
         
