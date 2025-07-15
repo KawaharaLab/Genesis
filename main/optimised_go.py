@@ -18,11 +18,19 @@ PHOTO_INTERVAL = 250
 MATERIAL_TYPE = "Elastic"
 # OBJECT_SCALE = 0.62
 
+COLOR = random.choice([
+             (255, 0, 0),
+             (0, 255, 0),
+             (0, 0, 255),
+             (255, 255, 0),
+             (0, 255, 255),
+            (255, 0, 255),
+        ])
 def setup_paths(name, frc_arg, target_choice):
     """Creates all necessary directories and returns a dictionary of paths."""
     # This function consolidates all path and directory creation logic.
     frc_str = str(frc_arg) # Use a string representation for filenames
-    
+
     # Define base paths for data types
     photo_base = os.path.join(BASE_PATH, 'main', 'data', 'photos', name, MATERIAL_TYPE, frc_str)
     csv_base = os.path.join(BASE_PATH, 'main', 'data', 'csv', name)
@@ -82,14 +90,14 @@ def set_grasp(obj_path):
         else:
             scale = 0.080/bbox[1]
             euler = (0, 0, 0)   # Pick up along the y-axis
-    
+
     return scale, euler
-    
+
 
 def create_scene(obj_path):
     """Initializes and returns the simulation scene, camera, robot, and object."""
     # This function encapsulates the entire Genesis simulation setup.
-    gs.init(backend=gs.metal)
+    gs.init(backend=gs.cpu)
     OBJECT_SCALE, OBJECT_EULER = set_grasp(obj_path)
     # OBJECT_SCALE = 1.0  # Default scale for the object
     # OBJECT_EULER = (0, 0, 90)  # Default orientation for the object
@@ -101,18 +109,21 @@ def create_scene(obj_path):
         vis_options=gs.options.VisOptions(visualize_mpm_boundary=True),
         mpm_options=gs.options.MPMOptions(lower_bound=(0.0, -0.1, -0.05), upper_bound=(0.75, 1.0, 1.0), grid_density=128)
     )
-    
+
     cam = scene.add_camera(res=(1280, 720), pos=(-1.5, 1.5, 0.25), lookat=(0.45, 0.45, 0.4), fov=30)
-    
+
     scene.add_entity(gs.morphs.Plane(), material=gs.materials.Rigid())
-    
+
     franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), material=gs.materials.Rigid(coup_friction=3.0))
     gso_object = scene.add_entity(
         material=gs.materials.MPM.Elastic(E=1.5e6, nu=0.45, rho=1100.0, sampler="pbs", model="corotation"),
         # material=gs.materials.MPM.Elastic(),
-        morph=gs.morphs.Mesh(file=obj_path, scale=OBJECT_SCALE, pos=(0.45, 0.45, 0), euler=OBJECT_EULER)
+        morph=gs.morphs.Mesh(file=obj_path, scale=OBJECT_SCALE, pos=(0.45, 0.45, 0), euler=OBJECT_EULER),
+
+        surface = gs.surfaces.Default(color = COLOR)
+
     )
-    
+
     scene.build()
     return scene, cam, franka, gso_object
 
@@ -122,19 +133,19 @@ def adjust_force_with_pd_control(current_force, deform_csv, target_vel):
     This function eliminates the duplicated logic from the original script.
     """
     deform_velocity = deform_csv.iloc[-1, 1] - deform_csv.iloc[-2, 1]
-    
+
     if deform_velocity > 1.1 * target_vel:
         current_force -= 0.25
     elif deform_velocity < 0.9 * target_vel:
         current_force += 0.25
-        
+
     return current_force
 
 def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, paths, target_choice):
     """Runs the entire PD control motion sequence."""
     # This function contains the main robot motion logic.
     name = os.path.basename(os.path.dirname(paths['csv']))
-    
+
     # Setup robot DOFs
     motors_dof = np.arange(7)
     fingers_dof = np.arange(7, 9)
@@ -142,14 +153,14 @@ def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, path
     franka.set_dofs_kv(np.array([450, 450, 350, 350, 200, 200, 200, 10, 10]))
     franka.set_dofs_force_range(np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]), np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]))
     end_effector = franka.get_link("hand")
-    
+
     # Determine object height and pre-grasp pose
     particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()
     upper_obj_bound = np.max(particle_positions_np[0], axis=0)
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.06
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z]), quat=np.array([0, 1, 0, 0]))
     qpos[-2:] = 0.04
-    
+
     # Velocity limits
     vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0011}
     target_vel = vel_limits.get(target_choice, 0.0002) # Default to soft
@@ -160,7 +171,7 @@ def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, path
 
     # Start motion sequence
     cam.start_recording()
-    
+
     # 0-50: Move to pre-grasp
     print("Moving to pre-grasp pose...")
     mm.move_to_pose(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=50)
@@ -168,7 +179,7 @@ def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, path
     # 50-100: Descend
     print("######################### Descending to object... #########################")
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=50)
-    
+
     current_force = 3.0
 
     # 100-300: Grasp object
@@ -182,7 +193,7 @@ def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, path
             break
         if i % 2 == 0:
             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
-        
+
 
     # 300-500: Lift object
     print("######################### Lifting object with PD control... #########################")
@@ -196,12 +207,12 @@ def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, path
         if i % 2 == 0:
             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
-        
+
     # 500-600: Drop object
     print("######################### Dropping object... #########################")
     mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force=-current_force, steps=100)
 
-    
+
     # 600-700: Complete motion
     print("######################### Completing motion... #########################")
     for _ in range(100):
@@ -215,7 +226,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
     """Runs the entire rotation motion sequence."""
     # This function contains the main robot motion logic.
     name = os.path.basename(os.path.dirname(paths['csv']))
-    
+
     # Setup robot DOFs
     motors_dof = np.arange(7)
     fingers_dof = np.arange(7, 9)
@@ -223,21 +234,21 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
     franka.set_dofs_kv(np.array([450, 450, 350, 350, 200, 200, 200, 10, 10]))
     franka.set_dofs_force_range(np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]), np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]))
     end_effector = franka.get_link("hand")
-    
+
     # Determine object height and pre-grasp pose
     particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()
     upper_obj_bound = np.max(particle_positions_np[0], axis=0)
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.05
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z]), quat=np.array([0, 1, 0, 0]))
     qpos[-2:] = 0.04
-    
+
     # Velocity limits
     vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0012}
     target_vel = vel_limits.get(target_choice, 0.0002) # Default to soft
 
     # Start motion sequence
     cam.start_recording()
-    
+
     # 0-20: Move to pre-grasp
     print("Moving to pre-grasp pose...")
     mm.move_to_pose(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
@@ -245,7 +256,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
     # 20-50: Descend
     print("######################### Descending to object... #########################")
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
-    
+
     current_force = 3.0
 
     # 50-400: Grasp object
@@ -258,7 +269,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
             break
         if i % 2 == 0:
             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
-        
+
 
     # 400-600: Lift object
     print("######################### Lifting object with PD control... #########################")
@@ -272,18 +283,74 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
         if i % 2 == 0:
             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
-    
+
     # 600-800: Rotate robot by angle
     print("######################### Rotating robot by angle... #########################")
     # ANGLE_DEGREES = 120  # Example angle for rotation
-    mm.rotate_robot_by_angle_quat(scene, cam, df, paths['photo'], PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv, -45, z_obj=z, gripper_force=-12, steps=800, n=1)
-    mm.rotate_robot_by_angle_quat(scene, cam, df, paths['photo'], PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv, 60, z_obj=z, gripper_force=-12, steps=200, n=7)
+    #mm.rotate_robot_by_angle_quat(scene, cam, df, paths['photo'], PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv, -45, z_obj=z, gripper_force=-12, steps=800, n=1)
+    #mm.rotate_robot_by_angle_quat(scene, cam, df, paths['photo'], PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv, 60, z_obj=z, gripper_force=-12, steps=200, n=7)
 
+    actions = [
+        {
+            "name": "Rotating Robot with Quaternion",
+            "func": mm.rotate_robot_by_angle_quat,
+            "args": {
+                "scene": scene,
+                "cam": cam,
+                "df": df,
+                "photo_path": paths['photo'],
+                "photo_interval": PHOTO_INTERVAL,
+                "name": name,
+                "franka": franka,
+                "motors_dof": motors_dof,
+                "fingers_dof": fingers_dof,
+                "end_effector": end_effector,
+                "gso_object": gso_object,
+                "deform_csv": deform_csv,
+                "angle_degrees": random.choice([-90, -60, -45, 45, 60, 90]),
+                "z_obj": z,  # renamed from z_offset to match new param
+                "gripper_force": -12,
+                "steps": 500,
+                "n": 1
+            }
+        },
+        {
+            "name": "Rotating Robot with Quaternion",
+            "func": mm.rotate_robot_by_angle_quat,
+            "args": {
+                "scene": scene,
+                "cam": cam,
+                "df": df,
+                "photo_path": paths['photo'],
+                "photo_interval": PHOTO_INTERVAL,
+                "name": name,
+                "franka": franka,
+                "motors_dof": motors_dof,
+                "fingers_dof": fingers_dof,
+                "end_effector": end_effector,
+                "gso_object": gso_object,
+                "deform_csv": deform_csv,
+                "angle_degrees": random.choice([-90, -60, -45, 45, 60, 90]),
+                "z_obj": z,  # renamed from z_offset to match new param
+                "gripper_force": -12,
+                "steps": 500,
+                "n": 7
+            }
+        }
+    ]
+
+    random.shuffle(actions)  # Randomize the order
+
+    for action in actions:
+        print(f"{action['name']} with angle {action['args']['angle_degrees']} degrees...")
+        action["func"](**action["args"])
+        for _ in range(100):
+            make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name)
 
     # 2000-2100: Drop object
     # print("######################### Dropping object... #########################")
     # # mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force=-5, steps=100)
-    
+
     # 770-970: Complete motion
     print("######################### Completing motion... #########################")
     for _ in range(150):
@@ -297,7 +364,7 @@ def generate_plots(df, deform_csv, paths, target_choice):
     # This function encapsulates all matplotlib plotting logic.
     name = os.path.basename(os.path.dirname(paths['csv']))
     fig, axs = plt.subplots(1, 2, figsize=(16, 6))
-    
+
     # Deformation plot
     axs[0].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 1], marker='.', color='tab:blue', linewidth=0.5)
     axs[0].set_xlabel('Time Step')
@@ -352,26 +419,26 @@ def main(frc_arg, obj_path, target_choice='soft'):
     print(f"Saved data -> {paths['csv']}")
     deform_csv.to_csv(paths['deform_csv'], index=False)
     print(f"Saved deform data -> {paths['deform_csv']}")
-    
+
     generate_plots(df, deform_csv, paths, target_choice)
 
 
 if __name__ == "__main__":
     folder_path = os.path.join(BASE_PATH, "data", "mujoco_scanned_objects", "models")
     all_files = os.listdir(folder_path)
-    # selected_files = ['Hasbro_Cranium_Performance_and_Acting_Game']
-    selected_files = random.sample(all_files, 3)
-    
+    selected_files = ['Crayola_Crayons_24_count']
+    # selected_files = random.sample(all_files, 3)
+
     # The 'force' argument seems unused in the PD control logic, so it's set to a placeholder.
     # If it were used, it would be passed to main().
-    frc_values = [999] 
+    frc_values = [999]
     processes = []
-    
+
     for obj_name in selected_files:
         obj_path = os.path.join(folder_path, obj_name, "model.obj")
         print(f"Processing object: {obj_path}")
         for frc_arg in frc_values:
-            for target_choice in ['hard']:
+            for target_choice in ['soft']:
                 print(f"--- Starting process for {obj_name} with target: {target_choice} ---")
                 p = Process(target=main, args=(frc_arg, obj_path, target_choice))
                 p.start()
@@ -380,6 +447,6 @@ if __name__ == "__main__":
     # Wait for all processes to complete
     for p in processes:
         p.join()
-        
+
     print("All simulations completed.")
     print("The objects processed are: ", selected_files)
