@@ -1,5 +1,6 @@
 import imageio.v3 as iio
 """https://pypi.org/project/imageio/"""
+import os
 
 def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, deform_csv, name, gripper_force=0.0):
     """フランカを目標位置に移動させるステップ関数"""
@@ -52,36 +53,36 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, de
         links_force_torque[9], links_force_torque[10], links_force_torque[11],
         dofs[0], dofs[1], dofs[2], dofs[3], dofs[4], dofs[5], dofs[6], dofs[7], dofs[8]
     ]
-    rgb, _, _, _  = cam.render(rgb=True)
+    
     if t % photo_interval == 0:
         for camera_angle in range(3):
-            
             if camera_angle == 0:
                 cam.set_pose(pos = (2.1, -1.2, 0.1), lookat = (0.45, 0.45, 0.5))
             elif camera_angle == 1:
                 cam.set_pose(pos = (-1.5, 1.5, 0.25), lookat = (0.45, 0.45, 0.4))
             elif camera_angle == 2:
                 cam.set_pose(pos = (2, 2, 0.1), lookat = (0, 0, 0.1))
+            rgb, _, _, _  = cam.render(rgb=True)
             if photo_path is not None:
-                filepath = photo_path + f"{name}{t:05d}Camera{camera_angle}.png"
+                # filepath = os.path.join(photo_path, f"{name}_{t:04d}_Camera{camera_angle}.png")
+                filepath = photo_path + "/" +f"{name}_{t:05d}_Camera{camera_angle}.png"
                 iio.imwrite(filepath, rgb)
             
     
-    if scene.t < 2:
-        deform_velocity = 0.0
-        action = 'Constant'
-    else:
-        if deform_csv.iloc[-1,2] < deform_csv.iloc[-2,2]:
-            action = 'Decrease'
-        elif deform_csv.iloc[-1,2] > deform_csv.iloc[-2,2]:
-            action = 'Increase'
-        else:
-            action = 'Constant'
-        deform_velocity = deform_csv.iloc[-1, 1] - deform_csv.iloc[-2, 1]
+    # if scene.t < 2:
+    #     deform_velocity = 0.0
+    #     action = 'Constant'
+    # else:
+    #     if deform_csv.iloc[-1,2] < deform_csv.iloc[-2,2]:
+    #         action = 'Decrease'
+    #     elif deform_csv.iloc[-1,2] > deform_csv.iloc[-2,2]:
+    #         action = 'Increase'
+    #     else:
+    #         action = 'Constant'
+    #     deform_velocity = deform_csv.iloc[-1, 1] - deform_csv.iloc[-2, 1]
 
-    
-
-    print(f"Step: {scene.t:>4.0f} | Force: {gripper_force:>5.2f} | Velocity: {deform_velocity:>11.8f} | Deformation: {max_deformation:>7.5f} | Action: {action:>10s} |")
+    print(f"Step: {t:05d} for object: {name} at {os.path.basename(photo_path)}")
+    # print(f"Step: {scene.t:>4.0f} | Force: {gripper_force:>5.2f} | Velocity: {deform_velocity:>11.8f} | Deformation: {max_deformation:>7.5f} | Action: {action:>10s} |")
 
     if abs(df.iloc[-1,8]) > 100:
         return False

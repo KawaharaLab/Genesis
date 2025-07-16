@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from multiprocessing import Process
+import time
 
 import genesis as gs
 import master_movement as mm
@@ -12,7 +13,7 @@ from make_step import make_step
 
 # --- Configuration Section ---
 # Grouped constants for easier management.
-BASE_PATH = "/home/takuros/Japan/Genesis"
+BASE_PATH = "/Users/no.166/Documents/Azka\'s Workspace/Genesis"
 PHOTO_INTERVAL = 250
 
 MATERIAL_TYPE = "Elastic"
@@ -33,21 +34,21 @@ def setup_paths(name, target_choice):
     # Define base paths for data types
     base_data_path = BASE_PATH + '/main/data/picked_up'
     photo_base = os.path.join(base_data_path, 'photos', name, MATERIAL_TYPE, target_choice)
-    csv_base = os.path.join(base_data_path, 'csv', name)
-    video_base = os.path.join(base_data_path, 'videos', name)
+    csv_base = os.path.join(base_data_path, 'csv', name, MATERIAL_TYPE, target_choice)
+    # video_base = os.path.join(base_data_path, 'videos', name)
 
     # Create directories
     os.makedirs(photo_base, exist_ok=True)
     os.makedirs(csv_base, exist_ok=True)
-    os.makedirs(video_base, exist_ok=True)
+    # os.makedirs(video_base, exist_ok=True)
 
     # Return a dictionary of all generated paths
     return {
         "photo": photo_base,
         "csv": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.csv'),
         "deform_csv": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_deform_{target_choice}.csv'),
-        #"video": os.path.join(video_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.mp4'),
-        "plot": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.png')
+        "plot": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.png'),
+        "name": name,
     }
 
 def get_obj_bounding_box(obj_path):
@@ -74,8 +75,6 @@ def set_grasp(obj_path):
     # We use slightly more conservative values for stability.
     GRIPPER_MIN_WIDTH = 0.002  # 2 mm
     GRIPPER_MAX_WIDTH = 0.075  # 75 mm (Slightly less than the 80mm absolute max)
-    GRIPPER_MAX_DEPTH = 0.050  # 50 mm (Finger length)
-    GRIPPER_MIN_HEIGHT = 0.005 # 5 mm (Minimum contact surface)
 
     bbox = get_obj_bounding_box(obj_path)
     scale = 1.0  # Default scale for the object
@@ -141,91 +140,91 @@ def adjust_force_with_pd_control(current_force, deform_csv, target_vel):
 
     return current_force
 
-def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, paths, target_choice):
-    """Runs the entire PD control motion sequence."""
-    # This function contains the main robot motion logic.
-    name = os.path.basename(os.path.dirname(paths['csv']))
+# def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, paths, target_choice):
+#     """Runs the entire PD control motion sequence."""
+#     # This function contains the main robot motion logic.
+#     name = paths['name']
 
-    # Setup robot DOFs
-    motors_dof = np.arange(7)
-    fingers_dof = np.arange(7, 9)
-    franka.set_dofs_kp(np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]))
-    franka.set_dofs_kv(np.array([450, 450, 350, 350, 200, 200, 200, 10, 10]))
-    franka.set_dofs_force_range(np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]), np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]))
-    end_effector = franka.get_link("hand")
+#     # Setup robot DOFs
+#     motors_dof = np.arange(7)
+#     fingers_dof = np.arange(7, 9)
+#     franka.set_dofs_kp(np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]))
+#     franka.set_dofs_kv(np.array([450, 450, 350, 350, 200, 200, 200, 10, 10]))
+#     franka.set_dofs_force_range(np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]), np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]))
+#     end_effector = franka.get_link("hand")
 
-    # Determine object height and pre-grasp pose
-    particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()
-    upper_obj_bound = np.max(particle_positions_np[0], axis=0)
-    x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.06
-    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z]), quat=np.array([0, 1, 0, 0]))
-    qpos[-2:] = 0.04
+#     # Determine object height and pre-grasp pose
+#     particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()
+#     upper_obj_bound = np.max(particle_positions_np[0], axis=0)
+#     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.06
+#     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z]), quat=np.array([0, 1, 0, 0]))
+#     qpos[-2:] = 0.04
 
-    # Velocity limits
-    vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0011}
-    target_vel = vel_limits.get(target_choice, 0.0002) # Default to soft
-    print(f"Target velocity set to: {target_vel}")
+#     # Velocity limits
+#     vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0011}
+#     target_vel = vel_limits.get(target_choice, 0.0002) # Default to soft
+#     print(f"Target velocity set to: {target_vel}")
 
-    # franka.set_dofs_position(qpos[:-2], motors_dof)
-    # franka.set_dofs_position(qpos[-2:], fingers_dof)
+#     # franka.set_dofs_position(qpos[:-2], motors_dof)
+#     # franka.set_dofs_position(qpos[-2:], fingers_dof)
 
-    # Start motion sequence
-    cam.start_recording()
+#     # Start motion sequence
+#     # cam.start_recording()
 
-    # 0-50: Move to pre-grasp
-    print("Moving to pre-grasp pose...")
-    mm.move_to_pose(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=50)
+#     # 0-50: Move to pre-grasp
+#     print("Moving to pre-grasp pose...")
+#     mm.move_to_pose(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=50)
 
-    # 50-100: Descend
-    print("######################### Descending to object... #########################")
-    mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=50)
+#     # 50-100: Descend
+#     print("######################### Descending to object... #########################")
+#     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=50)
 
-    current_force = 3.0
+#     current_force = 3.0
 
-    # 100-300: Grasp object
-    print("######################### Grasping object with PD control... #########################")
-    for i in range(350):
-        if mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1) == False:
-            current_force = 0.0
-            qpos[-2:] = 0.04
-            franka.set_dofs_position(qpos[-2:], fingers_dof)
-            print('reset worked !')
-            break
-        if i % 2 == 0:
-            current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
-
-
-    # 300-500: Lift object
-    print("######################### Lifting object with PD control... #########################")
-    for i in range(200):
-        curr_z = z + (i * 0.00075)
-        if mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1) == False:
-            current_force = 0.0
-            qpos[-2:] = 0.04
-            franka.set_dofs_position(qpos[-2:], fingers_dof)
-            break
-        if i % 2 == 0:
-            current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
+#     # 100-300: Grasp object
+#     print("######################### Grasping object with PD control... #########################")
+#     for i in range(350):
+#         if mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1) == False:
+#             current_force = 0.0
+#             qpos[-2:] = 0.04
+#             franka.set_dofs_position(qpos[-2:], fingers_dof)
+#             print('reset worked !')
+#             break
+#         if i % 2 == 0:
+#             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
 
-    # 500-600: Drop object
-    print("######################### Dropping object... #########################")
-    mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force=-current_force, steps=100)
+#     # 300-500: Lift object
+#     print("######################### Lifting object with PD control... #########################")
+#     for i in range(200):
+#         curr_z = z + (i * 0.00075)
+#         if mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1) == False:
+#             current_force = 0.0
+#             qpos[-2:] = 0.04
+#             franka.set_dofs_position(qpos[-2:], fingers_dof)
+#             break
+#         if i % 2 == 0:
+#             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
 
-    # 600-700: Complete motion
-    print("######################### Completing motion... #########################")
-    for _ in range(100):
-        make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name, gripper_force=0.0)
+#     # 500-600: Drop object
+#     print("######################### Dropping object... #########################")
+#     mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force=-current_force, steps=100)
 
 
-    cam.stop_recording()
-    #print(f"Saved video -> {paths['video']}")
+#     # 600-700: Complete motion
+#     print("######################### Completing motion... #########################")
+#     for _ in range(100):
+#         make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name, gripper_force=0.0)
+
+
+#     # cam.stop_recording()
+#     #print(f"Saved video -> {paths['video']}")
 
 def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_choice):
     """Runs the entire rotation motion sequence."""
     # This function contains the main robot motion logic.
-    name = os.path.basename(os.path.dirname(paths['csv']))
+    name = paths['name']
 
     # Setup robot DOFs
     motors_dof = np.arange(7)
@@ -247,10 +246,10 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
     target_vel = vel_limits.get(target_choice, 0.0002) # Default to soft
 
     # Start motion sequence
-    cam.start_recording()
+    # cam.start_recording()
 
     # 0-20: Move to pre-grasp
-    print("Moving to pre-grasp pose...")
+    # print("Moving to pre-grasp pose...")
     mm.move_to_pose(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
 
     # 20-50: Descend
@@ -294,29 +293,30 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
         # Define source and destination paths
         not_picked_up_photo_path = f'{BASE_PATH}/main/data/not_picked_up/photos/{name}/{MATERIAL_TYPE}/'
         not_picked_up_csv_dir = f'{BASE_PATH}/main/data/not_picked_up/csv/{name}/{MATERIAL_TYPE}/'
-
-        # Create destination directories
-        os.makedirs(picked_up_photo_path, exist_ok=True)
-        os.makedirs(picked_up_csv_dir, exist_ok=True)
             
 
-        if os.path.exists(picked_up_photo_path):
-            if os.path.isdir(picked_up_photo_path):
-                shutil.rmtree(picked_up_photo_path)
+        if os.path.exists(not_picked_up_photo_path):
+            if os.path.isdir(not_picked_up_photo_path):
+                shutil.rmtree(not_picked_up_photo_path)
             else:
-                os.remove(picked_up_photo_path)
+                os.remove(not_picked_up_photo_path)
 
-       # Move the entire photo directory
-        shutil.move(paths['photo'], not_picked_up_photo_path)
+        # Create destination directories
+        os.makedirs(not_picked_up_photo_path, exist_ok=True)
+        os.makedirs(not_picked_up_csv_dir, exist_ok=True)
+
+        # Move photo directory (with safety check)
+        if os.path.exists(paths['photo']):
+            shutil.move(paths['photo'], not_picked_up_photo_path)
+        else:
+            print(f"Warning: source photo path {paths['photo']} does not exist.")
+
         exit()
 
 
 
     # 600-800: Rotate robot by angle
     print("######################### Rotating robot by angle... #########################")
-    # ANGLE_DEGREES = 120  # Example angle for rotation
-    #mm.rotate_robot_by_angle_quat(scene, cam, df, paths['photo'], PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv, -45, z_obj=z, gripper_force=-12, steps=800, n=1)
-    #mm.rotate_robot_by_angle_quat(scene, cam, df, paths['photo'], PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv, 60, z_obj=z, gripper_force=-12, steps=200, n=7)
 
     actions = []
     angle_choices = [-90, -60, -45, 45, 60, 90]
@@ -368,79 +368,20 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
         for _ in range(100):
             franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
             make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name, gripper_force=-current_force)
-    # actions = [
-    #     {
-    #         "name": "Rotating Robot with Quaternion",
-    #         "func": mm.rotate_robot_by_angle_quat,
-    #         "args": {
-    #             "scene": scene,
-    #             "cam": cam,
-    #             "df": df,
-    #             "photo_path": paths['photo'],
-    #             "photo_interval": PHOTO_INTERVAL,
-    #             "name": name,
-    #             "franka": franka,
-    #             "motors_dof": motors_dof,
-    #             "fingers_dof": fingers_dof,
-    #             "end_effector": end_effector,
-    #             "gso_object": gso_object,
-    #             "deform_csv": deform_csv,
-    #             "angle_degrees": random.choice([-90, -60, -45, 45, 60, 90]),
-    #             "z_obj": z,  # renamed from z_offset to match new param
-    #             "gripper_force": -current_force,
-    #             "steps": 500,
-    #             "n": 1
-    #         }
-    #     },
-    #     {
-    #         "name": "Rotating Robot with Quaternion",
-    #         "func": mm.rotate_robot_by_angle_quat,
-    #         "args": {
-    #             "scene": scene,
-    #             "cam": cam,
-    #             "df": df,
-    #             "photo_path": paths['photo'],
-    #             "photo_interval": PHOTO_INTERVAL,
-    #             "name": name,
-    #             "franka": franka,
-    #             "motors_dof": motors_dof,
-    #             "fingers_dof": fingers_dof,
-    #             "end_effector": end_effector,
-    #             "gso_object": gso_object,
-    #             "deform_csv": deform_csv,
-    #             "angle_degrees": random.choice([-90, -60, -45, 45, 60, 90]),
-    #             "z_obj": z,  # renamed from z_offset to match new param
-    #             "gripper_force": -current_force,
-    #             "steps": 500,
-    #             "n": 7
-    #         }
-    #     }
-    # ]
 
-    # random.shuffle(actions)  # Randomize the order
-
-    # for action in actions:
-    #     print(f"{action['name']} with angle {action['args']['angle_degrees']} degrees...")
-    #     action["func"](**action["args"])
-    #     for _ in range(100):
-    #         make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name)
-
-    # 2000-2100: Drop object
-    # print("######################### Dropping object... #########################")
-    # # mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=False, grip_force=-5, steps=100)
 
     # 770-970: Complete motion
     print("######################### Completing motion... #########################")
     for _ in range(150):
         make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name)
 
-    cam.stop_recording()
+    # cam.stop_recording()
     
 
 def generate_plots(df, deform_csv, paths, target_choice):
     """Generates and saves the plots for the simulation results."""
     # This function encapsulates all matplotlib plotting logic.
-    name = os.path.basename(os.path.dirname(paths['csv']))
+    name = paths['name']
     fig, axs = plt.subplots(1, 2, figsize=(16, 6))
 
     # Deformation plot
@@ -466,7 +407,7 @@ def generate_plots(df, deform_csv, paths, target_choice):
     plt.tight_layout()
     plt.savefig(paths['plot'], dpi=300, bbox_inches='tight')
     print(f"Saved plot -> {paths['plot']}")
-    plt.show()  # Show the plot for immediate feedback
+    # plt.show()  # Show the plot for immediate feedback
     # plt.close(fig) # Close the figure to free memory
 
 def main(obj_path, target_choice='soft'):
@@ -492,7 +433,11 @@ def main(obj_path, target_choice='soft'):
     # Run secondary motion sequence with rotation
     run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_choice)
 
-
+    # Save data and generate plots
+    df.to_csv(paths['csv'], index=False)
+    print(f"Saved data -> {paths['csv']}")
+    deform_csv.to_csv(paths['deform_csv'], index=False)
+    print(f"Saved deform data -> {paths['deform_csv']}")
 
 
 def get_incomplete_objects(base_path, names, material="Elastic", targets=['soft', 'medium', 'hard']):
@@ -518,37 +463,59 @@ def get_incomplete_objects(base_path, names, material="Elastic", targets=['soft'
     return incomplete
 
 
-
-
-
 if __name__ == "__main__":
     folder_path = os.path.join(BASE_PATH, "data", "mujoco_scanned_objects", "models")
     all_files = os.listdir(folder_path)
-
-    selected_files = get_incomplete_objects(BASE_PATH, all_files)
+    selected_files = random.sample(all_files, 1)
+    
+    # The 'force' argument seems unused in the PD control logic, so it's set to a placeholder.
+    # If it were used, it would be passed to main().
     processes = []
-
-    for task in selected_files:
-        obj_name, target_choice = task
+    
+    for obj_name in selected_files:
         obj_path = os.path.join(folder_path, obj_name, "model.obj")
         print(f"Processing object: {obj_path}")
+        for target_choice in ['hard', 'medium', 'soft']:
+            print(f"--- Starting process for {obj_name} with target: {target_choice} ---")
+            p = Process(target=main, args=(obj_path, target_choice))
+            p.start()
+            processes.append(p)
 
-        print(f"--- Starting process for {obj_name} with target: {target_choice} ---")
-
-        # Wait until a slot is free
-        while len(processes) >= 8:
-            # Remove finished processes from the list
-            processes = [p for p in processes if p.is_alive()]
-            time.sleep(0.1)  # Avoid CPU overuse
-
-        # Start a new process
-        p = Process(target=main, args=(obj_path, target_choice))
-        p.start()
-        processes.append(p)
-
-    # Wait for all remaining processes to complete
+    # Wait for all processes to complete
     for p in processes:
         p.join()
-
+        
     print("All simulations completed.")
-    print("The objects processed are:", selected_files)
+
+
+# if __name__ == "__main__":
+#     folder_path = os.path.join(BASE_PATH, "data", "mujoco_scanned_objects", "models")
+#     all_files = os.listdir(folder_path)
+
+#     selected_files = get_incomplete_objects(BASE_PATH, all_files)
+#     processes = []
+
+#     for task in selected_files:
+#         obj_name, target_choice = task
+#         obj_path = os.path.join(folder_path, obj_name, "model.obj")
+#         print(f"Processing object: {obj_path}")
+
+#         print(f"--- Starting process for {obj_name} with target: {target_choice} ---")
+
+#         # Wait until a slot is free
+#         while len(processes) >= 8:
+#             # Remove finished processes from the list
+#             processes = [p for p in processes if p.is_alive()]
+#             time.sleep(0.1)  # Avoid CPU overuse
+
+#         # Start a new process
+#         p = Process(target=main, args=(obj_path, target_choice))
+#         p.start()
+#         processes.append(p)
+
+#     # Wait for all remaining processes to complete
+#     for p in processes:
+#         p.join()
+
+#     print("All simulations completed.")
+#     print("The objects processed are:", selected_files)
