@@ -12,7 +12,7 @@ from make_step import make_step
 
 # --- Configuration Section ---
 # Grouped constants for easier management.
-BASE_PATH = "/Users/no.166/Documents/Azka's Workspace/Genesis"
+BASE_PATH = "/home/takuros/Japan/Genesis"
 PHOTO_INTERVAL = 250
 
 MATERIAL_TYPE = "Elastic"
@@ -31,9 +31,10 @@ def setup_paths(name, target_choice):
     # This function consolidates all path and directory creation logic.
 
     # Define base paths for data types
-    photo_base = os.path.join(BASE_PATH, 'main', 'data', 'photos', name, MATERIAL_TYPE, target_choice)
-    csv_base = os.path.join(BASE_PATH, 'main', 'data', 'csv', name)
-    video_base = os.path.join(BASE_PATH, 'main', 'data', 'videos', name)
+    base_data_path = BASE_PATH + '/main/data/picked_up'
+    photo_base = os.path.join(base_data_path, 'photos', name, MATERIAL_TYPE, target_choice)
+    csv_base = os.path.join(base_data_path, 'csv', name)
+    video_base = os.path.join(base_data_path, 'videos', name)
 
     # Create directories
     os.makedirs(photo_base, exist_ok=True)
@@ -44,9 +45,9 @@ def setup_paths(name, target_choice):
     return {
         "photo": photo_base,
         "csv": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.csv'),
-        "deform_csv": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_deform_{target_choice}N.csv'),
-        "video": os.path.join(video_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.mp4'),
-        "plot": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_combine_{target_choice}.png')
+        "deform_csv": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_deform_{target_choice}.csv'),
+        #"video": os.path.join(video_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.mp4'),
+        "plot": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.png')
     }
 
 def get_obj_bounding_box(obj_path):
@@ -218,8 +219,8 @@ def run_pd_control_sequence(scene, cam, franka, gso_object, df, deform_csv, path
         make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name, gripper_force=0.0)
 
 
-    cam.stop_recording(save_to_filename=paths['video'], fps=1000)
-    print(f"Saved video -> {paths['video']}")
+    cam.stop_recording()
+    #print(f"Saved video -> {paths['video']}")
 
 def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_choice):
     """Runs the entire rotation motion sequence."""
@@ -281,6 +282,34 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
             break
         if i % 2.5 == 0:
             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
+
+    lower_obj_bound = np.min(particle_positions_np[0], axis=0)
+    if lower_obj_bound[2] > 0:
+        print('Object picked up, continuing')
+    else:
+        print("Object not picked up, exiting")
+        
+        import shutil
+        
+        # Define source and destination paths
+        not_picked_up_photo_path = f'{BASE_PATH}/main/data/not_picked_up/photos/{name}/{MATERIAL_TYPE}/'
+        not_picked_up_csv_dir = f'{BASE_PATH}/main/data/not_picked_up/csv/{name}/{MATERIAL_TYPE}/'
+
+        # Create destination directories
+        os.makedirs(picked_up_photo_path, exist_ok=True)
+        os.makedirs(picked_up_csv_dir, exist_ok=True)
+            
+
+        if os.path.exists(picked_up_photo_path):
+            if os.path.isdir(picked_up_photo_path):
+                shutil.rmtree(picked_up_photo_path)
+            else:
+                os.remove(picked_up_photo_path)
+
+       # Move the entire photo directory
+        shutil.move(paths['photo'], not_picked_up_photo_path)
+        exit()
+
 
 
     # 600-800: Rotate robot by angle
@@ -405,8 +434,8 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
     for _ in range(150):
         make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name)
 
-    cam.stop_recording(save_to_filename=paths['video'], fps=1000)
-    print(f"Saved video -> {paths['video']}")
+    cam.stop_recording()
+    
 
 def generate_plots(df, deform_csv, paths, target_choice):
     """Generates and saves the plots for the simulation results."""
@@ -463,35 +492,63 @@ def main(obj_path, target_choice='soft'):
     # Run secondary motion sequence with rotation
     run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_choice)
 
-    # Save data and generate plots
-    df.to_csv(paths['csv'], index=False)
-    print(f"Saved data -> {paths['csv']}")
-    deform_csv.to_csv(paths['deform_csv'], index=False)
-    print(f"Saved deform data -> {paths['deform_csv']}")
 
-    generate_plots(df, deform_csv, paths, target_choice)
+
+
+def get_incomplete_objects(base_path, names, material="Elastic", targets=['soft', 'medium', 'hard']):
+    incomplete = []
+
+    for name in names:
+        obj_dir = os.path.join(base_path, name, material)
+
+        # If the base object directory doesn't exist, it's incomplete
+        if not os.path.isdir(obj_dir):
+            for t in targets:
+                incomplete.append((name, t))
+                print(f'{name}, {t} is not done')
+            continue
+
+        # Check each target
+        for target in targets:
+            target_path = os.path.join(obj_dir, target)
+            if not os.path.isdir(target_path):
+                incomplete.append((name, target))
+                print(f'{name}, {t} is not done')
+
+    return incomplete
+
+
+
 
 
 if __name__ == "__main__":
     folder_path = os.path.join(BASE_PATH, "data", "mujoco_scanned_objects", "models")
     all_files = os.listdir(folder_path)
-    # selected_files = ['Pet_Dophilus_powder']
-    selected_files = random.sample(all_files, 3)
 
+    selected_files = get_incomplete_objects(BASE_PATH, all_files)
     processes = []
 
-    for obj_name in selected_files:
+    for task in selected_files:
+        obj_name, target_choice = task
         obj_path = os.path.join(folder_path, obj_name, "model.obj")
         print(f"Processing object: {obj_path}")
-        for target_choice in ['soft', 'medium', 'hard']:
-            print(f"--- Starting process for {obj_name} with target: {target_choice} ---")
-            p = Process(target=main, args=(obj_path, target_choice))
-            p.start()
-            processes.append(p)
 
-    # Wait for all processes to complete
+        print(f"--- Starting process for {obj_name} with target: {target_choice} ---")
+
+        # Wait until a slot is free
+        while len(processes) >= 8:
+            # Remove finished processes from the list
+            processes = [p for p in processes if p.is_alive()]
+            time.sleep(0.1)  # Avoid CPU overuse
+
+        # Start a new process
+        p = Process(target=main, args=(obj_path, target_choice))
+        p.start()
+        processes.append(p)
+
+    # Wait for all remaining processes to complete
     for p in processes:
         p.join()
 
     print("All simulations completed.")
-    print("The objects processed are: ", selected_files)
+    print("The objects processed are:", selected_files)
