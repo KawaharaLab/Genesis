@@ -52,10 +52,10 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, de
         links_force_torque[9], links_force_torque[10], links_force_torque[11],
         dofs[0], dofs[1], dofs[2], dofs[3], dofs[4], dofs[5], dofs[6], dofs[7], dofs[8]
     ]
-
+    rgb, _, _, _  = cam.render(rgb=True)
     if t % photo_interval == 0:
         for camera_angle in range(3):
-            rgb, _, _, _  = cam.render(rgb=True)
+            
             if camera_angle == 0:
                 cam.set_pose(pos = (2.1, -1.2, 0.1), lookat = (0.45, 0.45, 0.5))
             elif camera_angle == 1:
@@ -69,10 +69,19 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, de
     
     if scene.t < 2:
         deform_velocity = 0.0
+        action = 'Constant'
     else:
+        if deform_csv.iloc[-1,2] < deform_csv.iloc[-2,2]:
+            action = 'Decrease'
+        elif deform_csv.iloc[-1,2] > deform_csv.iloc[-2,2]:
+            action = 'Increase'
+        else:
+            action = 'Constant'
         deform_velocity = deform_csv.iloc[-1, 1] - deform_csv.iloc[-2, 1]
 
-    print(f"Step: {scene.t:>4.0f} | Force: {gripper_force:>5.2f} | Velocity: {deform_velocity:>11.8f} | Deformation: {max_deformation:>7.5f}")
+    
+
+    print(f"Step: {scene.t:>4.0f} | Force: {gripper_force:>5.2f} | Velocity: {deform_velocity:>11.8f} | Deformation: {max_deformation:>7.5f} | Action: {action:>10s} |")
 
     if abs(df.iloc[-1,8]) > 100:
         return False

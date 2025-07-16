@@ -26,13 +26,12 @@ COLOR = random.choice([
              (0, 255, 255),
             (255, 0, 255),
         ])
-def setup_paths(name, frc_arg, target_choice):
+def setup_paths(name, target_choice):
     """Creates all necessary directories and returns a dictionary of paths."""
     # This function consolidates all path and directory creation logic.
-    frc_str = str(frc_arg) # Use a string representation for filenames
 
     # Define base paths for data types
-    photo_base = os.path.join(BASE_PATH, 'main', 'data', 'photos', name, MATERIAL_TYPE, frc_str)
+    photo_base = os.path.join(BASE_PATH, 'main', 'data', 'photos', name, MATERIAL_TYPE, target_choice)
     csv_base = os.path.join(BASE_PATH, 'main', 'data', 'csv', name)
     video_base = os.path.join(BASE_PATH, 'main', 'data', 'videos', name)
 
@@ -44,10 +43,10 @@ def setup_paths(name, frc_arg, target_choice):
     # Return a dictionary of all generated paths
     return {
         "photo": photo_base,
-        "csv": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_{frc_str}N.csv'),
-        "deform_csv": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_deform_{frc_str}N.csv'),
+        "csv": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.csv'),
+        "deform_csv": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_deform_{target_choice}N.csv'),
         "video": os.path.join(video_base, f'{name}_{MATERIAL_TYPE}_{target_choice}.mp4'),
-        "plot": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_{frc_str}N_combine_{target_choice}.png')
+        "plot": os.path.join(csv_base, f'{name}_{MATERIAL_TYPE}_combine_{target_choice}.png')
     }
 
 def get_obj_bounding_box(obj_path):
@@ -116,8 +115,8 @@ def create_scene(obj_path):
 
     franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), material=gs.materials.Rigid(coup_friction=3.0))
     gso_object = scene.add_entity(
-        material=gs.materials.MPM.Elastic(E=1.5e6, nu=0.45, rho=1100.0, sampler="pbs", model="corotation"),
-        # material=gs.materials.MPM.Elastic(),
+        # material=gs.materials.MPM.Elastic(E=1.5e6, nu=0.45, rho=1100.0, sampler="pbs", model="corotation"),
+        material=gs.materials.MPM.Elastic(),
         morph=gs.morphs.Mesh(file=obj_path, scale=OBJECT_SCALE, pos=(0.45, 0.45, 0), euler=OBJECT_EULER),
 
         surface = gs.surfaces.Default(color = COLOR)
@@ -134,10 +133,10 @@ def adjust_force_with_pd_control(current_force, deform_csv, target_vel):
     """
     deform_velocity = deform_csv.iloc[-1, 1] - deform_csv.iloc[-2, 1]
 
-    if deform_velocity > 1.1 * target_vel:
-        current_force -= 0.25
-    elif deform_velocity < 0.9 * target_vel:
-        current_force += 0.25
+    if deform_velocity > 1.2 * target_vel:
+        current_force -= 0.2
+    elif deform_velocity < 0.8 * target_vel:
+        current_force += 0.2
 
     return current_force
 
@@ -267,7 +266,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
             qpos[-2:] = 0.04
             franka.set_dofs_position(qpos[-2:], fingers_dof)
             break
-        if i % 2 == 0:
+        if i % 2.5 == 0:
             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
 
@@ -280,7 +279,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
             qpos[-2:] = 0.04
             franka.set_dofs_position(qpos[-2:], fingers_dof)
             break
-        if i % 2 == 0:
+        if i % 2.5 == 0:
             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
 
@@ -290,8 +289,24 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
     #mm.rotate_robot_by_angle_quat(scene, cam, df, paths['photo'], PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv, -45, z_obj=z, gripper_force=-12, steps=800, n=1)
     #mm.rotate_robot_by_angle_quat(scene, cam, df, paths['photo'], PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, end_effector, gso_object, deform_csv, 60, z_obj=z, gripper_force=-12, steps=200, n=7)
 
-    actions = [
-        {
+    actions = []
+    angle_choices = [-90, -60, -45, 45, 60, 90]
+    # The values for "n" that differ between your original actions
+    n_values = [1, 7]
+
+    # Define a relationship between angle and steps
+    # Example: 10 steps for every degree of rotation. Adjust this multiplier as needed.
+    STEPS_PER_DEGREE = 6
+
+    for n_val in n_values:
+        # 1. Choose a random angle for this specific action
+        chosen_angle = random.choice(angle_choices)
+
+        # 2. Calculate the number of steps based on the absolute value of the angle
+        num_steps = int(abs(chosen_angle) * STEPS_PER_DEGREE)
+
+        # 3. Append the complete action dictionary to the list
+        actions.append({
             "name": "Rotating Robot with Quaternion",
             "func": mm.rotate_robot_by_angle_quat,
             "args": {
@@ -307,45 +322,79 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
                 "end_effector": end_effector,
                 "gso_object": gso_object,
                 "deform_csv": deform_csv,
-                "angle_degrees": random.choice([-90, -60, -45, 45, 60, 90]),
-                "z_obj": z,  # renamed from z_offset to match new param
-                "gripper_force": -12,
-                "steps": 500,
-                "n": 1
+                "angle_degrees": chosen_angle,
+                "z_obj": z,
+                "gripper_force": -current_force,
+                "steps": num_steps, # The new dynamic step count
+                "n": n_val
             }
-        },
-        {
-            "name": "Rotating Robot with Quaternion",
-            "func": mm.rotate_robot_by_angle_quat,
-            "args": {
-                "scene": scene,
-                "cam": cam,
-                "df": df,
-                "photo_path": paths['photo'],
-                "photo_interval": PHOTO_INTERVAL,
-                "name": name,
-                "franka": franka,
-                "motors_dof": motors_dof,
-                "fingers_dof": fingers_dof,
-                "end_effector": end_effector,
-                "gso_object": gso_object,
-                "deform_csv": deform_csv,
-                "angle_degrees": random.choice([-90, -60, -45, 45, 60, 90]),
-                "z_obj": z,  # renamed from z_offset to match new param
-                "gripper_force": -12,
-                "steps": 500,
-                "n": 7
-            }
-        }
-    ]
+        })
 
     random.shuffle(actions)  # Randomize the order
 
     for action in actions:
-        print(f"{action['name']} with angle {action['args']['angle_degrees']} degrees...")
+        # The print statement now shows the corresponding step count
+        print(f"{action['name']} with angle {action['args']['angle_degrees']} degrees and {action['args']['steps']} steps...")
         action["func"](**action["args"])
         for _ in range(100):
-            make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name)
+            franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
+            make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name, gripper_force=-current_force)
+    # actions = [
+    #     {
+    #         "name": "Rotating Robot with Quaternion",
+    #         "func": mm.rotate_robot_by_angle_quat,
+    #         "args": {
+    #             "scene": scene,
+    #             "cam": cam,
+    #             "df": df,
+    #             "photo_path": paths['photo'],
+    #             "photo_interval": PHOTO_INTERVAL,
+    #             "name": name,
+    #             "franka": franka,
+    #             "motors_dof": motors_dof,
+    #             "fingers_dof": fingers_dof,
+    #             "end_effector": end_effector,
+    #             "gso_object": gso_object,
+    #             "deform_csv": deform_csv,
+    #             "angle_degrees": random.choice([-90, -60, -45, 45, 60, 90]),
+    #             "z_obj": z,  # renamed from z_offset to match new param
+    #             "gripper_force": -current_force,
+    #             "steps": 500,
+    #             "n": 1
+    #         }
+    #     },
+    #     {
+    #         "name": "Rotating Robot with Quaternion",
+    #         "func": mm.rotate_robot_by_angle_quat,
+    #         "args": {
+    #             "scene": scene,
+    #             "cam": cam,
+    #             "df": df,
+    #             "photo_path": paths['photo'],
+    #             "photo_interval": PHOTO_INTERVAL,
+    #             "name": name,
+    #             "franka": franka,
+    #             "motors_dof": motors_dof,
+    #             "fingers_dof": fingers_dof,
+    #             "end_effector": end_effector,
+    #             "gso_object": gso_object,
+    #             "deform_csv": deform_csv,
+    #             "angle_degrees": random.choice([-90, -60, -45, 45, 60, 90]),
+    #             "z_obj": z,  # renamed from z_offset to match new param
+    #             "gripper_force": -current_force,
+    #             "steps": 500,
+    #             "n": 7
+    #         }
+    #     }
+    # ]
+
+    # random.shuffle(actions)  # Randomize the order
+
+    # for action in actions:
+    #     print(f"{action['name']} with angle {action['args']['angle_degrees']} degrees...")
+    #     action["func"](**action["args"])
+    #     for _ in range(100):
+    #         make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name)
 
     # 2000-2100: Drop object
     # print("######################### Dropping object... #########################")
@@ -391,13 +440,13 @@ def generate_plots(df, deform_csv, paths, target_choice):
     plt.show()  # Show the plot for immediate feedback
     # plt.close(fig) # Close the figure to free memory
 
-def main(frc_arg, obj_path, target_choice='soft'):
+def main(obj_path, target_choice='soft'):
     """
     Main function to run a single simulation instance.
     This function is now a high-level coordinator.
     """
     name = os.path.basename(os.path.dirname(obj_path))
-    paths = setup_paths(name, frc_arg, target_choice)
+    paths = setup_paths(name, target_choice)
 
     # Create DataFrames for data logging
     df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz",
@@ -426,23 +475,19 @@ def main(frc_arg, obj_path, target_choice='soft'):
 if __name__ == "__main__":
     folder_path = os.path.join(BASE_PATH, "data", "mujoco_scanned_objects", "models")
     all_files = os.listdir(folder_path)
-    selected_files = ['Crayola_Crayons_24_count']
-    # selected_files = random.sample(all_files, 3)
+    # selected_files = ['Pet_Dophilus_powder']
+    selected_files = random.sample(all_files, 3)
 
-    # The 'force' argument seems unused in the PD control logic, so it's set to a placeholder.
-    # If it were used, it would be passed to main().
-    frc_values = [999]
     processes = []
 
     for obj_name in selected_files:
         obj_path = os.path.join(folder_path, obj_name, "model.obj")
         print(f"Processing object: {obj_path}")
-        for frc_arg in frc_values:
-            for target_choice in ['soft']:
-                print(f"--- Starting process for {obj_name} with target: {target_choice} ---")
-                p = Process(target=main, args=(frc_arg, obj_path, target_choice))
-                p.start()
-                processes.append(p)
+        for target_choice in ['soft', 'medium', 'hard']:
+            print(f"--- Starting process for {obj_name} with target: {target_choice} ---")
+            p = Process(target=main, args=(obj_path, target_choice))
+            p.start()
+            processes.append(p)
 
     # Wait for all processes to complete
     for p in processes:
