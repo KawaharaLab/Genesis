@@ -284,9 +284,9 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
 
     lower_obj_bound = np.min(particle_positions_np[0], axis=0)
     if lower_obj_bound[2] > 0:
-        print('Object picked up, continuing')
+        print('Object picked up, continuing' + f' {lower_obj_bound[2]} > 0')
     else:
-        print("Object not picked up, exiting")
+        print("Object not picked up, exiting" + f' {lower_obj_bound[2]} <= 0')
         
         import shutil
         
@@ -440,25 +440,69 @@ def main(obj_path, target_choice='soft'):
     print(f"Saved deform data -> {paths['deform_csv']}")
 
 
+# def get_incomplete_objects(base_path, names, material="Elastic", targets=['soft', 'medium', 'hard']):
+#     incomplete = []
+
+#     for name in names:
+#         obj_dir = os.path.join(base_path,'main','data','picked_up','csv', name, material)
+
+#         # If the base object directory doesn't exist, it's incomplete
+#         if not os.path.isdir(obj_dir):
+#             for t in targets:
+#                 incomplete.append((name, t))
+#                 print(f'{name}, {t} is not done')
+#             continue
+
+#         # Check each target
+#         for target in targets:
+#             target_path = os.path.join(obj_dir, target)
+#             if not os.path.isdir(target_path):
+#                 incomplete.append((name, target))
+#                 print(f'{name}, {t} is not done')
+
+#     return incomplete
+
+
 def get_incomplete_objects(base_path, names, material="Elastic", targets=['soft', 'medium', 'hard']):
+    """
+    Checks and prints the completion status for all objects and targets.
+
+    An item is "incomplete" if its target directory is non-existent or empty.
+    An item is "completed" if its target directory exists and is not empty.
+
+    Args:
+        base_path (str): The base directory path.
+        names (list): A list of object names to check.
+        material (str, optional): The material type. Defaults to "Elastic".
+        targets (list, optional): A list of target conditions. Defaults to ['soft', 'medium', 'hard'].
+
+    Returns:
+        list: A list of tuples, where each tuple contains the name and target
+              of an incomplete object.
+    """
     incomplete = []
 
     for name in names:
-        obj_dir = os.path.join(base_path, name, material)
+        obj_dir = os.path.join(base_path, 'main', 'data', 'picked_up', 'csv', name, material)
 
-        # If the base object directory doesn't exist, it's incomplete
+        # If the base object directory doesn't exist, all its targets are incomplete.
         if not os.path.isdir(obj_dir):
             for t in targets:
                 incomplete.append((name, t))
-                print(f'{name}, {t} is not done')
+                print(f'❌ {name}, {t} is not done')
             continue
 
-        # Check each target
+        # Check each target subdirectory.
         for target in targets:
             target_path = os.path.join(obj_dir, target)
-            if not os.path.isdir(target_path):
+            
+            # Check if the directory is missing or empty.
+            if not os.path.isdir(target_path) or not os.listdir(target_path):
                 incomplete.append((name, target))
-                print(f'{name}, {t} is not done')
+                print(f'❌ {name}, {target} is not done')
+            else:
+                # Otherwise, it's completed.
+                print(f'✅ {name}, {target} is completed')
 
     return incomplete
 
@@ -466,7 +510,8 @@ def get_incomplete_objects(base_path, names, material="Elastic", targets=['soft'
 if __name__ == "__main__":
     folder_path = os.path.join(BASE_PATH, "data", "mujoco_scanned_objects", "models")
     all_files = os.listdir(folder_path)
-    selected_files = random.sample(all_files, 1)
+    # selected_files = random.sample(all_files, 1)
+    selected_files = "11pro_SL_TRX_FG"
     
     # The 'force' argument seems unused in the PD control logic, so it's set to a placeholder.
     # If it were used, it would be passed to main().

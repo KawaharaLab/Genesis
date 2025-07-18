@@ -33,13 +33,6 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, de
         max_deformation,
         gripper_force 
     ]
-    
-    # generate clean video from one of the camera angles
-    camera_angle = 1
-
-    
-
-    
 
     dofs = franka.get_dofs_position()
     dofs = [x.item() for x in dofs]
@@ -89,12 +82,6 @@ def make_step(scene, cam, franka, df, photo_path, photo_interval, gso_object, de
     else:
         return True
     
-    
-
-
-        
-
-        
         
 # if DEBUG:
 #     rgb, _, _, _  = cam.render(rgb=True)
