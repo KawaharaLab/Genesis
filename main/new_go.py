@@ -422,17 +422,17 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
         action["func"](**action["args"])
         step_no += action['args']['steps']
         STEP_DF.loc[len(STEP_DF)] = [f'rotation {rotate_num} end', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
-        for _ in range(800-action['args']['steps']):
+        for _ in range(600-action['args']['steps']):
             franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
             make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name, gripper_force=-current_force)
         rotate_num += 1
-        step_no += 800 - action['args']['steps']
+        step_no += 600 - action['args']['steps']
 
 
     # 770-970: Complete motion
     print("######################### Completing motion... #########################")
     STEP_DF.loc[len(STEP_DF)] = ['wind down', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
-    for _ in range(150):
+    for _ in range(100):
         make_step(scene, cam, franka, df, paths['photo'], PHOTO_INTERVAL, gso_object, deform_csv, name)
         step_no += 1
     STEP_DF.loc[len(STEP_DF)] = ['final', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
