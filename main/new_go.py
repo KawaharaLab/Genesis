@@ -440,35 +440,35 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
     # cam.stop_recording()
 
 
-def generate_plots(df, deform_csv, paths, target_choice):
-    """Generates and saves the plots for the simulation results."""
-    # This function encapsulates all matplotlib plotting logic.
-    name = paths['name']
-    fig, axs = plt.subplots(1, 2, figsize=(16, 6))
+# def generate_plots(df, deform_csv, paths, target_choice):
+#     """Generates and saves the plots for the simulation results."""
+#     # This function encapsulates all matplotlib plotting logic.
+#     name = paths['name']
+#     fig, axs = plt.subplots(1, 2, figsize=(16, 6))
 
-    # Deformation plot
-    axs[0].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 1], marker='.', color='tab:blue', linewidth=0.5)
-    axs[0].set_xlabel('Time Step')
-    axs[0].set_ylabel('Deformation Metric')
-    axs[0].set_ylim(0, 0.6)
-    axs[0].set_title(f'Object: {name} | Target: {target_choice}')
-    axs[0].grid(True)
+#     # Deformation plot
+#     axs[0].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 1], marker='.', color='tab:blue', linewidth=0.5)
+#     axs[0].set_xlabel('Time Step')
+#     axs[0].set_ylabel('Deformation Metric')
+#     axs[0].set_ylim(0, 0.6)
+#     axs[0].set_title(f'Object: {name} | Target: {target_choice}')
+#     axs[0].grid(True)
 
-    # Force components plot
-    force_columns = ['left_fx', 'left_fy', 'left_fz', 'right_fx', 'right_fy', 'right_fz']
-    for col in force_columns:
-        axs[1].plot(df['step'], df[col], marker='.', label=col)
-    axs[1].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 2], marker='.', linestyle='-', color='black', label='grip_force', linewidth=0.5)
-    axs[1].set_ylim(-30, 25)
-    axs[1].set_xlabel('Time Step')
-    axs[1].set_ylabel('Force (N)')
-    axs[1].set_title('Force Components Over Time')
-    axs[1].grid(True)
-    axs[1].legend()
+#     # Force components plot
+#     force_columns = ['left_fx', 'left_fy', 'left_fz', 'right_fx', 'right_fy', 'right_fz']
+#     for col in force_columns:
+#         axs[1].plot(df['step'], df[col], marker='.', label=col)
+#     axs[1].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 2], marker='.', linestyle='-', color='black', label='grip_force', linewidth=0.5)
+#     axs[1].set_ylim(-30, 25)
+#     axs[1].set_xlabel('Time Step')
+#     axs[1].set_ylabel('Force (N)')
+#     axs[1].set_title('Force Components Over Time')
+#     axs[1].grid(True)
+#     axs[1].legend()
 
-    plt.tight_layout()
-    plt.savefig(paths['plot'], dpi=300, bbox_inches='tight')
-    print(f"Saved plot -> {paths['plot']}")
+#     plt.tight_layout()
+#     plt.savefig(paths['plot'], dpi=300, bbox_inches='tight')
+#     print(f"Saved plot -> {paths['plot']}")
     # plt.show()  # Show the plot for immediate feedback
     # plt.close(fig) # Close the figure to free memory
 
@@ -505,7 +505,7 @@ def main(obj_path, target_choice='soft'):
         # print(f"Saved data -> {paths['csv']}")
         deform_csv.to_csv(paths['deform_csv'], index=False)
         # print(f"Saved deform data -> {paths['deform_csv']}")
-        STEP_DF.to_csv(paths['steps'], f'{name}_{MATERIAL_TYPE}_steps_{target_choice}.csv', index=False)
+        STEP_DF.to_csv(paths['steps'], index=False)
     # else:
     #     # Save data and generate plots
     #     df.to_csv(os.path.join(not_picked_up_csv_dir, f'{name}_{MATERIAL_TYPE}_{target_choice}.csv'), index=False)
@@ -562,9 +562,10 @@ def get_incomplete_objects(base_path, names, material="Elastic", targets=['soft'
 
     for name in names:
         obj_dir = os.path.join(base_path, 'main', 'data', 'picked_up_3', 'csv', name, material)
+        obj_dir_np = os.path.join(base_path, 'main', 'data', 'not_picked_up_3', 'csv', name, material)
 
         # If the base object directory doesn't exist, all its targets are incomplete.
-        if not os.path.isdir(obj_dir):
+        if not os.path.isdir(obj_dir) and not os.path.isdir(obj_dir_np):
             for t in targets:
                 incomplete.append((name, t))
                 print(f'❌ {name}, {t} is not done')
@@ -573,11 +574,16 @@ def get_incomplete_objects(base_path, names, material="Elastic", targets=['soft'
         # Check each target subdirectory.
         for target in targets:
             target_path = os.path.join(obj_dir, target)
+            target_path_np = os.path.join(obj_dir_np, target)
 
             # Check if the directory is missing or empty.
             if not os.path.isdir(target_path) or not os.listdir(target_path):
-                incomplete.append((name, target))
-                print(f'❌ {name}, {target} is not done')
+                if not os.path.isdir(target_path_np) or not os.listdir(target_path_np):
+                    # If the target directory is missing or empty, it's incomplete.
+                    incomplete.append((name, target))
+                    print(f'❌ {name}, {target} is not done')
+                else:
+                    print(f'✅ {name}, {target} is completed')
             else:
                 # Otherwise, it's completed.
                 print(f'✅ {name}, {target} is completed')
@@ -593,7 +599,7 @@ if __name__ == "__main__":
     # If it were used, it would be passed to main().
     processes = []
 
-    for task in selected_files[:3]:
+    for task in selected_files:
         obj_name, target_choice = task
         obj_path = os.path.join(folder_path, obj_name, "model.obj")
         print(f"Processing object: {obj_name}")
@@ -604,7 +610,7 @@ if __name__ == "__main__":
         while len(processes) > 8:
             # Remove finished processes from the list
             processes = [p for p in processes if p.is_alive()]
-            time.sleep(0.1)  # Avoid CPU overuse
+            time.sleep(0.1)  # Avoid CPU overuse    
 
         # Start a new process
         p = Process(target=main, args=(obj_path, target_choice))
