@@ -284,7 +284,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
 
     # 50-400: Grasp object
     print("######################### Grasping object with PD control... #########################")
-    for i in range(350):
+    for i in range(300):
         step_no += 1
         if mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, paths['photo'], PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1) == False:
             current_force = 0.0
