@@ -108,32 +108,26 @@ def split_for_model(df):
 
 #-------------------- Create annotations based on steps -------------------#
 def logical(i, deform_csv, force_csv, steps_csv, deformation, start_step, end_step, insertions):
-
+    insertions = (1,3,6)
     actions = ['start', 'grasp', 'lift', 'rotation 1', 'buffer 1', 'rotation 2', 'buffer 2', 'wind down']
-    if 1 in insertions:
-        actions.pop(1)
-        actions.insert(1, 'grasp pt1')
-        actions.insert(2, 'grasp pt2')
-        if 3 in insertions:
-            actions.pop(4)
-            actions.insert(4, 'rotation 1 pt1')
-            actions.insert(5, 'rotation 1 pt2')
-            if 5 in insertions:
-                actions.pop(7)
-                actions.insert(7, 'rotation 2 pt1')
-                actions.insert(8, 'rotation 2 pt2')
-        elif 5 in insertions:
-            actions.pop(6)
-            actions.insert(6, 'rotation 2 pt1')
-            actions.insert(7, 'rotation 2 pt2')
+    replacement = {1:['grasp pt1','grasp pt2'],
+                   3:['rotation 1 pt1', 'rotation 1 pt2'],
+                   5:['rotation 2 pt1', 'rotation 2 pt2'],
+                   4:['buffer 1 pt1', 'buffer 1 pt2'],
+                   6:['buffer 2 pt1', 'buffer 2 pt2']}
+    offset = 0
+    for idx in insertions:
+        actions = actions[:idx+offset] + replacement[idx] + actions[idx+1+offset:]
+        offset += 1
     action = actions[i]
-
+    print(action)
 
     # deformation level: ['none', 'soft', 'medium', 'hard']
     if action in ['start', 'wind down']:
         deformation_level = 'none'
         force_level = 'none'
-    elif action in ['grasp', 'grasp pt1', 'grasp pt2' 'lift', 'rotation 1', 'rotation 1 pt1', 'rotation 1 pt2', 'buffer 1', 'rotation 2', 'rotation 2 pt1', 'rotation 2 pt2', 'buffer 2']:
+    # elif action in ['grasp', 'grasp pt1', 'grasp pt2' 'lift', 'rotation 1', 'rotation 1 pt1', 'rotation 1 pt2', 'buffer 1', 'buffer 1 pt1', 'buffer 1 pt2', 'rotation 2', 'rotation 2 pt1', 'rotation 2 pt2', 'buffer 2', 'buffer 2 pt1', 'buffer 2 pt2']:
+    else:
         deformation_level = deformation
         if deformation == 'soft':
             force_level = 'low'
@@ -145,9 +139,7 @@ def logical(i, deform_csv, force_csv, steps_csv, deformation, start_step, end_st
     # bbox = (extract_floats_from_string(steps_df.iloc[3, i]))
     # bbox_center = np.mean(np.array(bbox).reshape(3, 2), axis=1)
     # return (action, deformation_level, force_level)
-    return labeler.generate_sentence(action='start', deformation_level='soft', force_level='low',
-                                     stability='stable',
-                                     add_trend='increasing'), action
+    return labeler.generate_sentence(action, deformation_level, force_level), action
 
 pairings, insertions = split_for_model(steps_df)
 for i, (start, end) in enumerate(pairings):

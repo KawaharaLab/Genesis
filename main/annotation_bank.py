@@ -3,21 +3,30 @@ import random
 class RobotLabelTemplate:
     def __init__(self):
         self.actions = {
-            'approach': ['approaching', 'moving toward', 'positioning near', 'extending to'],
-            'contact': ['contacting', 'touching', 'making contact with', 'reaching'],
+            'start': ['starting', 'initiating', 'beginning', 'commencing', 'launching'],
+            
             'grasp': ['grasping', 'gripping', 'holding', 'securing', 'clasping'],
-            'squeeze': ['squeezing', 'compressing', 'applying pressure to', 'tightening grip on'],
+            'grasp pt1': ['grasping', 'gripping', 'holding', 'securing', 'clasping'],
+            'grasp pt2': ['grasping', 'gripping', 'holding', 'securing', 'clasping'],
+            
             'lift': ['lifting', 'raising', 'elevating', 'picking up'],
-            'release': ['releasing', 'letting go of', 'dropping', 'loosening grip on'],
-            'manipulate': ['manipulating', 'adjusting', 'repositioning', 'moving'],
-            'stabilize': ['stabilizing', 'maintaining grip on', 'securing', 'balancing'],
-            'start':      ['starting', 'initiating', 'commencing', 'engaging', 'triggering'],
-            'grasp':      ['grabbing', 'clutching', 'seizing', 'snatching', 'taking hold of'],
-            'lift':       ['lifting', 'hoisting', 'elevating', 'raising', 'uplifting'],
-            'rotation 1': ['rotating clockwise', 'turning clockwise', 'pivoting forward', 'swiveling right', 'twisting to start'],
+            
+            'rotation 1': ['rotating', 'turning', 'pivoting', 'swiveling', 'twisting to finish'],
+            'rotation 1 pt1': ['rotating', 'turning', 'pivoting', 'swiveling', 'twisting to finish'],
+            'rotation 1 pt2': ['rotating', 'turning', 'pivoting', 'swiveling', 'twisting to finish'],
+
             'buffer 1':   ['holding position', 'maintaining hold', 'stabilizing grip', 'pausing motion', 'steadying'],
-            'rotation 2': ['rotating counter‑clockwise', 'turning back', 'pivoting backward', 'swiveling left', 'twisting to finish'],
+            'buffer 1 pt1': ['holding position', 'maintaining hold', 'stabilizing grip', 'pausing motion', 'steadying'],
+            'buffer 1 pt2': ['holding position', 'maintaining hold', 'stabilizing grip', 'pausing motion', 'steadying'],
+
+            'rotation 2': ['rotating', 'turning', 'pivoting', 'swiveling', 'twisting to finish'],
+            'rotation 2 pt1': ['rotating', 'turning', 'pivoting', 'swiveling', 'twisting to finish'],
+            'rotation 2 pt2': ['rotating¥', 'turning', 'pivoting', 'swiveling', 'twisting to finish'],
+
             'buffer 2':   ['holding position', 'maintaining hold', 'stabilizing grip', 'pausing motion', 'steadying'],
+            'buffer 2 pt1': ['holding position', 'maintaining hold', 'stabilizing grip', 'pausing motion', 'steadying'],
+            'buffer 2 pt2': ['holding position', 'maintaining hold', 'stabilizing grip', 'pausing motion', 'steadying'],
+
             'wind down':  ['slowing down', 'decelerating motion', 'winding down', 'easing off', 'coming to rest']
         }
 
@@ -59,7 +68,7 @@ class RobotLabelTemplate:
 
         effector = random.choice(self.positional_terms)
         object_ref = random.choice(self.object_refs)
-        action_phrase = random.choice(self.actions.get(action, ['performing unknown action']))
+        action_phrase = random.choice(self.actions.get(action))
         base = f"{effector} {action_phrase} {object_ref}"
         parts.append(base)
 
