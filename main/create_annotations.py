@@ -77,17 +77,63 @@ force_df = pd.read_csv(force_csv)
 
 #     return float_numbers
 
+def split_for_model(df):
+    unique_array = np.sort(df.iloc[:, 1].unique())
+    # print(f"Unique steps: {unique_array}")
+    expanded = []
+    to_return = []
+    max_jump = 270
+    inserted_points = []
+    for i in range(len(unique_array) - 1):
+        start = unique_array[i]
+        end = unique_array[i + 1]
+        expanded.append(start)
+        
+        jump = end - start
+        if jump > max_jump:
+            midpoint = (start + end) / 2
+            expanded.append(midpoint)
+            inserted_points.append((i, midpoint))
+            
+    expanded.append(unique_array[-1])
+    expanded_array = np.round(expanded).astype(int)
+    # print(f"Expanded array: {expanded_array}, Inserted points: {inserted_points}")
+    # print("\nInserted midpoints:")
+    for idx, value in inserted_points:
+        to_return.append(idx)
+    pairings = [[int(a), int(b)] for a, b in zip(expanded_array[:-1], expanded_array[1:])]
+    return pairings, to_return
+
+
+
 #-------------------- Create annotations based on steps -------------------#
-def logical(i, deform_csv, force_csv, steps_csv, deformation, start_step, end_step):
-    # actions: ['start', 'grasp', 'lift', 'rotation 1', 'buffer 1', 'rotation 2', 'buffer 2', 'wind down']
-    actions = ['start', 'grasp', 'lift', 'anything', 'rotation 1', 'buffer 1', 'rotation 2', 'buffer 2', 'wind down']
-    action = actions[i-1]
+def logical(i, deform_csv, force_csv, steps_csv, deformation, start_step, end_step, insertions):
+
+    actions = ['start', 'grasp', 'lift', 'rotation 1', 'buffer 1', 'rotation 2', 'buffer 2', 'wind down']
+    if 1 in insertions:
+        actions.pop(1)
+        actions.insert(1, 'grasp pt1')
+        actions.insert(2, 'grasp pt2')
+        if 3 in insertions:
+            actions.pop(4)
+            actions.insert(4, 'rotation 1 pt1')
+            actions.insert(5, 'rotation 1 pt2')
+            if 5 in insertions:
+                actions.pop(7)
+                actions.insert(7, 'rotation 2 pt1')
+                actions.insert(8, 'rotation 2 pt2')
+        elif 5 in insertions:
+            actions.pop(6)
+            actions.insert(6, 'rotation 2 pt1')
+            actions.insert(7, 'rotation 2 pt2')
+    action = actions[i]
+
 
     # deformation level: ['none', 'soft', 'medium', 'hard']
     if action in ['start', 'wind down']:
         deformation_level = 'none'
         force_level = 'none'
-    elif action in ['grasp', 'lift', 'rotation 1', 'buffer 1', 'rotation 2', 'buffer 2']:
+    elif action in ['grasp', 'grasp pt1', 'grasp pt2' 'lift', 'rotation 1', 'rotation 1 pt1', 'rotation 1 pt2', 'buffer 1', 'rotation 2', 'rotation 2 pt1', 'rotation 2 pt2', 'buffer 2']:
         deformation_level = deformation
         if deformation == 'soft':
             force_level = 'low'
@@ -99,15 +145,14 @@ def logical(i, deform_csv, force_csv, steps_csv, deformation, start_step, end_st
     # bbox = (extract_floats_from_string(steps_df.iloc[3, i]))
     # bbox_center = np.mean(np.array(bbox).reshape(3, 2), axis=1)
     # return (action, deformation_level, force_level)
-    return labeler.generate_sentence(action, deformation_level, force_level,
+    return labeler.generate_sentence(action='start', deformation_level='soft', force_level='low',
                                      stability='stable',
                                      add_trend='increasing'), action
 
-
-for i in range(1,10):
-    if i != 4:
-        annotation, action = logical(i, deform_csv, force_csv, steps_csv, deformation, steps_df.iloc[i-1, 1], steps_df.iloc[i, 1])
-        annotations_df.loc[len(annotations_df)] = {'action': action, 'step start': steps_df.iloc[i-1, 1], 'step end': steps_df.iloc[i, 1], 'annotation': annotation}
+pairings, insertions = split_for_model(steps_df)
+for i, (start, end) in enumerate(pairings):
+    annotation, action = logical(i, deform_csv, force_csv, steps_csv, deformation, start, end, insertions)
+    annotations_df.loc[len(annotations_df)] = {'action': action, 'step start': start, 'step end': end, 'annotation': annotation}
 
 # annotations_df.loc[len(annotations_df)] = {'step start': steps_df.iloc[1,1], 'step end': steps_df.iloc[2,1], 'annotation':annotation} # Assuming the first step is the start
 
