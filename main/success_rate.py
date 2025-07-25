@@ -1,4 +1,4 @@
-# This code is to run through picked_up_3 and not_picked_up_3 directories and check if the object was picked up successfully.
+# This code is to run through picked_up_4 and not_picked_up_4 directories and check if the object was picked up successfully.
 
 import os
 import pandas as pd
@@ -18,8 +18,8 @@ def check_success_rate(base_path, objects, df, material="Elastic", targets=['sof
     missing_count = 0
 
     for name in objects:
-        csv_path = os.path.join(base_path, 'main', 'data', 'picked_up_3', 'csv', name, material)
-        csv_np_path = os.path.join(base_path, 'main', 'data', 'not_picked_up_3', 'csv', name, material)
+        csv_path = os.path.join(base_path, 'main', 'data', 'picked_up_4', 'csv', name, material)
+        csv_np_path = os.path.join(base_path, 'main', 'data', 'not_picked_up_4', 'csv', name, material)
         total_objects += 1
 
         # Check if this object is already in the DataFrame
@@ -76,12 +76,13 @@ def check_success_rate(base_path, objects, df, material="Elastic", targets=['sof
     print(f"Fail count: {fail_count}")
     print(f"Total count: {total_count}")
     print(f"Missing count: {missing_count}")
+    print(f"Success rate: {success_count / (success_count + fail_count) * 100:.2f}%")
 
     return df, in_progress_list  # Important: return the modified DataFrame
 
 def delete_empty_directories(base_path, names, material="Elastic", targets=['soft', 'medium', 'hard']):
     for name in names:
-        photo_path = os.path.join(base_path, 'main', 'data', 'picked_up_3', 'photos', name, material)
+        photo_path = os.path.join(base_path, 'main', 'data', 'picked_up_4', 'photos', name, material)
         for target in targets:
             target_csv_path = os.path.join(photo_path, target)
             if not os.path.isdir(target_csv_path) or not os.listdir(target_csv_path):
@@ -95,7 +96,7 @@ if __name__ == "__main__":
     dataframe_columns = ['object', 'soft', 'medium', 'hard']
     df = pd.DataFrame(columns=dataframe_columns)
 
-    folder_path = os.path.join(BASE_PATH, 'main', 'data', 'picked_up_3', 'csv')
+    folder_path = os.path.join(BASE_PATH, 'main', 'data', 'picked_up_4', 'csv')
     all_files = os.listdir(folder_path)
     # delete_empty_directories(BASE_PATH, all_files)
 
@@ -105,6 +106,6 @@ if __name__ == "__main__":
     print("In progress objects:", in_progress_list)
 
     # Save the DataFrame to a CSV file
-    output_csv_path = os.path.join(BASE_PATH, 'main', 'data', 'picked_up_3_success_rate.csv')
+    output_csv_path = os.path.join(BASE_PATH, 'main', 'data', 'picked_up_4_success_rate.csv')
     df.to_csv(output_csv_path, index=False)
 

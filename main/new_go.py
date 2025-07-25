@@ -38,7 +38,7 @@ def setup_paths(name, target_choice):
     # This function consolidates all path and directory creation logic.
 
     # Define base paths for data types
-    base_data_path = BASE_PATH + '/main/data/picked_up_3'
+    base_data_path = BASE_PATH + '/main/data/picked_up_4'
     photo_base = os.path.join(base_data_path, 'photos', name, MATERIAL_TYPE, target_choice)
     csv_base = os.path.join(base_data_path, 'csv', name, MATERIAL_TYPE, target_choice)
     # video_base = os.path.join(base_data_path, 'videos', name)
@@ -115,6 +115,7 @@ def create_scene(obj_path):
         vis_options=gs.options.VisOptions(visualize_mpm_boundary=True),
         mpm_options=gs.options.MPMOptions(lower_bound=(0.0, -0.1, -0.05), upper_bound=(0.75, 1.0, 1.0), grid_density=128)
     )
+
 
     cam = scene.add_camera(res=(1280, 720), pos=(-1.5, 1.5, 0.25), lookat=(0.45, 0.45, 0.4), fov=30)
 
@@ -282,7 +283,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
     step_no += 50
     STEP_DF.loc[len(STEP_DF)] = ['grasp', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
 
-    # 50-400: Grasp object
+    # 50-350: Grasp object
     print("######################### Grasping object with PD control... #########################")
     for i in range(300):
         step_no += 1
@@ -296,7 +297,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
     STEP_DF.loc[len(STEP_DF)] = ['lift', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
 
 
-    # 400-600: Lift object
+    # 350-550: Lift object
     print("######################### Lifting object with PD control... #########################")
     for i in range(200):
         step_no += 1
@@ -323,8 +324,8 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_c
         import shutil
 
         # Define source and destination paths
-        not_picked_up_photo_path = f'{BASE_PATH}/main/data/not_picked_up_3/photos/{name}/{MATERIAL_TYPE}/{target_choice}'
-        not_picked_up_csv_dir = f'{BASE_PATH}/main/data/not_picked_up_3/csv/{name}/{MATERIAL_TYPE}/{target_choice}'
+        not_picked_up_photo_path = f'{BASE_PATH}/main/data/not_picked_up_4/photos/{name}/{MATERIAL_TYPE}/{target_choice}'
+        not_picked_up_csv_dir = f'{BASE_PATH}/main/data/not_picked_up_4/csv/{name}/{MATERIAL_TYPE}/{target_choice}'
 
 
         if os.path.exists(not_picked_up_photo_path):
@@ -496,8 +497,8 @@ def main(obj_path, target_choice='soft'):
     # Run secondary motion sequence with rotation
     run_rotation(scene, cam, franka, gso_object, df, deform_csv, paths, target_choice)
 
-    # not_picked_up_photo_path = f'{BASE_PATH}/main/data/not_picked_up_3/photos/{name}/{MATERIAL_TYPE}/{target_choice}'
-    not_picked_up_csv_dir = f'{BASE_PATH}/main/data/not_picked_up_3/csv/{name}/{MATERIAL_TYPE}/{target_choice}'
+    # not_picked_up_photo_path = f'{BASE_PATH}/main/data/not_picked_up_4/photos/{name}/{MATERIAL_TYPE}/{target_choice}'
+    not_picked_up_csv_dir = f'{BASE_PATH}/main/data/not_picked_up_4/csv/{name}/{MATERIAL_TYPE}/{target_choice}'
 
     # Check if the object was picked up
     if STEP_DF.iloc[3, 0] == 'picked up':
@@ -561,8 +562,8 @@ def get_incomplete_objects(base_path, names, material="Elastic", targets=['soft'
     incomplete = []
 
     for name in names:
-        obj_dir = os.path.join(base_path, 'main', 'data', 'picked_up_3', 'csv', name, material)
-        obj_dir_np = os.path.join(base_path, 'main', 'data', 'not_picked_up_3', 'csv', name, material)
+        obj_dir = os.path.join(base_path, 'main', 'data', 'picked_up_4', 'csv', name, material)
+        obj_dir_np = os.path.join(base_path, 'main', 'data', 'not_picked_up_4', 'csv', name, material)
 
         # If the base object directory doesn't exist, all its targets are incomplete.
         if not os.path.isdir(obj_dir) and not os.path.isdir(obj_dir_np):

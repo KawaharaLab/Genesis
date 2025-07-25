@@ -228,10 +228,6 @@ def rotate_robot_by_angle_quat(scene, cam, df, photo_path, photo_interval, name,
         # step_change = np.array([angle_in, 0, 0, 0, 0, 0, 0, 0, 0])
         next_qpos = q_start + step_change  # Example linear motion for testing
         # print(next_qpos)
-        limits = franka_limits[f'A{n}']
-        if next_qpos[n-1] < limits['lower'] or next_qpos[n-1] > limits['upper']:
-            # print(f"Next position exceeds limits for A{n}: {next_qpos[n-1]} not in [{limits['lower']}, {limits['upper']}]")
-            break   # If the next position exceeds limits, stop the rotation
 
         franka.control_dofs_position(next_qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([gripper_force, gripper_force]), fingers_dof)
