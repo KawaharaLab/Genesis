@@ -3,52 +3,81 @@ import random
 class RobotLabelTemplate:
     def __init__(self):
         self.actions = {
-            'start': ['starting movement', 'initiating', 'advancing', 'aligning', 'reaching', 'positioning', 'preparing', 'approaching'],
+            # 'start': ['starting movement', 'initiating', 'advancing', 'aligning', 'reaching', 'positioning', 'preparing', 'approaching'],
             
-            'grasp': ['grasping', 'gripping', 'holding', 'securing', 'clasping', 'clamping', 'capturing', 'pinching', 'squeezing'],
-            'grasp pt1': ['grasping', 'gripping', 'holding', 'securing', 'clasping', 'clamping', 'capturing', 'pinching', 'squeezing'],
-            'grasp pt2': ['grasping', 'gripping', 'holding', 'securing', 'clasping', 'clamping', 'capturing', 'pinching', 'squeezing'],
+            # 'grasp': ['grasping', 'gripping', 'holding', 'securing', 'clasping', 'clamping', 'capturing', 'pinching', 'squeezing'],
+            # 'grasp pt1': ['grasping', 'gripping', 'holding', 'securing', 'clasping', 'clamping', 'capturing', 'pinching', 'squeezing'],
+            # 'grasp pt2': ['grasping', 'gripping', 'holding', 'securing', 'clasping', 'clamping', 'capturing', 'pinching', 'squeezing'],
             
-            'lift': ['lifting', 'raising', 'elevating', 'picking up'],
+            # 'lift': ['lifting', 'raising', 'elevating', 'picking up'],
             
-            'rotation 1': ['rotating', 'turning', 'twisting'],
-            'rotation 1 pt1': ['rotating', 'turning', 'twisting'],
-            'rotation 1 pt2': ['rotating', 'turning', 'twisting'],
+            # 'rotation 1': ['rotating', 'turning', 'twisting'],
+            # 'rotation 1 pt1': ['rotating', 'turning', 'twisting'],
+            # 'rotation 1 pt2': ['rotating', 'turning', 'twisting'],
 
-            'buffer 1':   ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-            'buffer 1 pt1': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-            'buffer 1 pt2': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
+            # 'buffer 1':   ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
+            # 'buffer 1 pt1': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
+            # 'buffer 1 pt2': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
 
-            'rotation 2': ['rotating', 'turning', 'twisting'],
-            'rotation 2 pt1': ['rotating', 'turning', 'twisting'],
-            'rotation 2 pt2': ['rotating', 'turning', 'twisting'],
+            # 'rotation 2': ['rotating', 'turning', 'twisting'],
+            # 'rotation 2 pt1': ['rotating', 'turning', 'twisting'],
+            # 'rotation 2 pt2': ['rotating', 'turning', 'twisting'],
 
-            'buffer 2':   ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-            'buffer 2 pt1': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-            'buffer 2 pt2': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
+            # 'buffer 2':   ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
+            # 'buffer 2 pt1': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
+            # 'buffer 2 pt2': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
 
-            'wind_down':  ['slowing down motion of', 'decelerating motion of', 'coming to rest with']
+            # 'wind_down':  ['slowing down motion of', 'decelerating motion of', 'coming to rest with']
+
+
+
+            'start': ['start'],
+            'grasp': ['grasping'],
+            'grasp pt 1': ['grasping'],
+            'grasp pt 2': ['grasping'],
+            'rotation 1': ['rotating'],
+            'rotation 1 pt 1': ['rotating'],
+            'rotation 1 pt 2': ['rotating'],
+            'buffer 1':   ['holding position of'],
+            'buffer 1 pt 1':   ['holding position of'],
+            'buffer 1 pt 2':   ['holding position of'],
+            'rotation 2': ['rotating'],
+            'rotation 2 pt 1': ['rotating'],
+            'rotation 2 pt 2': ['rotating'],
+            'wind_down':  ['stopping']
         }
 
         self.deformation_levels = {
-            'none': ['undeformed shape', 'maintaining shape', 'contactless', 'form-conservation',
-                     'shape-conservation', 'unyielding'],
-            'soft': ['soft-deformation', 'gentle-compression', 'lightly-yielding', 'minimal-resistance',
-                     'slight-yielding', 'cushioned-contact'],
-            'medium': ['medium-deformation', 'moderate-compression', 'controlled-yielding', 'steady-resistance',
-                       'balanced-yielding', 'firm-contact'],
-            'hard': ['hard-deformation', 'significant-compression', 'firm-yielding', 'strong-resistance',
-                     'substantial-yielding', 'rigid-contact'],
+            # 'none': ['undeformed shape', 'maintaining shape', 'contactless', 'form-conservation',
+            #          'shape-conservation', 'unyielding'],
+            # 'soft': ['soft-deformation', 'gentle-compression', 'lightly-yielding', 'minimal-resistance',
+            #          'slight-yielding', 'cushioned-contact'],
+            # 'medium': ['medium-deformation', 'moderate-compression', 'controlled-yielding', 'steady-resistance',
+            #            'balanced-yielding', 'firm-contact'],
+            # 'hard': ['hard-deformation', 'significant-compression', 'firm-yielding', 'strong-resistance',
+            #          'substantial-yielding', 'rigid-contact'],
+
+            'none': ['undeformed shape'],
+            'soft': ['soft-deformation'],
+            'medium': ['medium-deformation'],
+            'hard': ['hard-deformation']
         }
 
         self.force_descriptors = {
-            'none': ['forceless methods', 'zero-pressure', 'zero-force', 'contactless method'],
-            'low': ['gentle force', 'light pressure', 'minimal force', 'soft contact',
-                    'cushioned pressure', 'slight force', 'subtle force'],
-            'medium': ['moderate force', 'controlled pressure', 'steady force', 'balanced pressure',
-                       'firm contact', 'moderate force'],
-            'high': ['strong force', 'firm pressure', 'significant force', 'intense pressure',
-                     'heavy force', 'strong contact'],
+            # 'none': ['forceless methods', 'zero-pressure', 'zero-force', 'contactless method'],
+            # 'low': ['gentle force', 'light pressure', 'minimal force', 'soft contact',
+            #         'cushioned pressure', 'slight force', 'subtle force'],
+            # 'medium': ['moderate force', 'controlled pressure', 'steady force', 'balanced pressure',
+            #            'firm contact', 'moderate force'],
+            # 'high': ['strong force', 'firm pressure', 'significant force', 'intense pressure',
+            #          'heavy force', 'strong contact'],
+
+
+            'none': ['zero-force'],
+            'low': ['gentle force'],
+            'medium': ['moderate force'],
+            'high': ['strong force']
+
         }
 
         self.stability_descriptors = {
@@ -57,18 +86,27 @@ class RobotLabelTemplate:
         }
 
         self.add_trends = {
-            'increasing': ['increasing force', 'growing pressure', 'rising force'],
-            'decreasing': ['decreasing force', 'reducing pressure', 'diminishing force', 'lessening pressure'],
-            'constant': ['constant force', 'steady pressure', 'unchanging force'],
-            'deformation': ['progressive deformation', 'gradual yielding', 'increasing compression']
+            # 'increasing': ['increasing force', 'growing pressure', 'rising force'],
+            # 'decreasing': ['decreasing force', 'reducing pressure', 'diminishing force', 'lessening pressure'],
+            # 'constant': ['constant force', 'steady pressure', 'unchanging force'],
+            # 'deformation': ['progressive deformation', 'gradual yielding', 'increasing compression']
+            
+            'increasing': ['increasing force'],
+            'decreasing': ['decreasing force'],
+            'constant': ['constant force'],
+            'deformation': ['progressive deformation']
+
         }
 
-        self.positional_terms = ['end-effector', 'gripper', 'fingers', 'gripping mechanism']
-        self.object_refs = ['the object', 'target object', 'item']
+        # self.positional_terms = ['end-effector', 'gripper', 'fingers', 'gripping mechanism']
+        # self.object_refs = ['the object', 'target object', 'item']
+        self.positional_terms = ['end-effector']
+        self.object_refs = ['the object']
         self.transitions = ['while', 'as', 'during', 'throughout', 'simultaneously', 'then', 'followed by']
 
         self.droppped = {
-            'dropped': ['dropped', 'released', 'let go of'],
+            # 'dropped': ['dropped', 'released', 'let go of'],
+            'dropped': ['dropped']
         }
 
     def generate_sentence(self, action: str, deformation_level: str = None,
