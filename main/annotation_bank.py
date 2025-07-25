@@ -31,20 +31,24 @@ class RobotLabelTemplate:
 
 
 
-            'start': ['start'],
-            'grasp': ['grasping'],
-            'grasp pt 1': ['grasping'],
-            'grasp pt 2': ['grasping'],
-            'rotation 1': ['rotating'],
-            'rotation 1 pt 1': ['rotating'],
-            'rotation 1 pt 2': ['rotating'],
-            'buffer 1':   ['holding position of'],
-            'buffer 1 pt 1':   ['holding position of'],
-            'buffer 1 pt 2':   ['holding position of'],
-            'rotation 2': ['rotating'],
-            'rotation 2 pt 1': ['rotating'],
-            'rotation 2 pt 2': ['rotating'],
-            'wind_down':  ['stopping']
+            'start': 'start',
+            'lift': 'lifting',
+            'grasp': 'grasping',
+            'grasp pt1': 'grasping',
+            'grasp pt2': 'grasping',
+            'rotation 1': 'rotating',
+            'rotation 1 pt1': 'rotating',
+            'rotation 1 pt2': 'rotating',
+            'buffer 1':   'holding position of',
+            'buffer 1 pt1':   'holding position of',
+            'buffer 1 pt2':   'holding position of',
+            'buffer 2':   'holding position of',
+            'buffer 2 pt1':   'holding position of',
+            'buffer 2 pt2':   'holding position of',
+            'rotation 2': 'rotating',
+            'rotation 2 pt1': 'rotating',
+            'rotation 2 pt2': 'rotating',
+            'wind_down':  'stopping'
         }
 
         self.deformation_levels = {
@@ -57,10 +61,10 @@ class RobotLabelTemplate:
             # 'hard': ['hard-deformation', 'significant-compression', 'firm-yielding', 'strong-resistance',
             #          'substantial-yielding', 'rigid-contact'],
 
-            'none': ['undeformed shape'],
-            'soft': ['soft-deformation'],
-            'medium': ['medium-deformation'],
-            'hard': ['hard-deformation']
+            'none': 'undeformed shape',
+            'soft': 'soft-deformation',
+            'medium': 'medium-deformation',
+            'hard': 'hard-deformation'
         }
 
         self.force_descriptors = {
@@ -73,16 +77,19 @@ class RobotLabelTemplate:
             #          'heavy force', 'strong contact'],
 
 
-            'none': ['zero-force'],
-            'low': ['gentle force'],
-            'medium': ['moderate force'],
-            'high': ['strong force']
+            'none': 'zero-force',
+            'low': 'gentle force',
+            'medium': 'moderate force',
+            'high': 'strong force'
 
         }
 
         self.stability_descriptors = {
-            'stable': ['stable grasp', 'secure hold', 'firm grip', 'controlled grasp', 'steady contact'],
-            'unstable': ['unstable grasp', 'loose grip', 'slipping contact', 'precarious hold', 'uncertain grip']
+            #'stable': ['stable grasp', 'secure hold', 'firm grip', 'controlled grasp', 'steady contact'],
+            #'unstable': ['unstable grasp', 'loose grip', 'slipping contact', 'precarious hold', 'uncertain grip']
+            'stable': ['stable grasp'],
+            'unstable': ['unstable grasp']
+
         }
 
         self.add_trends = {
@@ -91,17 +98,17 @@ class RobotLabelTemplate:
             # 'constant': ['constant force', 'steady pressure', 'unchanging force'],
             # 'deformation': ['progressive deformation', 'gradual yielding', 'increasing compression']
             
-            'increasing': ['increasing force'],
-            'decreasing': ['decreasing force'],
-            'constant': ['constant force'],
-            'deformation': ['progressive deformation']
+            'increasing': 'increasing force',
+            'decreasing':'decreasing force',
+            'constant': 'constant force',
+            'deformation': 'progressive deformation'
 
         }
 
         # self.positional_terms = ['end-effector', 'gripper', 'fingers', 'gripping mechanism']
         # self.object_refs = ['the object', 'target object', 'item']
-        self.positional_terms = ['end-effector']
-        self.object_refs = ['the object']
+        self.positional_terms = 'end-effector'
+        self.object_refs = 'the object'
         self.transitions = ['while', 'as', 'during', 'throughout', 'simultaneously', 'then', 'followed by']
 
         self.droppped = {
@@ -117,9 +124,12 @@ class RobotLabelTemplate:
         """
         parts = []
 
-        effector = random.choice(self.positional_terms)
-        object_ref = random.choice(self.object_refs)
-        action_phrase = random.choice(self.actions.get(action))
+        # effector = random.choice(self.positional_terms)
+        # object_ref = random.choice(self.object_refs)
+        # action_phrase = random.choice(self.actions.get(action))
+        effector = self.positional_terms
+        object_ref = self.object_refs
+        action_phrase = self.actions[action]
         if action in ['grasp pt2', 'rotation 1 pt2', 'rotation 2 pt2', 'buffer 1 pt2', 'buffer 2 pt2']:
             base = f"{effector} continue {action_phrase} {object_ref}"
         else:
@@ -138,19 +148,23 @@ class RobotLabelTemplate:
             parts.append("maintaining a stable hold")
 
         if force_level:
-            force_phrase = random.choice(self.force_descriptors.get(force_level, []))
+            #force_phrase = random.choice(self.force_descriptors.get(force_level, []))
+            force_phrase = self.force_descriptors.get(force_level, [])
             parts.append(f"using {force_phrase}")
 
         if deformation_level:
-            deform_phrase = random.choice(self.deformation_levels.get(deformation_level, []))
+            # deform_phrase = random.choice(self.deformation_levels.get(deformation_level, []))
+            deform_phrase = self.deformation_levels.get(deformation_level, [])
             parts.append(f"causing {deform_phrase}")
 
         if stability:
-            stability_phrase = random.choice(self.stability_descriptors.get(stability, []))
+            #stability_phrase = random.choice(self.stability_descriptors.get(stability, []))
+            stability_phrase = self.stability_descriptors.get(stability, [])
             parts.append(f"maintaining {stability_phrase}")
 
         if add_trend:
-            add_trend_phrase = random.choice(self.add_trends.get(add_trend, []))
+            #add_trend_phrase = random.choice(self.add_trends.get(add_trend, []))
+            add_trend_phrase = self.add_trends.get(add_trend, [])
             parts.append(f"with {add_trend_phrase}")
 
         if dropped:

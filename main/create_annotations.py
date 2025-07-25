@@ -5,7 +5,7 @@ import numpy as np
 from multiprocessing import Process
 import time
 
-BASE_PATH = '/Users/no.166/Documents/Azka\'s Workspace/Genesis'
+BASE_PATH = '/Users/hh/Desktop/genesis/genesis_forked/Genesis'
 
 #------------------- Generate labels -------------------#
 
@@ -127,7 +127,7 @@ def get_picked_up_objects(all_objects, material='Elastic'):
     to_do = []
     for obj_name in all_objects:
         for target in ['hard', 'medium', 'soft']:
-            picked_up_path = os.path.join(BASE_PATH, 'main', 'data', 'picked_up_4', 'csv', obj_name)
+            picked_up_path = os.path.join(BASE_PATH, 'main', 'data', 'picked_up_6', 'csv', obj_name)
             test_path = os.path.join(picked_up_path, material, target)
             # if csv_path is empty, then do not include this object
             if not os.path.exists(test_path) or not os.listdir(test_path):
@@ -182,14 +182,14 @@ def main(obj_name, picked_up_path, deformation, material='Elastic'):
 
 
     # ------------------- Save the annotations to a CSV file -------------------#
-    os.makedirs(os.path.join(BASE_PATH, 'main', 'data', 'picked_up_4', 'annotations'), exist_ok=True)
-    output_csv_path = os.path.join(BASE_PATH, 'main', 'data', 'picked_up_4', 'annotations', f"{obj_name}_{material}_{deformation}_annotations.csv")
+    os.makedirs(os.path.join(BASE_PATH, 'main', 'data', 'picked_up_6', 'annotations'), exist_ok=True)
+    output_csv_path = os.path.join(BASE_PATH, 'main', 'data', 'picked_up_6', 'annotations', f"{obj_name}_{material}_{deformation}_annotations.csv")
     annotations_df.to_csv(output_csv_path, index=False)
 
 labeler = RobotLabelTemplate()
 
 if __name__ == "__main__":
-    folder_path = os.path.join(BASE_PATH, "main", "data", "picked_up_4", "csv")
+    folder_path = os.path.join(BASE_PATH, "main", "data", "picked_up_6", "csv")
     all_objects = os.listdir(folder_path)
     selected_objects = get_picked_up_objects(all_objects)
     # selected_objects = [('Crayola_Bonus_64_Crayons', 'medium')]
