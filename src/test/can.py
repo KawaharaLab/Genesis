@@ -1,15 +1,12 @@
 import argparse
-
 import numpy as np
-import pandas as pd
 import genesis as gs
-
+import pandas as pd
 def make_step(scene, cam, franka, df):
     """フランカを目標位置に移動させるステップ関数"""
     scene.step()
     cam.render()
-    scene.clear_debug_objects()
-    links_force_torque = franka.get_links_force_torque([9, 10], sensor=True) # 手先のlocal_indexは9, 10
+    links_force_torque = franka.get_links_force_torque([9, 10]) # 手先のlocal_indexは9, 10
     links_force_torque = [x.item() for x in links_force_torque[0]] + [x.item() for x in links_force_torque[1]]
     df.loc[len(df)] = [
         scene.t,
@@ -18,73 +15,83 @@ def make_step(scene, cam, franka, df):
         links_force_torque[6], links_force_torque[7], links_force_torque[8],
         links_force_torque[9], links_force_torque[10], links_force_torque[11],
     ]
-    #force
-    # scene.draw_debug_arrow(
-    #     pos=franka.get_link("left_finger").get_pos().tolist(),
-    #     vec=([0.5, 0.0, 0.0]),
-    # )
-    # scene.draw_debug_arrow(
-    #     pos=franka.get_link("right_finger").get_pos().tolist(),
-    #     vec=([0.0, 0.0, 0.5]),
-    # )
+    # #force
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-v", "--video", default="grasp_bottle_contact.mp4")
-    parser.add_argument("-o", "--outfile", default="grasp_bottle_contact.csv")
+    parser.add_argument("-v", "--video", default="grasp_can.mp4")
+    parser.add_argument("-o", "--outfile", default="grasp_can.csv")
     args = parser.parse_args()
     df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz",
                            "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz"])
-
     ########################## init ##########################
+    # gs.init(backend=gs.cpu, debug=True, logging_level="error")
     gs.init(backend=gs.cpu)
-
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
         camera_pos=(3, -1, 1.5),
         camera_lookat=(0.0, 0.0, 0.0),
         camera_fov=30,
+        max_FPS=60,
     )
-
     scene = gs.Scene(
-        viewer_options=viewer_options,
-        rigid_options=gs.options.RigidOptions(
-            dt=0.01,
+        sim_options=gs.options.SimOptions(
+            dt=1e-3,
+            substeps=15,
+        ),
+        viewer_options=gs.options.ViewerOptions(
+            camera_pos=(3, -1, 1.5),
+            camera_lookat=(0.0, 0.0, 0.0),
+            camera_fov=30,
         ),
         show_viewer=False,
+        vis_options=gs.options.VisOptions(
+            visualize_mpm_boundary=True,
+        ),
+        mpm_options=gs.options.MPMOptions(
+            lower_bound=(0.0, -0.1, -0.05),
+            upper_bound=(0.75, 1.0, 1.0),
+            grid_density=128,
+        ),
     )
+    # ---- 追加: オフスクリーンカメラ ------------------------
     cam = scene.add_camera(
-        pos=(3, -1, 1.5),
-        lookat=(0.0, 0.0, 0.0),
+        res=(1280, 720),
+        # X 軸方向からのサイドビュー、Z を 0.1（缶の中心高さ程度）にして水平に
+        pos=(2.0, 2.0, 0.1),
+        lookat=(0.0, 0.0, 0.1),
         fov=30,
-        GUI=False,
     )
+    # --------------------------------------------------------
     ########################## entities ##########################
     plane = scene.add_entity(
         gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
     )
-    bottle = scene.add_entity(
-        material=gs.materials.Rigid(rho=300),
-        morph=gs.morphs.URDF(
-            file="urdf/3763/mobility_vhacd.urdf",
-            scale=0.09,
-            pos=(0.65, 0.0, 0.036),
-            euler=(0, 90, 0),
+    chips_can = scene.add_entity(
+        material=gs.materials.MPM.ElastoPlastic( #PET
+            E=2.45e6,
+            nu=0.35,
+            rho=1400,
+            use_von_mises=True,
+            von_mises_yield_stress=18000,
         ),
-        # visualize_contact=True,
+        morph=gs.morphs.Mesh(
+            file="data/objects/002_master_chef_can/poisson/textured.obj",
+            scale=0.6, #record
+            pos=(0.45, 0.45, 0.0),
+            euler=(0, 0, 0), #record
+        ),
     )
     franka = scene.add_entity(
         gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"),
+        material=gs.materials.Rigid(coup_friction=1.0),
     )
 
     ########################## build ##########################
-    scene.build(env_spacing=(1, 1))
-
+    scene.build()
     motors_dof = np.arange(7)
     fingers_dof = np.arange(7, 9)
-
     # Optional: set control gains
-    franka.set_qpos(np.array([1.56, -0.72, -0.02, -2.09, 0.04, 1.33, 2.4, 0.01, 0.01]))
     franka.set_dofs_kp(
         np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]),
     )
@@ -95,60 +102,31 @@ def main():
         np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]),
         np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]),
     )
-
     end_effector = franka.get_link("hand")
-    cam.start_recording()
     # move to pre-grasp pose
+    x = 0.45
+    y = 0.45
+    z = 0.6
     qpos = franka.inverse_kinematics(
         link=end_effector,
-        pos=np.array([0.65, 0.0, 0.25]),
+        pos=np.array([x, y, z]),
         quat=np.array([0, 1, 0, 0]),
     )
-    qpos[..., -2:] = 0.04
-
-    path = franka.plan_path(qpos)
-    for waypoint in path:
-        franka.control_dofs_position(waypoint)
-        make_step(scene, cam, franka, df)
-    for i in range(30):
-        make_step(scene, cam, franka, df)
-
+    qpos[-2:] = 0.04
+    franka.set_dofs_position(qpos[:-2], motors_dof)
+    franka.set_dofs_position(qpos[-2:], fingers_dof)
+    cam.start_recording()
+    #=================この中を調整========================
     # reach
-    qpos = franka.inverse_kinematics(
-        link=end_effector,
-        pos=np.array([0.65, 0.0, 0.142]),
-        quat=np.array([0, 1, 0, 0]),
-    )
-    franka.control_dofs_position(qpos[..., :-2], motors_dof)
-    for i in range(100):
+    for i in range (100):
+        franka.set_dofs_position(qpos[:-2], motors_dof)
+        franka.set_dofs_position(qpos[-2:], fingers_dof)
         make_step(scene, cam, franka, df)
-
-    # grasp
-    franka.control_dofs_position(qpos[..., :-2], motors_dof)
-    franka.control_dofs_position(
-        np.array([0, 0]), fingers_dof
-    )  # you can use position control
-    for i in range(100):
-        make_step(scene, cam, franka, df)
-
-    # lift
-    qpos = franka.inverse_kinematics(
-        link=end_effector,
-        pos=np.array([0.65, 0.0, 0.3]),
-        quat=np.array([0, 1, 0, 0]),
-    )
-    franka.control_dofs_position(qpos[..., :-2], motors_dof)
-    franka.control_dofs_force(
-        np.array([-20, -20]), fingers_dof
-    )  # can also use force control
-    for i in range(1000):
-        make_step(scene, cam, franka, df)
-
-    cam.stop_recording(save_to_filename=args.video, fps=100)
+    # ---- 追加: 録画終了・保存 -------------------------------
+    cam.stop_recording(save_to_filename=args.video, fps=200)
     print(f"saved -> {args.video}")
     df.to_csv(args.outfile, index=False)
     print(f"saved -> {args.outfile}")
-
-
+    # --------------------------------------------------------
 if __name__ == "__main__":
     main()

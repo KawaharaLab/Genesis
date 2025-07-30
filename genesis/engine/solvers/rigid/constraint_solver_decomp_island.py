@@ -510,6 +510,7 @@ class ConstraintSolverIsland:
             i_e = self.contact_island.entity_id[i_e_, i_b]
             for i_l in range(self.entities_info.link_start[i_e], self.entities_info.link_end[i_e]):
                 self._solver.links_state.contact_force[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
+                self._solver.links_state.contact_torque[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
 
         for i_island_col in range(self.contact_island.island_col[island, i_b].n):
             i_col_ = self.contact_island.island_col[island, i_b].start + i_island_col
@@ -530,6 +531,16 @@ class ConstraintSolverIsland:
             )
             self._solver.links_state.contact_force[contact_data.link_b, i_b] = (
                 self._solver.links_state.contact_force[contact_data.link_b, i_b] + force
+            )
+            pos_a = self._solver.links_state.pos[contact_data.link_a, i_b]
+            pos_b = self._solver.links_state.pos[contact_data.link_b, i_b]
+            torque_a = ti.math.cross(contact_data.pos - pos_a, -force)
+            torque_b = ti.math.cross(contact_data.pos - pos_b, force)
+            self._solver.links_state.contact_torque[contact_data.link_a, i_b] = (
+                self._solver.links_state.contact_torque[contact_data.link_a, i_b] + torque_a
+            )
+            self._solver.links_state.contact_torque[contact_data.link_b, i_b] = (
+                self._solver.links_state.contact_torque[contact_data.link_b, i_b] + torque_b
             )
 
     @ti.func

@@ -33,7 +33,7 @@ dependencies = [
     # Use by `pyrender` to compile low-level OpenGL rendering pipeline
     "numba",
     # Use by `Mesh.remesh`, which is involve in `PBDTetEntity.sample`
-    "pymeshlab",
+    "pymeshlab<2025.7",
     # Optional `trimesh` dependency for loading `.dae` mesh files
     "pycollada",
     # Used for parsing `.glb` mesh files
@@ -60,7 +60,8 @@ dependencies = [
     # Motion Planning library
     # * 1.7.0: First version distributed on PyPI (no pre-compiled binaries for Windows OS).
     #          Fix OMPL DLL search directory.
-    "ompl>=1.7.0; platform_system != 'Windows'"
+    "ompl>=1.7.0; platform_system != 'Windows'",
+    "huggingface-hub>=0.33.4",
 ]
 
 [tool.setuptools.packages.find]

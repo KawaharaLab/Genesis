@@ -636,6 +636,7 @@ class StructLinksState:
         self.cfrc_applied_ang = V(dtype=gs.ti_vec3, shape=shape)
         self.cfrc_applied_vel = V(dtype=gs.ti_vec3, shape=shape)
         self.contact_force = V(dtype=gs.ti_vec3, shape=shape)
+        self.contact_torque = V(dtype=gs.ti_vec3, shape=shape)
         self.hibernated = V(dtype=gs.ti_int, shape=shape)
 
 

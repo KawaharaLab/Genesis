@@ -6,7 +6,11 @@ imgui.ini
 sftp-config.json
 *.mp4
 genesis/assets/terrain/
-
+*.npz
+uv.lock
+*.csv
+*.png
+plot.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
