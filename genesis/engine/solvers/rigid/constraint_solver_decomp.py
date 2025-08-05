@@ -1143,6 +1143,7 @@ def func_update_contact_force(
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_l, i_b in ti.ndrange(n_links, _B):
         links_state.contact_force[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
+        links_state.contact_torque[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
 
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b in range(_B):
@@ -1168,7 +1169,16 @@ def func_update_contact_force(
             links_state.contact_force[contact_data_link_b, i_b] = (
                 links_state.contact_force[contact_data_link_b, i_b] + force
             )
-
+            pos_a = links_state.pos[contact_data_link_a, i_b]
+            pos_b = links_state.pos[contact_data_link_b, i_b]
+            torque_a = ti.math.cross(collider_state.contact_data.pos[i_c, i_b] - pos_a, -force)
+            torque_b = ti.math.cross(collider_state.contact_data.pos[i_c, i_b] - pos_b, force)
+            links_state.contact_torque[contact_data_link_a, i_b] = (
+                links_state.contact_torque[contact_data_link_a, i_b] + torque_a
+            )
+            links_state.contact_torque[contact_data_link_b, i_b] = (
+                links_state.contact_torque[contact_data_link_b, i_b] + torque_b
+            )
 
 @ti.kernel
 def func_update_qacc(

@@ -760,7 +760,9 @@ class RigidEntity(Entity):
 
         # Add collision geometries
         for g_info in cg_infos:
-            friction = g_info.get("friction", self.material.friction)
+            friction = self.material.friction
+            if friction is None:
+                friction = g_info.get("friction", self.material.friction)
             if friction is None:
                 friction = gu.default_friction()
             link._add_geom(
@@ -1789,6 +1791,27 @@ class RigidEntity(Entity):
         """
         links_idx = self._get_idx(links_idx_local, self.n_links, self._link_start, unsafe=True)
         return self._solver.get_links_acc_ang(links_idx, envs_idx, unsafe=unsafe)
+
+    @gs.assert_built
+    def get_links_force_torque(self, links_idx_local=None, envs_idx=None, *, unsafe=False, sensor=True):
+        """
+        Returns force and torque of the specified entity's links expressed at
+        their respective origin in local coordinates.
+
+        Parameters
+        ----------
+        links_idx_local : None | array_like
+            The indices of the links. Defaults to None.
+        envs_idx : None | array_like, optional
+            The indices of the environments. If None, all environments will be considered. Defaults to None.
+
+        Returns
+        -------
+        acc : torch.Tensor, shape (n_links, 6) or (n_envs, n_links, 6)
+            The force and torque of the specified entity's links.
+        """
+        links_idx = self._get_idx(links_idx_local, self.n_links, self._link_start, unsafe=True)
+        return self._solver.get_links_force_torque(links_idx, envs_idx, mimick_sensor=sensor, unsafe=unsafe)
 
     @gs.assert_built
     def get_links_inertial_mass(self, links_idx_local=None, envs_idx=None, *, unsafe=False):
