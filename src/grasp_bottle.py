@@ -41,7 +41,7 @@ def main():
     df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz",
                            "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz"])
     ########################## init ##########################
-    gs.init(backend=gs.cpu, precision="32", debug=True, logging_level="error")
+    gs.init(backend=gs.cpu)
 
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
