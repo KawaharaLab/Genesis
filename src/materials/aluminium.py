@@ -32,12 +32,11 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
         camera_pos=(3, -1, 1.5),
         camera_lookat=(0.0, 0.0, 0.0),
         camera_fov=30,
-        max_FPS=60,
     )
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=1e-3,
-            substeps=15,
+            substeps=1,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(3, -1, 1.5),
@@ -45,14 +44,6 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
             camera_fov=30,
         ),
         show_viewer=False,
-        vis_options=gs.options.VisOptions(
-            visualize_mpm_boundary=True,
-        ),
-        mpm_options=gs.options.MPMOptions(
-            lower_bound=(0.0, -0.1, -0.05),
-            upper_bound=(0.75, 1.0, 1.0),
-            grid_density=128,
-        ),
     )
     # ---- 追加: オフスクリーンカメラ ------------------------
     cam = scene.add_camera(

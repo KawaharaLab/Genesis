@@ -1,20 +1,22 @@
-import torch
+import numpy as np
 import genesis as gs
 from .make_step import make_step
 
 def control_franka(scene, cam, franka, grasp_pos, qpos_init, strength, df, base_photo_name, photo_interval):
-    motors_dof = torch.arange(7, dtype=gs.tc_int, device=gs.device)
-    fingers_dof = torch.arange(7, 9, dtype=gs.tc_int, device=gs.device)
+    # DOF インデックスを NumPy で定義
+    motors_dof = np.arange(7)
+    fingers_dof = np.arange(7, 9)
+
     # Optional: set control gains
     franka.set_dofs_kp(
-        torch.tensor([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100], device=gs.device),
+        np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]),
     )
     franka.set_dofs_kv(
-        torch.tensor([450, 450, 350, 350, 200, 200, 200, 10, 10], device=gs.device),
+        np.array([450, 450, 350, 350, 200, 200, 200, 10, 10]),
     )
     franka.set_dofs_force_range(
-        torch.tensor([-87, -87, -87, -87, -12, -12, -12, -100, -100], device=gs.device),
-        torch.tensor([87, 87, 87, 87, 12, 12, 12, 100, 100], device=gs.device),
+        np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]),
+        np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]),
     )
     end_effector = franka.get_link("hand")
     # move to pre-grasp pose
@@ -32,82 +34,71 @@ def control_franka(scene, cam, franka, grasp_pos, qpos_init, strength, df, base_
     franka.set_dofs_position(qpos[-2:], fingers_dof)
     cam.start_recording()
     #=================この中を調整========================
-    # 事前にテンソルを１回だけ作成（ループ内で再利用）
-    pos_tensor = torch.empty(3, dtype=gs.tc_float, device=gs.device)
-    quat_tensor = torch.tensor([0, 1, 0, 0], dtype=gs.tc_float, device=gs.device)
-    force_tensor = torch.empty(2, dtype=gs.tc_float, device=gs.device)
-    finger_pos_tensor = torch.empty(2, dtype=gs.tc_float, device=gs.device)
-
     # reach
-    for i in range(z_steps):
-        x -= dx; y -= dy; z -= dz
-        pos_tensor[0], pos_tensor[1], pos_tensor[2] = x, y, z
-        qpos = franka.inverse_kinematics(
-            link=end_effector,
-            pos=pos_tensor,
-            quat=quat_tensor,
-        )
-        qpos[-2:] = 0.04
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_position(qpos[-2:], fingers_dof)
+    qpos = franka.inverse_kinematics(
+        link=end_effector,
+        pos=grasp_pos,
+        quat=np.array([0, 1, 0, 0]),
+    )
+    qpos[-2:] = 0.04
+    path = franka.plan_path(qpos, num_waypoints=2000)
+    for waypoint in path:
+        franka.control_dofs_position(waypoint)
+        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    for _ in range(30):
         make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
     # grasp
     for i in range(300):
-        # pos, quat は変わらないので再利用
-        qpos = franka.inverse_kinematics(
-            link=end_effector,
-            pos=pos_tensor,
-            quat=quat_tensor,
-        )
-        force_tensor.fill_(-strength/300 * i)
+        force = np.array([-strength/300 * i, -strength/300 * i])
         franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_force(force_tensor, fingers_dof)
+        franka.control_dofs_force(force, fingers_dof)
         make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
     # lift up
-    for i in range(z_steps):
-        z += dz
-        pos_tensor[2] = z
-        qpos = franka.inverse_kinematics(
-            link=end_effector,
-            pos=pos_tensor,
-            quat=quat_tensor,
-        )
-        force_tensor.fill_(-strength)
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_force(force_tensor, fingers_dof)
+    qpos = franka.inverse_kinematics(
+        link=end_effector,
+        pos=np.array([grasp_pos[0], grasp_pos[1], z]),
+        quat=np.array([0, 1, 0, 0]),
+    )
+    path = franka.plan_path(qpos, num_waypoints=3000)
+    for waypoint in path:
+        franka.control_dofs_position(waypoint[:-2], motors_dof)
         make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    # 小幅往復
-    for i in range(3000):
-        qpos[-4] -= 0.0002
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_force(force_tensor, fingers_dof)
-        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    # # 小幅往復
+    # for i in range(3000):
+    #     qpos = franka.get_qpos()
+    #     qpos[-4] -= 0.0002
+    #     franka.control_dofs_position(qpos[:-2], motors_dof)
+    #     franka.control_dofs_force(np.array([-strength, -strength]), fingers_dof)
+    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    for i in range(3000):
-        qpos[-4] += 0.0002
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_force(force_tensor, fingers_dof)
-        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    # for i in range(3000):
+    #     qpos = franka.get_qpos()
+    #     qpos[-4] += 0.0002
+    #     franka.control_dofs_position(qpos[:-2], motors_dof)
+    #     franka.control_dofs_force(np.array([-strength, -strength]), fingers_dof)
+    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    for i in range(3000):
-        qpos[0] += 0.0002
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_force(force_tensor, fingers_dof)
-        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    # for i in range(3000):
+    #     qpos = franka.get_qpos()
+    #     qpos[0] += 0.0002
+    #     franka.control_dofs_position(qpos[:-2], motors_dof)
+    #     franka.control_dofs_force(np.array([-strength, -strength]), fingers_dof)
+    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    for i in range(1000):
-        force_tensor.fill_(-strength + strength/1000 * i)
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_force(force_tensor, fingers_dof)
-        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    # for i in range(1000):
+    #     force = np.array([-strength + strength/1000 * i, -strength + strength/1000 * i])
+    #     qpos = franka.get_qpos()
+    #     franka.control_dofs_position(qpos[:-2], motors_dof)
+    #     franka.control_dofs_force(force, fingers_dof)
+    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    # フィンガー開閉
-    for i in range(400):
-        finger_pos_tensor.fill_(0.0001 * i)
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_position(finger_pos_tensor, fingers_dof)
-        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
-    
+    # # フィンガー開閉
+    # for i in range(400):
+    #     finger_pos = np.array([0.0001 * i, 0.0001 * i])
+    #     qpos = franka.get_qpos()
+    #     franka.control_dofs_position(qpos[:-2], motors_dof)
+    #     franka.control_dofs_position(finger_pos, fingers_dof)
+    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)

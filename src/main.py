@@ -32,10 +32,10 @@ qpos_init = torch.tensor([-2.0894, -0.2523,  2.8358, -1.5729,  0.0775,  1.8133, 
 
 photo_interval = 100  # フォトの間隔
 
-for object_data in object_data_list[:5]:
-    if os.path.exists(f"data/videos/{object_data['id']}/{object_data['id']}_aluminium_250.mp4"):
-        print(f"skipping {object_data['id']}")
-        continue
+for object_data in object_data_list[:1]:
+    # if os.path.exists(f"data/videos/{object_data['id']}/{object_data['id']}_aluminium_250.mp4"):
+    #     print(f"skipping {object_data['id']}")
+    #     continue
     if object_data['skip']:
         #print(f"Skipping object ID: {object_data['id']}")
         continue

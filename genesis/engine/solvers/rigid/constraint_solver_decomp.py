@@ -1183,8 +1183,8 @@ def func_update_contact_force(
             )
             pos_a = links_state.pos[contact_data_link_a, i_b]
             pos_b = links_state.pos[contact_data_link_b, i_b]
-            torque_a = ti.math.cross(collider_state.contact_data.pos[i_c, i_b] - pos_a, -force)
-            torque_b = ti.math.cross(collider_state.contact_data.pos[i_c, i_b] - pos_b, force)
+            torque_a = (collider_state.contact_data.pos[i_c, i_b] - pos_a).cross(-force)
+            torque_b = (collider_state.contact_data.pos[i_c, i_b] - pos_b).cross(force)
             links_state.contact_torque[contact_data_link_a, i_b] = (
                 links_state.contact_torque[contact_data_link_a, i_b] + torque_a
             )

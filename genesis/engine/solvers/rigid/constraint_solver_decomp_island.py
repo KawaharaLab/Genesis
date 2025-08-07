@@ -534,8 +534,8 @@ class ConstraintSolverIsland:
             )
             pos_a = self._solver.links_state.pos[contact_data.link_a, i_b]
             pos_b = self._solver.links_state.pos[contact_data.link_b, i_b]
-            torque_a = ti.math.cross(contact_data.pos - pos_a, -force)
-            torque_b = ti.math.cross(contact_data.pos - pos_b, force)
+            torque_a = (contact_data.pos - pos_a).cross(-force)
+            torque_b = (contact_data.pos - pos_b).cross(force)
             self._solver.links_state.contact_torque[contact_data.link_a, i_b] = (
                 self._solver.links_state.contact_torque[contact_data.link_a, i_b] + torque_a
             )

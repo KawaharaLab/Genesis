@@ -67,13 +67,7 @@ def rubber(object_name, object_euler, object_scale, grasp_pos, object_path, qpos
         gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
     )
     chips_can = scene.add_entity(
-        material=gs.materials.MPM.Elastic( #Rubber
-            E=5000,
-            nu=0.499,
-            rho=920,
-            sampler="pbs",
-            model="neohooken"
-        ),
+        material=gs.materials.MPM.Elastic(),
         morph=gs.morphs.Mesh(
             file=object_path,
             scale=object_scale, #record

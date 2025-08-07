@@ -2009,48 +2009,16 @@ class RigidSolver(Solver):
             None, links_idx, self.n_links, 6, envs_idx, idx_name="links_idx", unsafe=unsafe
         )
         tensor = _tensor.unsqueeze(0) if self.n_envs == 0 else _tensor
-        self._kernel_get_links_force_torque(mimick_sensor, tensor, links_idx, envs_idx)
+        kernel_get_links_force_torque(
+            mimick_sensor,
+            tensor,
+            links_idx,
+            envs_idx,
+            self.links_state,
+            self._rigid_global_info,
+            self._static_rigid_sim_config,
+        )
         return _tensor
-
-    @ti.kernel
-    def _kernel_get_links_force_torque(
-        self,
-        mimick_sensor: ti.i32,
-        tensor: ti.types.ndarray(),
-        links_idx: ti.types.ndarray(),
-        envs_idx: ti.types.ndarray(),
-    ):
-        ti.loop_config(serialize=self._para_level < gs.PARA_LEVEL.PARTIAL)
-        for i_l_, i_b_ in ti.ndrange(links_idx.shape[0], envs_idx.shape[0]):
-            i_l = links_idx[i_l_]
-            i_b = envs_idx[i_b_]
-
-            # Compute links spatial acceleration expressed at links origin in world coordinates
-            cpos = self.links_state.pos[i_l, i_b] - self.links_state.COM[i_l, i_b]
-            # acc_ang = self.links_state.cacc_ang[i_l, i_b]
-            # acc_lin = self.links_state.cacc_lin[i_l, i_b] + acc_ang.cross(cpos)
-            internal_force = -self.links_state.cfrc_vel[i_l, i_b]  # internal force in world coordinates
-            internal_torque = self.links_state.cfrc_ang[i_l, i_b] - ti.math.cross(cpos, internal_force)  # internal torque in world coordinates
-
-            # Compute links classical linear acceleration expressed at links origin in world coordinates
-            # ang = self.links_state.cd_ang[i_l, i_b]
-            # vel = self.links_state.cd_vel[i_l, i_b] + ang.cross(cpos)
-            contact_force = self.links_state.contact_force[i_l, i_b]  # contact force in world coordinates
-            contact_torque = self.links_state.contact_torque[i_l, i_b]  # contact torque in world coordinates
-            # acc_classic_lin = acc_lin + ang.cross(vel)
-            force = internal_force + contact_force  # total force in world coordinates
-            torque = internal_torque + contact_torque  # total torque in world coordinates
-            # force = contact_force
-            # torque = contact_torque
-            # Mimick sensor signal if requested
-            if mimick_sensor:
-                # Move the results in local links frame
-                force = gu.ti_inv_transform_by_quat(force, self.links_state.quat[i_l, i_b])
-                torque = gu.ti_inv_transform_by_quat(torque, self.links_state.quat[i_l, i_b])
-
-            for i in ti.static(range(3)):
-                tensor[i_b_, i_l_, i] = force[i]
-                tensor[i_b_, i_l_, i + 3] = torque[i]
 
     def get_links_root_COM(self, links_idx=None, envs_idx=None, *, unsafe=False):
         """
@@ -6588,6 +6556,44 @@ def kernel_get_links_acc(
         for i in ti.static(range(3)):
             tensor[i_b_, i_l_, i] = acc_classic_lin[i]
 
+@ti.kernel
+def kernel_get_links_force_torque(
+    mimick_sensor: ti.i32,
+    tensor: ti.types.ndarray(),
+    links_idx: ti.types.ndarray(),
+    envs_idx: ti.types.ndarray(),
+    links_state: array_class.LinksState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: ti.template(),
+):
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
+    for i_l_, i_b_ in ti.ndrange(links_idx.shape[0], envs_idx.shape[0]):
+        i_l = links_idx[i_l_]
+        i_b = envs_idx[i_b_]
+
+        #internal force and torque expressed at links origin in world coordinates
+        cpos = links_state.pos[i_l, i_b] - links_state.COM[i_l, i_b]
+        internal_force = -links_state.cfrc_vel[i_l, i_b]
+        internal_torque = -links_state.cfrc_ang[i_l, i_b] - cpos.cross(internal_force)
+
+        #contact force and torque are already expressed at links origin in world coordinates
+        contact_force = links_state.contact_force[i_l, i_b]
+        contact_torque = links_state.contact_torque[i_l, i_b]
+
+        force = internal_force + contact_force
+        torque = internal_torque + contact_torque
+        # force = contact_force
+        # torque = contact_torque
+
+        # Mimick sensor signal if requested
+        if mimick_sensor:
+            # Move the results in local links frame
+            force = gu.ti_inv_transform_by_quat(force, links_state.quat[i_l, i_b])
+            torque = gu.ti_inv_transform_by_quat(torque, links_state.quat[i_l, i_b])
+
+        for i in ti.static(range(3)):
+            tensor[i_b_, i_l_, i] = force[i]
+            tensor[i_b_, i_l_, i + 3] = torque[i]
 
 @ti.kernel
 def kernel_get_dofs_control_force(
