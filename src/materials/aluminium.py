@@ -1,7 +1,6 @@
 import argparse
 import genesis as gs
 import pandas as pd
-import torch
 from . import sim
 
 
@@ -25,8 +24,7 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
     # else:
     #     device = torch.device("cpu")
     #     gs.init(backend=gs.cpu, debug=True)
-    device = torch.device("cpu")
-    gs.init(backend=gs.cpu, logging_level="debug")
+    gs.init(backend=gs.gpu)
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
         camera_pos=(3, -1, 1.5),
@@ -44,6 +42,7 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
             camera_fov=30,
         ),
         show_viewer=False,
+        show_FPS=False,
     )
     # ---- 追加: オフスクリーンカメラ ------------------------
     cam = scene.add_camera(

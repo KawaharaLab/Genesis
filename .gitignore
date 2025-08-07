@@ -10,7 +10,6 @@ genesis/assets/terrain/
 uv.lock
 *.csv
 *.png
-plot.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

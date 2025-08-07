@@ -24,8 +24,7 @@ def rubber(object_name, object_euler, object_scale, grasp_pos, object_path, qpos
     # else:
     #     device = torch.device("cpu")
     #     gs.init(backend=gs.cpu, debug=True)
-    device = torch.device("cpu")
-    gs.init(backend=gs.cpu, logging_level="debug")
+    gs.init(backend=gs.gpu)
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
         camera_pos=(3, -1, 1.5),
@@ -36,7 +35,7 @@ def rubber(object_name, object_euler, object_scale, grasp_pos, object_path, qpos
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=1e-3,
-            substeps=15,
+            substeps=10,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(3, -1, 1.5),
@@ -45,13 +44,14 @@ def rubber(object_name, object_euler, object_scale, grasp_pos, object_path, qpos
         ),
         show_viewer=False,
         vis_options=gs.options.VisOptions(
-            visualize_mpm_boundary=True,
+            visualize_mpm_boundary=False,
         ),
         mpm_options=gs.options.MPMOptions(
             lower_bound=(0.0, -0.1, -0.05),
             upper_bound=(0.75, 1.0, 1.0),
             grid_density=128,
         ),
+        show_FPS=False,
     )
     # ---- 追加: オフスクリーンカメラ ------------------------
     cam = scene.add_camera(
@@ -89,7 +89,7 @@ def rubber(object_name, object_euler, object_scale, grasp_pos, object_path, qpos
         franka=franka,
         grasp_pos=grasp_pos,
         qpos_init=qpos_init,
-        strength=3,
+        strength=20,
         df=df,
         base_photo_name=base_photo_name,
         photo_interval=photo_interval

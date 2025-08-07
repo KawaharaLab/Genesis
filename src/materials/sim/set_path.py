@@ -1,14 +1,7 @@
 import os
 
 def set_path(object_name, coup_friction, material_type):
-    if coup_friction == 0.5:
-        frc = "050"
-    elif coup_friction == 1.5:
-        frc = "150"
-    elif coup_friction == 2.5:
-        frc = "250"
-    else:
-        raise ValueError("coup_friction must be 0.5, 1.5, or 2.5")
+    frc = f"{int(round(coup_friction * 100)):03d}"
     video_object_path = f"data/videos/{object_name}"
     outfile_object_path = f"data/csv/{object_name}"
     photo_object_path = f"data/photos/{object_name}"

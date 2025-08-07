@@ -20,15 +20,11 @@ def control_franka(scene, cam, franka, grasp_pos, qpos_init, strength, df, base_
     )
     end_effector = franka.get_link("hand")
     # move to pre-grasp pose
-    dz = 0.0001
     x = 0.45
     y = 0.45
     z = 0.5
-    z_steps = int((z - grasp_pos[2]) // dz)
-    dx = (x - grasp_pos[0]) / z_steps
-    dy = (y - grasp_pos[1]) / z_steps
     print("x,y,z: ", x, y, z)
-    qpos = qpos_init.clone().to(gs.device)
+    qpos = qpos_init.clone()
     print("qpos: ", qpos)
     franka.set_dofs_position(qpos[:-2], motors_dof)
     franka.set_dofs_position(qpos[-2:], fingers_dof)
@@ -66,39 +62,36 @@ def control_franka(scene, cam, franka, grasp_pos, qpos_init, strength, df, base_
         franka.control_dofs_position(waypoint[:-2], motors_dof)
         make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    # # 小幅往復
-    # for i in range(3000):
-    #     qpos = franka.get_qpos()
-    #     qpos[-4] -= 0.0002
-    #     franka.control_dofs_position(qpos[:-2], motors_dof)
-    #     franka.control_dofs_force(np.array([-strength, -strength]), fingers_dof)
-    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    # 小幅往復
+    for i in range(3000):
+        qpos[-4] -= 0.0002
+        franka.control_dofs_position(qpos[:-2], motors_dof)
+        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    # for i in range(3000):
-    #     qpos = franka.get_qpos()
-    #     qpos[-4] += 0.0002
-    #     franka.control_dofs_position(qpos[:-2], motors_dof)
-    #     franka.control_dofs_force(np.array([-strength, -strength]), fingers_dof)
-    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    for i in range(3000):
+        qpos[-4] += 0.0002
+        franka.control_dofs_position(qpos[:-2], motors_dof)
+        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    # for i in range(3000):
-    #     qpos = franka.get_qpos()
-    #     qpos[0] += 0.0002
-    #     franka.control_dofs_position(qpos[:-2], motors_dof)
-    #     franka.control_dofs_force(np.array([-strength, -strength]), fingers_dof)
-    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    for i in range(3000):
+        qpos[0] += 0.0002
+        franka.control_dofs_position(qpos[:-2], motors_dof)
+        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    # for i in range(1000):
-    #     force = np.array([-strength + strength/1000 * i, -strength + strength/1000 * i])
-    #     qpos = franka.get_qpos()
-    #     franka.control_dofs_position(qpos[:-2], motors_dof)
-    #     franka.control_dofs_force(force, fingers_dof)
-    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    for i in range(1000):
+        # force = np.array([-strength + strength/1000 * i, -strength + strength/1000 * i])
+        franka.control_dofs_position(qpos[:-2], motors_dof)
+        # franka.control_dofs_force(force, fingers_dof)
+        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
 
-    # # フィンガー開閉
-    # for i in range(400):
-    #     finger_pos = np.array([0.0001 * i, 0.0001 * i])
-    #     qpos = franka.get_qpos()
-    #     franka.control_dofs_position(qpos[:-2], motors_dof)
-    #     franka.control_dofs_position(finger_pos, fingers_dof)
-    #     make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    # フィンガー開閉
+    for i in range(400):
+        finger_pos = np.array([0.0001 * i, 0.0001 * i])
+        franka.control_dofs_position(qpos[:-2], motors_dof)
+        franka.control_dofs_position(finger_pos, fingers_dof)
+        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
+    
+    for i in range(300):
+        franka.control_dofs_position(qpos[:-2], motors_dof)
+        franka.control_dofs_position(np.array([0.04, 0.04]), fingers_dof)
+        make_step(scene, cam, franka, df, base_photo_name, photo_interval)
