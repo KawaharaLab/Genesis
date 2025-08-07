@@ -18,6 +18,7 @@
 # Genesis
 
 ## 🔥 News
+- [2025-07-02] The development of Genesis is now officially supported by [Genesis AI](https://genesis-ai.company/).
 - [2025-01-09] We released a [detailed performance benchmarking and comparison report](https://github.com/zhouxian/genesis-speed-benchmark) on Genesis, together with all the test scripts.
 - [2025-01-08] Released v0.2.1 🎊 🎉
 - [2025-01-08] Created [Discord](https://discord.gg/nukCuhB47p) and [Wechat](https://drive.google.com/uc?export=view&id=1ZS9nnbQ-t1IwkzJlENBYqYIIOOZhXuBZ) group.
@@ -76,7 +77,7 @@ Install **PyTorch** first following the [official instructions](https://pytorch.
 
 Then, install Genesis via PyPI:
 ```bash
-pip install genesis-world  # Requires Python>=3.10,<3.13;
+pip install genesis-world  # Requires Python>=3.10,<3.14;
 ```
 
 For the latest version to date, make sure that `pip` is up-to-date via `pip install --upgrade pip`, then run command:
@@ -113,6 +114,31 @@ docker run --gpus all --rm -it \
 genesis
 ```
 
+### AMD users
+AMD users can use Genesis using the `docker/Dockerfile.amdgpu` file, which is built by running:
+```
+docker build -t genesis-amd -f docker/Dockerfile.amdgpu docker
+```
+
+and can then be used by running:
+
+```xhost +local:docker \
+docker run -it --network=host \
+ --device=/dev/kfd \
+ --device=/dev/dri \
+ --group-add=video \
+ --ipc=host \
+ --cap-add=SYS_PTRACE \
+ --security-opt seccomp=unconfined \
+ --shm-size 8G \
+ -v $PWD:/workspace \
+ -e DISPLAY=$DISPLAY \
+ genesis-amd
+ ```
+
+The examples will be accessible from `/workspace/examples`. Note: AMD users should use the vulkan backend. This means you will need to call `gs.init(vulkan)` to initialise Genesis.
+
+
 ## Documentation
 
 Comprehensive documentation is available in [English](https://genesis-world.readthedocs.io/en/latest/user_guide/index.html), [Chinese](https://genesis-world.readthedocs.io/zh-cn/latest/user_guide/index.html), and [Japanese](https://genesis-world.readthedocs.io/ja/latest/user_guide/index.html). This includes detailed installation steps, tutorials, and API references.
@@ -146,6 +172,7 @@ Genesis's development has been made possible thanks to these open-source project
 - [libccd](https://github.com/danfis/libccd): Reference for collision detection.
 - [PyRender](https://github.com/mmatl/pyrender): Rasterization-based renderer.
 - [LuisaCompute](https://github.com/LuisaGroup/LuisaCompute) and [LuisaRender](https://github.com/LuisaGroup/LuisaRender): Ray-tracing DSL.
+- [Madrona](https://github.com/shacklettbp/madrona) and [Madrona-mjx](https://github.com/shacklettbp/madrona_mjx): Batch renderer backend
 
 ## Associated Papers
 

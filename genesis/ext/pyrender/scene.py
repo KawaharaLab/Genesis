@@ -210,26 +210,20 @@ class Scene(object):
     def bounds(self):
         """(2,3) float : The axis-aligned bounds of the scene."""
         if self._bounds is None:
-            # Compute corners
             corners = []
             for mesh_node in self.mesh_nodes:
                 mesh = mesh_node.mesh
-                plane_flag = False
-                for primitive in mesh.primitives:
-                    if primitive.is_floor:
-                        plane_flag = True
-                        break
-                if plane_flag:
+                if any(primitive.is_floor for primitive in mesh.primitives):
                     continue
-                pose = self.get_pose(mesh_node)
                 corners_local = trimesh.bounds.corners(mesh.bounds)
-                corners_world = pose[:3, :3].dot(corners_local.T).T + pose[:3, 3]
+                pose = self.get_pose(mesh_node)
+                corners_world = corners_local @ pose[:3, :3].T + pose[:3, 3]
                 corners.append(corners_world)
-            if len(corners) == 0:
-                self._bounds = np.zeros((2, 3))
+            if corners:
+                corners = np.concatenate(corners, axis=0)
+                self._bounds = np.stack((np.min(corners, axis=0), np.max(corners, axis=0)), axis=0)
             else:
-                corners = np.vstack(corners)
-                self._bounds = np.array([np.min(corners, axis=0), np.max(corners, axis=0)])
+                self._bounds = np.zeros((2, 3))
         return self._bounds
 
     @property
@@ -242,13 +236,12 @@ class Scene(object):
     @property
     def extents(self):
         """(3,) float : The lengths of the axes of the scene's AABB."""
-        return np.diff(self.bounds, axis=0).reshape(-1)
+        return self.bounds[1] - self.bounds[0]
 
     @property
     def scale(self):
         """(3,) float : The length of the diagonal of the scene's AABB."""
-        scale = np.linalg.norm(self.extents)
-        return scale
+        return max(np.linalg.norm(self.extents), 1e-7)
 
     def add(self, obj, name=None, pose=None, parent_node=None, parent_name=None):
         """Add an object (mesh, light, or camera) to the scene.
@@ -284,12 +277,14 @@ class Scene(object):
             raise TypeError("Unrecognized object type")
 
         if parent_node is None and parent_name is not None:
-            parent_nodes = self.get_nodes(name=parent_name)
-            if len(parent_nodes) == 0:
-                raise ValueError("No parent node with name {} found".format(parent_name))
-            elif len(parent_nodes) > 1:
-                raise ValueError("More than one parent node with name {} found".format(parent_name))
-            parent_node = list(parent_nodes)[0]
+            try:
+                parent_node, = self.get_nodes(name=parent_name)
+            except ValueError:
+                if len(parent_nodes) == 0:
+                    raise ValueError(f"No parent node with name '{parent_name}' found")
+                elif len(parent_nodes) > 1:
+                    raise ValueError(f"More than one parent node with name '{parent_name}' found")
+                raise
 
         self.add_node(node, parent_node=parent_node)
 
@@ -454,8 +449,8 @@ class Scene(object):
             self._path_cache[node] = path
 
         # Traverse from from_node to to_node
-        pose = np.eye(4)
-        for n in path[:-1]:
+        pose = path[0].matrix
+        for node in path[1:-1]:
             pose = np.dot(n.matrix, pose)
 
         return pose

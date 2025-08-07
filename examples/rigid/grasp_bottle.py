@@ -1,35 +1,18 @@
 import argparse
 
 import numpy as np
+
 import genesis as gs
 
-def make_step(scene, cam, franka):
-    """フランカを目標位置に移動させるステップ関数"""
-    scene.step()
-    cam.render()
-    scene.clear_debug_objects()
-    links_force_torque = franka.get_links_force_torque([9, 10]) # 手先のlocal_indexは9, 10
-    print(links_force_torque)
-    #force
-    scale = 0.1
-    scene.draw_debug_arrow(
-        pos=franka.get_link("left_finger").get_pos().tolist(),
-        vec=(links_force_torque[0][:3]*scale).tolist(),
-        color=(1, 0, 0),
-    )
-    scene.draw_debug_arrow(
-        pos=franka.get_link("right_finger").get_pos().tolist(),
-        vec=(links_force_torque[1][:3]*scale).tolist(),
-        color=(1, 0, 0),
-    )
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-o", "--outfile", default="grasp_bottle.mp4")
+    parser.add_argument("-v", "--vis", action="store_true", default=False)
+    parser.add_argument("-n", "--n_envs", type=int, default=49)
     args = parser.parse_args()
 
     ########################## init ##########################
-    gs.init(backend=gs.cpu, precision="32", debug=True, logging_level="error")
+    gs.init(backend=gs.gpu)
 
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
@@ -41,19 +24,11 @@ def main():
 
     scene = gs.Scene(
         viewer_options=viewer_options,
-        rigid_options=gs.options.RigidOptions(dt=0.01),
-        show_viewer=False,          # ★ GUI を開かない
+        rigid_options=gs.options.RigidOptions(
+            dt=0.01,
+        ),
+        show_viewer=args.vis,
     )
-
-    # ---- 追加: オフスクリーンカメラ ------------------------
-    cam = scene.add_camera(
-        res=(1280, 720),
-        pos=(3, -1, 1.5),
-        lookat=(0.0, 0.0, 0.0),
-        fov=30,
-        GUI=False,                 # ★ 描画ウィンドウも開かない
-    )
-    # --------------------------------------------------------
 
     ########################## entities ##########################
     plane = scene.add_entity(
@@ -74,12 +49,16 @@ def main():
     )
 
     ########################## build ##########################
-    scene.build()
+    scene.build(n_envs=args.n_envs, env_spacing=(1, 1))
 
     motors_dof = np.arange(7)
     fingers_dof = np.arange(7, 9)
 
     # Optional: set control gains
+    if args.n_envs == 0:
+        franka.set_qpos(np.array([1.56, -0.72, -0.02, -2.09, 0.04, 1.33, 2.4, 0.01, 0.01]))
+    else:
+        franka.set_qpos(np.array([[1.56, -0.72, -0.02, -2.09, 0.04, 1.33, 2.4, 0.01, 0.01]] * args.n_envs))
     franka.set_dofs_kp(
         np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]),
     )
@@ -92,72 +71,53 @@ def main():
     )
 
     end_effector = franka.get_link("hand")
-    print("bottle mass:", bottle.get_mass())
-    # print("end_effector:", end_effector)
-    # print("right_finger:", franka.get_link("right_finger"))
+
     # move to pre-grasp pose
     qpos = franka.inverse_kinematics(
         link=end_effector,
-        pos=np.array([0.65, 0.0, 0.25]),
-        quat=np.array([0, 1, 0, 0]),
+        pos=np.array([0.65, 0.0, 0.25]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.25]] * args.n_envs),
+        quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
     )
-    qpos[-2:] = 0.04
-    cam.start_recording()
+    qpos[..., -2:] = 0.04
+
     path = franka.plan_path(qpos)
     for waypoint in path:
         franka.control_dofs_position(waypoint)
-        make_step(scene, cam, franka)             # ← 変更
-    for _ in range(30):
-        make_step(scene, cam, franka)             # ← 変更
+        scene.step()
+    for i in range(30):
+        scene.step()
 
     # reach
     qpos = franka.inverse_kinematics(
         link=end_effector,
-        pos=np.array([0.65, 0.0, 0.142]),
-        quat=np.array([0, 1, 0, 0]),
+        pos=np.array([0.65, 0.0, 0.142]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.142]] * args.n_envs),
+        quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
     )
-    franka.control_dofs_position(qpos[:-2], motors_dof)
-    for _ in range(100):
-        make_step(scene, cam, franka)             # ← 変更
+    franka.control_dofs_position(qpos[..., :-2], motors_dof)
+    for i in range(100):
+        scene.step()
 
     # grasp
-    franka.control_dofs_position(qpos[:-2], motors_dof)
-    franka.control_dofs_position(np.array([0, 0]), fingers_dof)
-    for _ in range(100):
-        make_step(scene, cam, franka)             # ← 変更
+    franka.control_dofs_position(qpos[..., :-2], motors_dof)
+    franka.control_dofs_position(
+        np.array([0, 0]) if args.n_envs == 0 else np.array([[0, 0]] * args.n_envs), fingers_dof
+    )  # you can use position control
+    for i in range(100):
+        scene.step()
 
     # lift
     qpos = franka.inverse_kinematics(
         link=end_effector,
-        pos=np.array([0.65, 0.0, 0.3]),
-        quat=np.array([0, 1, 0, 0]),
+        pos=np.array([0.65, 0.0, 0.3]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.3]] * args.n_envs),
+        quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
     )
-    franka.control_dofs_position(qpos[:-2], motors_dof)
-    franka.control_dofs_force(np.array([-5, -5]), fingers_dof)
-    for _ in range(250):
-        make_step(scene, cam, franka)             # ← 変更
+    franka.control_dofs_position(qpos[..., :-2], motors_dof)
+    franka.control_dofs_force(
+        np.array([-20, -20]) if args.n_envs == 0 else np.array([[-20, -20]] * args.n_envs), fingers_dof
+    )  # can also use force control
+    for i in range(1000):
+        scene.step()
 
-    franka.control_dofs_position(qpos[:-2], motors_dof)
-    franka.control_dofs_force(np.array([-10, -10]), fingers_dof)
-    for _ in range(100):
-        make_step(scene, cam, franka)             # ← 変更
 
-    # ── 5. ハンドを 90度 回転 ──────────────────────────
-    n_rot = 90      # 2π を 180 ステップ ⇒ 1 ステップ 2°
-    j7_init = franka.get_qpos()[6]
-    # link7 = franka.get_link("link7")
-    for i in range(n_rot + 1):
-        j7 = j7_init + np.deg2rad(i)
-        franka.control_dofs_position(
-            np.array([j7]),
-            np.array([6]),
-        )
-        franka.control_dofs_force(np.array([-10, -10]), fingers_dof)
-        make_step(scene, cam, franka)
-
-    # ---- 追加: 録画終了・保存 -------------------------------
-    cam.stop_recording(save_to_filename=args.outfile, fps=60)
-    print(f"saved -> {args.outfile}")
-    # --------------------------------------------------------
 if __name__ == "__main__":
     main()

@@ -3,11 +3,13 @@ from urllib import request
 import numpy as np
 import pygltflib
 import trimesh
-from scipy.spatial.transform import Rotation as R
 from PIL import Image
 
 import genesis as gs
+
 from . import mesh as mu
+from . import geom as gu
+
 
 ctype_to_numpy = {
     5120: np.int8,  # BYTE
@@ -75,7 +77,7 @@ def get_glb_data_from_accessor(glb, accessor_index):
             data_slice = buffer_data[start:end]
             array[i] = np.frombuffer(data_slice, dtype=dtype, count=num_components)
 
-    return array.reshape([count, *type_to_count[data_type][1]])
+    return array.reshape((count, *type_to_count[data_type][1]))
 
 
 def get_glb_image(glb, image_index, image_type=None):
@@ -148,11 +150,11 @@ def parse_glb_material(glb, material_index, surface):
 
         metallic_factor = None
         if pbr_texture.metallicFactor is not None:
-            metallic_factor = (pbr_texture.metallicFactor,)
+            metallic_factor = pbr_texture.metallicFactor
 
         roughness_factor = None
         if pbr_texture.roughnessFactor is not None:
-            roughness_factor = (pbr_texture.roughnessFactor,)
+            roughness_factor = pbr_texture.roughnessFactor
 
         metallic_texture = mu.create_texture(metallic_image, metallic_factor, "linear")
         roughness_texture = mu.create_texture(roughness_image, roughness_factor, "linear")
@@ -228,7 +230,7 @@ def parse_glb_material(glb, material_index, surface):
 
         elif extension_name == "KHR_materials_clearcoat":
             clearcoat_weight = extension_material.get("clearcoatFactor", 0.0)
-            clearcoat_roughness_factor = (extension_material["clearcoatRoughnessFactor"],)
+            clearcoat_roughness_factor = extension_material["clearcoatRoughnessFactor"]
 
         elif extension_name == "KHR_materials_volume":
             attenuation_distance = extension_material["attenuationDistance"]
@@ -266,7 +268,8 @@ def parse_glb_tree(glb, node_index):
             transform[:3, 3] = node.translation
             non_identity = True
         if node.rotation is not None:
-            transform[:3, :3] = R.from_quat(node.rotation).as_matrix()  # xyzw
+            quat = np.array(node.rotation, dtype=np.float32)[[3, 0, 1, 2]]
+            gu.quat_to_R(quat, out=transform[:3, :3])
             non_identity = True
         if node.scale is not None:
             transform[:3, :3] *= node.scale
@@ -303,10 +306,10 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
     materials = {}
 
     for i, (mesh_index, mesh_transform) in enumerate(mesh_list):
-        mesh = glb.meshes[mesh_index]
-        mesh_name = mesh.name
+        mesh_glb = glb.meshes[mesh_index]
+        mesh_name = mesh_glb.name
 
-        for primitive in mesh.primitives:
+        for primitive in mesh_glb.primitives:
             if primitive.material is not None:
                 material, uv_used, material_name = materials.get(primitive.material, (None, 0, ""))
                 if material is None:
@@ -323,13 +326,13 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
                 KHR_index = primitive.extensions["KHR_draco_mesh_compression"]["bufferView"]
                 mesh_buffer_view = glb.bufferViews[KHR_index]
                 mesh_data = get_glb_bufferview_data(glb, mesh_buffer_view)
-                mesh = DracoPy.decode(
+                mesh_glb = DracoPy.decode(
                     mesh_data[mesh_buffer_view.byteOffset : mesh_buffer_view.byteOffset + mesh_buffer_view.byteLength]
                 )
-                points = mesh.points
-                triangles = mesh.faces
-                normals = mesh.normals if len(mesh.normals) > 0 else None
-                uvs = mesh.tex_coord if len(mesh.tex_coord) > 0 else None
+                points = mesh_glb.points
+                triangles = mesh_glb.faces
+                normals = mesh_glb.normals if len(mesh_glb.normals) > 0 else None
+                uvs = mesh_glb.tex_coord if len(mesh_glb.tex_coord) > 0 else None
 
             else:
                 # "primitive.attributes" records accessor indices in "glb.accessors", like:
@@ -389,7 +392,6 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
                 mesh_info.set_property(
                     surface=material, metadata={"path": path, "name": material_name if group_by_material else mesh_name}
                 )
-
             mesh_info.append(points, triangles, normals, uvs)
 
     return mesh_infos.export_meshes(scale=scale)

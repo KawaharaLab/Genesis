@@ -21,7 +21,6 @@ class DroneEntity(RigidEntity):
         self._KM = float(properties["km"])
 
         self._n_propellers = len(morph.propellers_link_name)
-        self._COM_link_idx = self.get_link(morph.COM_link_name).idx
 
         propellers_link = gs.List([self.get_link(name) for name in morph.propellers_link_name])
         self._propellers_link_idxs = torch.tensor(
@@ -76,9 +75,8 @@ class DroneEntity(RigidEntity):
             gs.raise_exception("`propellels_rpm` cannot be negative.")
         self._propellers_revs = (self._propellers_revs + propellels_rpm) % (60 / self.solver.dt)
 
-        self.solver._kernel_set_drone_rpm(
+        self.solver.set_drone_rpm(
             self._n_propellers,
-            self._COM_link_idx,
             self._propellers_link_idxs,
             propellels_rpm,
             self._propellers_spin,
@@ -94,7 +92,7 @@ class DroneEntity(RigidEntity):
         This method is a no-op if animation is disabled due to missing visual geometry.
         """
         if self._animate_propellers:
-            self.solver._update_drone_propeller_vgeoms(
+            self.solver.update_drone_propeller_vgeoms(
                 self._n_propellers, self._propellers_vgeom_idxs, self._propellers_revs, self._propellers_spin
             )
 

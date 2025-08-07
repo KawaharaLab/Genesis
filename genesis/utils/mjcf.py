@@ -1,9 +1,10 @@
 import os
 import xml.etree.ElementTree as ET
-from contextlib import redirect_stderr
+import contextlib
 from pathlib import Path
 from itertools import chain
 from bisect import bisect_right
+import io
 
 import numpy as np
 import trimesh
@@ -20,7 +21,10 @@ from . import urdf as uu
 from .misc import get_assets_dir, redirect_libc_stderr
 
 
-def build_model(xml, discard_visual, merge_fixed_links=False, links_to_keep=()):
+MIN_TIMECONST = np.finfo(np.double).eps
+
+
+def build_model(xml, discard_visual, default_armature=None, merge_fixed_links=False, links_to_keep=()):
     if isinstance(xml, (str, Path)):
         # Make sure that it is pointing to a valid XML content (either file path or string)
         path = os.path.join(get_assets_dir(), xml)
@@ -34,34 +38,68 @@ def build_model(xml, discard_visual, merge_fixed_links=False, links_to_keep=()):
         except ET.ParseError:
             gs.raise_exception_from(f"'{xml}' is not a valid XML file path or string.")
 
-        # Must pre-process URDF to overwrite default Mujoco compile flags
+        # Best guess for the search path
+        asset_path = os.path.dirname(path) if is_valid_path else os.getcwd()
+
+        # Detect whether it is a URDF file or a Mujoco MJCF file
         root = xml.getroot()
         is_urdf_file = root.tag == "robot"
+
+        # Make sure compiler options are defined
+        mjcf = ET.SubElement(root, "mujoco") if is_urdf_file else root
+        compiler = mjcf.find("compiler")
+        if compiler is None:
+            compiler = ET.SubElement(mjcf, "compiler")
+
+        # Set absolute asset search directory
+        for name in ("assetdir", "meshdir", "texturedir"):
+            compiler.attrib[name] = str(Path(asset_path) / compiler.attrib.get(name, ""))
+
+        # Set default constraint solver time constant and motor armature.
+        # Note that these default options are ignored when parsing URDF files.
+        default = mjcf.find("default")
+        if default is None:
+            default = ET.SubElement(mjcf, "default")
+        for group_name, params_name in (
+            ("geom", ("solref",)),
+            ("joint", ("solreflimit", "solreffriction")),
+            ("equality", ("solref",)),
+        ):
+            group = default.find(group_name)
+            if group is None:
+                group = ET.SubElement(default, group_name)
+            for param_name in params_name:
+                # 0.0 cannot be used because it is considered as an error, so that it will fallback to the original
+                # default value...
+                group.attrib.setdefault(param_name, str(MIN_TIMECONST))
+        if default_armature is not None:
+            default.find("joint").attrib.setdefault("armature", str(default_armature))
+
+        # Must pre-process URDF to overwrite default Mujoco compile flags
         if is_urdf_file:
-            # Best guess for the search path
-            asset_path = os.path.dirname(path) if is_valid_path else os.getcwd()
             robot = urdfpy.URDF._from_xml(root, root, asset_path)
 
             # Merge fixed links if requested
             if merge_fixed_links:
                 robot = uu.merge_fixed_links(robot, links_to_keep)
                 root = robot._to_xml(None, asset_path)
+                root.append(mjcf)
 
-            # Set default compiler options if none is specified in URDF file if none
-            if not any(child.tag == "mujoco" for child in root):
-                mjcf = ET.SubElement(root, "mujoco")
-                compiler = ET.SubElement(
-                    mjcf,
-                    "compiler",
-                    fusestatic="false",
-                    strippath="false",
-                    assetdir=asset_path,
-                    inertiafromgeom="auto",
-                    balanceinertia="true",
-                    discardvisual="true" if discard_visual else "false",
-                    autolimits="true",
-                    # boundmass=gs.EPS,
-                    # boundinertia=gs.EPS,
+            # Enforce some compiler options
+            compiler.attrib |= dict(
+                fusestatic="false",
+                strippath="false",
+                inertiafromgeom="false",  # This option is unreliable, so doing this ourselves
+                balanceinertia="false",
+                discardvisual="true" if discard_visual else "false",
+                autolimits="true",
+            )
+
+            # Bound mass and inertia if necessary
+            if not all(link.inertial is not None for link in robot.links):
+                compiler.attrib |= dict(
+                    boundmass=str(MIN_TIMECONST),
+                    boundinertia=str(MIN_TIMECONST),
                 )
 
             # Resolve relative mesh paths
@@ -72,14 +110,29 @@ def build_model(xml, discard_visual, merge_fixed_links=False, links_to_keep=()):
                 elem.set("filename", os.path.abspath(os.path.join(asset_path, mesh_path)))
 
         with open(os.devnull, "w") as stderr, redirect_libc_stderr(stderr):
+            # Parse updated URDF file as a string
+            data = ET.tostring(root, encoding="utf8")
+            mj = mujoco.MjModel.from_xml_string(data)
+            # Special treatment for URDF
             if is_urdf_file:
-                # Parse updated URDF file as a string
-                data = ET.tostring(root, encoding="utf8")
-                mj = mujoco.MjModel.from_xml_string(data)
-            else:
-                # Parsing MJCF files from XML string is not reliable because it would use the current directory instead
-                # of the parent directory of the XML file as base directory when using relative paths for assets.
-                mj = mujoco.MjModel.from_xml_path(path)
+                # Discard placeholder inertias that were used to avoid parsing failure
+                for i, link in enumerate(robot.links):
+                    if link.inertial is None:
+                        body = mj.body(link.name)
+                        body.inertia[:] = 0.0
+                        body.mass[:] = 0.0
+                        body.invweight0[:] = 0.0
+
+                # Set default constraint solver time constant
+                mj.jnt_solref[:, 0] = MIN_TIMECONST
+                mj.geom_solref[:, 0] = MIN_TIMECONST
+                mj.eq_solref[:, 0] = MIN_TIMECONST
+
+                # Set default rotor armature inertia
+                if default_armature is not None:
+                    mj.dof_armature[:] = default_armature
+                    mj.body_invweight0[:] = 0.0
+                    mj.dof_invweight0[:] = 0.0
     elif isinstance(xml, mujoco.MjModel):
         mj = xml
     else:
@@ -90,17 +143,18 @@ def build_model(xml, discard_visual, merge_fixed_links=False, links_to_keep=()):
 
 def parse_xml(morph, surface):
     # Always merge fixed links unless explicitly asked not to do so
-    merge_fixed_links, links_to_keep = None, None
-    if isinstance(morph, gs.morphs.URDF):
+    merge_fixed_links, links_to_keep = False, ()
+    if isinstance(morph, (gs.morphs.URDF, gs.morphs.Drone)):
         merge_fixed_links = morph.merge_fixed_links
         links_to_keep = morph.links_to_keep
 
     # Build model from XML (either URDF or MJCF)
-    mj = build_model(morph.file, not morph.visualization, merge_fixed_links, links_to_keep)
+    mj = build_model(morph.file, not morph.visualization, morph.default_armature, merge_fixed_links, links_to_keep)
 
-    # Check if there is any tendon. Report a warning if so.
-    if mj.ntendon:
-        gs.logger.warning("(MJCF) Tendon not supported")
+    # We have another more informative warning later so we suppress this one
+    # gs.logger.warning(f"(MJCF) Approximating tendon by joint actuator for `{j_info['name']}`")
+    # if mj.ntendon:
+    #     gs.logger.warning("(MJCF) Tendon not supported")
 
     # Parse all geometries grouped by parent joint (or world)
     links_g_infos = parse_geoms(mj, morph.scale, surface, morph.file)
@@ -180,13 +234,12 @@ def parse_link(mj, i_l, scale):
         j_info["dofs_damping"] = mj.dof_damping[mj_dof_offset : (mj_dof_offset + n_dofs)]
         j_info["dofs_invweight"] = mj.dof_invweight0[mj_dof_offset : (mj_dof_offset + n_dofs)]
         j_info["dofs_armature"] = mj.dof_armature[mj_dof_offset : (mj_dof_offset + n_dofs)]
+        j_info["dofs_frictionloss"] = mj.dof_frictionloss[mj_dof_offset : (mj_dof_offset + n_dofs)]
         if mj.njnt > 0:
             mj_jnt_offset = i_j if i_j != -1 else 0
             j_info["sol_params"] = np.concatenate((mj.jnt_solref[mj_jnt_offset], mj.jnt_solimp[mj_jnt_offset]))
         else:
             j_info["sol_params"] = gu.default_solver_params()  # Placeholder. It will not be used anyway.
-        if (mj.dof_frictionloss[mj_dof_offset : (mj_dof_offset + n_dofs)] > 0.0).any():
-            gs.logger.warning("(MJCF) Friction loss at DoF-level not supported.")
 
         # Parsing joint parameters that are type-specific
         mj_stiffness = mj.jnt_stiffness[i_j] if i_j != -1 else 0.0
@@ -230,9 +283,6 @@ def parse_link(mj, i_l, scale):
                 j_info["dofs_stiffness"] = np.array([mj_stiffness])
 
                 j_info["init_qpos"] *= scale
-
-        if (mj.dof_frictionloss[mj_dof_offset : (mj_dof_offset + n_dofs)] > 0.0).any():
-            gs.logger.warning("(MJCF) Joint Coulomb friction not supported.")
 
         # Parsing actuator parameters
         j_info["dofs_kp"] = np.zeros((n_dofs,), dtype=gs.np_float)
@@ -280,7 +330,8 @@ def parse_link(mj, i_l, scale):
                 biasprm = mj.actuator_biasprm[i_a]
                 if gainprm[1:].any() or biasprm[0]:
                     gs.logger.warning(
-                        "(MJCF) Actuator control gain and bias parameters not supported. Using default values."
+                        "(MJCF) Actuator control gain and bias parameters not supported. "
+                        f"Using default values for joint `{j_info['name']}`"
                     )
                     actuator_kp = gu.default_dofs_kp(1)[0]
                     actuator_kv = gu.default_dofs_kv(1)[0]
@@ -288,7 +339,7 @@ def parse_link(mj, i_l, scale):
                     # Doing our best to approximate the expected behavior: g0 * p_target + b1 * p_mes + b2 * v_mes
                     gs.logger.warning(
                         "(MJCF) Actuator control gain and bias parameters cannot be reduced to a unique PD control "
-                        "position gain. Using max between gain and bias."
+                        f"position gain. Using max between gain and bias for joint `{j_info['name']}`."
                     )
                     actuator_kp = min(-gainprm[0], biasprm[1])
                     actuator_kv = biasprm[2]
@@ -304,7 +355,7 @@ def parse_link(mj, i_l, scale):
                 j_info["dofs_force_range"] = np.minimum(
                     j_info["dofs_force_range"], np.tile(gear * mj.actuator_ctrlrange[i_a], (n_dofs, 1))
                 )
-        elif gs_type != gs.JOINT_TYPE.FREE:
+        elif gs_type not in (gs.JOINT_TYPE.FIXED, gs.JOINT_TYPE.FREE):
             gs.logger.debug(f"(MJCF) No actuator found for joint `{j_info['name']}`")
 
         j_infos.append(j_info)

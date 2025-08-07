@@ -1,17 +1,46 @@
 import argparse
 
 import numpy as np
+import pandas as pd
 
 import genesis as gs
 
+def make_step(scene, cam, franka, df):
+    """フランカを目標位置に移動させるステップ関数"""
+    scene.step()
+    cam.render()
+    scene.clear_debug_objects()
+    links_force_torque = franka.get_links_force_torque([9, 10], sensor=False) # 手先のlocal_indexは9, 10
+    #force
+    scale = 0.5
+    scene.draw_debug_arrow(
+        pos=franka.get_link("left_finger").get_pos().tolist(),
+        vec=(links_force_torque[0][:3]* scale).tolist(),
+    )
+    scene.draw_debug_arrow(
+        pos=franka.get_link("right_finger").get_pos().tolist(),
+        vec=(links_force_torque[1][:3]* scale).tolist(),
+    )
+    links_force_torque = [x.item() for x in links_force_torque[0]] + [x.item() for x in links_force_torque[1]]
+    df.loc[len(df)] = [
+        scene.t,
+        links_force_torque[0], links_force_torque[1], links_force_torque[2],
+        links_force_torque[3], links_force_torque[4], links_force_torque[5],
+        links_force_torque[6], links_force_torque[7], links_force_torque[8],
+        links_force_torque[9], links_force_torque[10], links_force_torque[11],
+    ]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-v", "--vis", action="store_true", default=False)
+    parser.add_argument("-v", "--video", default="grasp_soft_cube_strong.mp4")
+    parser.add_argument("-o", "--outfile", default="grasp_soft_cube_strong.csv")
     args = parser.parse_args()
+    df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz",
+                           "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz"])
+
 
     ########################## init ##########################
-    gs.init(backend=gs.gpu)
+    gs.init(backend=gs.cpu)
 
     ########################## create a scene ##########################
 
@@ -26,7 +55,7 @@ def main():
             camera_fov=30,
             max_FPS=60,
         ),
-        show_viewer=args.vis,
+        show_viewer=False,
         vis_options=gs.options.VisOptions(
             visualize_mpm_boundary=True,
         ),
@@ -36,6 +65,13 @@ def main():
             grid_density=128,
         ),
     )
+    cam = scene.add_camera(
+        pos=(3, -1, 1.5),
+        lookat=(0.0, 0.0, 0.0),
+        fov=30,
+        GUI=False,
+        res=(1280, 720),
+    )
 
     ########################## entities ##########################
     plane = scene.add_entity(
@@ -43,6 +79,7 @@ def main():
     )
     cube = scene.add_entity(
         material=gs.materials.MPM.Elastic(),
+        # material=gs.materials.Rigid(),
         morph=gs.morphs.Box(
             size=(0.04, 0.04, 0.04),
             pos=(0.65, 0.0, 0.025),
@@ -54,7 +91,7 @@ def main():
     )
     franka = scene.add_entity(
         gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"),
-        material=gs.materials.Rigid(coup_friction=1.0),
+        material=gs.materials.Rigid(coup_friction=5.0),
     )
 
     ########################## build ##########################
@@ -76,37 +113,42 @@ def main():
     )
 
     end_effector = franka.get_link("hand")
+    cam.start_recording()
     # move to pre-grasp pose
     qpos = franka.inverse_kinematics(
         link=end_effector,
-        pos=np.array([0.64, 0.0, 0.135]),
+        pos=np.array([0.65, 0.0, 0.130]),
         quat=np.array([0, 1, 0, 0]),
     )
     qpos[-2:] = 0.03
     franka.set_dofs_position(qpos[:-2], motors_dof)
     franka.set_dofs_position(qpos[-2:], fingers_dof)
 
-    # grasp with 1N force
+    # grasp with 10N force
     franka.control_dofs_position(qpos[:-2], motors_dof)
-    franka.control_dofs_force(np.array([-1, -1]), fingers_dof)
+    franka.control_dofs_force(np.array([-6, -6]), fingers_dof)
     # franka.control_dofs_position(np.array([0, 0]), fingers_dof) # you can also use position control
 
     for i in range(100):
-        scene.step()
+        make_step(scene, cam, franka, df)
 
     # lift
     for i in range(300):
         qpos = franka.inverse_kinematics(
             link=end_effector,
-            pos=np.array([0.64, 0.0, 0.135 + 0.0005 * i]),
+            pos=np.array([0.65, 0.0, 0.135 + 0.0005 * i]),
             quat=np.array([0, 1, 0, 0]),
         )
         franka.control_dofs_position(qpos[:-2], motors_dof)
-        scene.step()
+        make_step(scene, cam, franka, df)
 
     for i in range(100):
-        scene.step()
+        make_step(scene, cam, franka, df)
 
+    cam.stop_recording(save_to_filename=args.video, fps=200)
+    print(f"saved -> {args.video}")
+    df.to_csv(args.outfile, index=False)
+    print(f"saved -> {args.outfile}")
 
 if __name__ == "__main__":
     main()

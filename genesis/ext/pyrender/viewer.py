@@ -14,8 +14,7 @@ import OpenGL
 from OpenGL.GL import *
 
 import genesis as gs
-
-import sys
+from genesis.vis.rasterizer_context import RasterizerContext
 
 if sys.platform.startswith("darwin"):
     # Mac OS
@@ -56,11 +55,14 @@ from .constants import (
     RenderFlags,
     TextAlign,
 )
+from .interaction.viewer_interaction import ViewerInteraction
+from .interaction.viewer_interaction_base import ViewerInteractionBase, EVENT_HANDLE_STATE, EVENT_HANDLED
 from .light import DirectionalLight
 from .node import Node
 from .renderer import Renderer
 from .shader_program import ShaderProgram, ShaderProgramCache
 from .trackball import Trackball
+
 
 pyglet.options["shadow_window"] = False
 
@@ -201,7 +203,7 @@ class Viewer(pyglet.window.Window):
 
     def __init__(
         self,
-        context,
+        context: RasterizerContext,
         viewport_size=None,
         render_flags=None,
         viewer_flags=None,
@@ -211,6 +213,7 @@ class Viewer(pyglet.window.Window):
         shadow=False,
         plane_reflection=False,
         env_separate_rigid=False,
+        enable_interaction=False,
         **kwargs,
     ):
         #######################################################################
@@ -277,10 +280,6 @@ class Viewer(pyglet.window.Window):
                 self._render_flags[key] = kwargs[key]
             elif key in self.viewer_flags:
                 self._viewer_flags[key] = kwargs[key]
-
-        # # TODO MAC OS BUG FOR SHADOWS
-        # if sys.platform == 'darwin':
-        #     self._render_flags['shadows'] = False
 
         self._registered_keys = {}
         if registered_keys is not None:
@@ -376,6 +375,16 @@ class Viewer(pyglet.window.Window):
         self.scene.main_camera_node = self._camera_node
         self._reset_view()
 
+        # Setup mouse interaction
+
+        # Note: context.scene is genesis.engine.scene.Scene
+        # Note: context._scene is genesis.ext.pyrender.scene.Scene
+        self.viewer_interaction = (
+            ViewerInteraction(self._camera_node, context.scene, viewport_size, camera.yfov)
+            if enable_interaction
+            else ViewerInteractionBase()
+        )
+
         #######################################################################
         # Initialize OpenGL context and renderer
         #######################################################################
@@ -386,8 +395,6 @@ class Viewer(pyglet.window.Window):
 
         self.pending_offscreen_camera = None
         self.offscreen_result = None
-
-        self.pending_buffer_updates = {}
 
         # Starting the viewer would raise an exception if the OpenGL context is invalid for some reason. This exception
         # must be caught in order to implement some fallback mechanism. One may want to start the viewer from the main
@@ -642,10 +649,6 @@ class Viewer(pyglet.window.Window):
             self.render_flags["depth"] = False
         return self.offscreen_result
 
-    def update_buffers(self):
-        self._renderer.jit.update_buffer(self.pending_buffer_updates)
-        self.pending_buffer_updates = {}
-
     def wait_until_initialized(self):
         self._initialized_event.wait()
 
@@ -658,7 +661,10 @@ class Viewer(pyglet.window.Window):
 
         # Make OpenGL context current
         self.switch_to()
-        self.update_buffers()
+
+        # Update the context if not already done before
+        self._renderer.jit.update_buffer(self.gs_context.buffer)
+        self.gs_context.buffer.clear()
 
         self.offscreen_results = []
         self.render_flags["offscreen"] = True
@@ -683,11 +689,16 @@ class Viewer(pyglet.window.Window):
 
         # Make OpenGL context current
         self.switch_to()
-        self.update_buffers()
+
+        # Update the context if not already done before
+        self._renderer.jit.update_buffer(self.gs_context.buffer)
+        self.gs_context.buffer.clear()
 
         # Render the scene
         self.clear()
         self._render()
+
+        self.viewer_interaction.on_draw()
 
         if not self._initialized_event.is_set():
             self._initialized_event.set()
@@ -736,7 +747,7 @@ class Viewer(pyglet.window.Window):
         if self._run_in_thread or not self.auto_start:
             self.render_lock.release()
 
-    def on_resize(self, width, height):
+    def on_resize(self, width: int, height: int) -> EVENT_HANDLE_STATE:
         """Resize the camera and trackball when the window is resized."""
         if self._renderer is None:
             return
@@ -748,12 +759,17 @@ class Viewer(pyglet.window.Window):
         self._trackball.resize(self._viewport_size)
         self._renderer.viewport_width = self._viewport_size[0]
         self._renderer.viewport_height = self._viewport_size[1]
+        self.viewer_interaction.on_resize(width, height)
         self.on_draw()
 
-    def on_mouse_press(self, x, y, buttons, modifiers):
+    def on_mouse_motion(self, x: int, y: int, dx: int, dy: int) -> EVENT_HANDLE_STATE:
+        """The mouse was moved with no buttons held down."""
+        return self.viewer_interaction.on_mouse_motion(x, y, dx, dy)
+
+    def on_mouse_press(self, x: int, y: int, button: int, modifiers: int) -> EVENT_HANDLE_STATE:
         """Record an initial mouse press."""
         self._trackball.set_state(Trackball.STATE_ROTATE)
-        if buttons == pyglet.window.mouse.LEFT:
+        if button == pyglet.window.mouse.LEFT:
             ctrl = modifiers & pyglet.window.key.MOD_CTRL
             shift = modifiers & pyglet.window.key.MOD_SHIFT
             alt = modifiers & pyglet.window.key.MOD_ALT
@@ -761,23 +777,28 @@ class Viewer(pyglet.window.Window):
                 self._trackball.set_state(Trackball.STATE_ZOOM)
             elif alt or shift:
                 self._trackball.set_state(Trackball.STATE_PAN)
-        elif buttons == pyglet.window.mouse.MIDDLE:
+        elif button == pyglet.window.mouse.MIDDLE:
             self._trackball.set_state(Trackball.STATE_PAN)
-        elif buttons == pyglet.window.mouse.RIGHT:
+        elif button == pyglet.window.mouse.RIGHT:
             self._trackball.set_state(Trackball.STATE_ZOOM)
 
         self._trackball.down(np.array([x, y]))
 
         # Stop animating while using the mouse
         self.viewer_flags["mouse_pressed"] = True
+        return self.viewer_interaction.on_mouse_press(x, y, button, modifiers)
 
-    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
-        """Record a mouse drag."""
-        self._trackball.drag(np.array([x, y]))
+    def on_mouse_drag(self, x: int, y: int, dx: int, dy: int, buttons: int, modifiers: int) -> EVENT_HANDLE_STATE:
+        """The mouse was moved with one or more buttons held down."""
+        result = self.viewer_interaction.on_mouse_drag(x, y, dx, dy, buttons, modifiers)
+        if result is not EVENT_HANDLED:
+            result = self._trackball.drag(np.array([x, y]))
+        return result
 
-    def on_mouse_release(self, x, y, button, modifiers):
+    def on_mouse_release(self, x: int, y: int, button: int, modifiers: int) -> EVENT_HANDLE_STATE:
         """Record a mouse release."""
         self.viewer_flags["mouse_pressed"] = False
+        return self.viewer_interaction.on_mouse_release(x, y, button, modifiers)
 
     def on_mouse_scroll(self, x, y, dx, dy):
         """Record a mouse scroll."""
@@ -798,7 +819,7 @@ class Viewer(pyglet.window.Window):
             c.xmag = xmag
             c.ymag = ymag
 
-    def on_key_press(self, symbol, modifiers):
+    def on_key_press(self, symbol: int, modifiers: int) -> EVENT_HANDLE_STATE:
         """Record a key press."""
         # First, check for registered key callbacks
         if symbol in self.registered_keys:
@@ -815,7 +836,7 @@ class Viewer(pyglet.window.Window):
                 if len(tup) == 3:
                     kwargs = tup[2]
             callback(self, *args, **kwargs)
-            return
+            return self.viewer_interaction.on_key_press(symbol, modifiers)
 
         # Otherwise, use default key functions
 
@@ -955,6 +976,12 @@ class Viewer(pyglet.window.Window):
 
         if self._message_text is not None:
             self._message_opac = 1.0 + self._ticks_till_fade
+
+        return self.viewer_interaction.on_key_press(symbol, modifiers)
+
+    def on_key_release(self, symbol: int, modifiers: int) -> EVENT_HANDLE_STATE:
+        """Record a key release."""
+        return self.viewer_interaction.on_key_release(symbol, modifiers)
 
     @staticmethod
     def _time_event(dt, self):
@@ -1257,6 +1284,9 @@ class Viewer(pyglet.window.Window):
             self.dispatch_events()
         if self._is_active:
             self.flip()
+
+    def update_on_sim_step(self):
+        self.viewer_interaction.update_on_sim_step()
 
     def _compute_initial_camera_pose(self):
         centroid = self.scene.centroid

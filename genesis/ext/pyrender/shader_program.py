@@ -1,8 +1,9 @@
 """OpenGL shader program wrapper."""
-
-import numpy as np
+import numbers
 import os
 import re
+
+import numpy as np
 
 import OpenGL
 from OpenGL.GL import *
@@ -207,28 +208,22 @@ class ShaderProgram(object):
             # self._unif_map[name] = value.size, value.shape
             if value.ndim == 1:
                 if np.issubdtype(value.dtype, np.unsignedinteger) or unsigned:
-                    dtype = "u"
-                    value = value.astype(np.uint32)
+                    value = value.astype(np.uint32, copy=False)
                 elif np.issubdtype(value.dtype, np.integer):
-                    dtype = "i"
-                    value = value.astype(np.int32)
+                    value = value.astype(np.int32, copy=False)
                 else:
-                    dtype = "f"
-                    value = value.astype(np.float32)
-                self._FUNC_MAP[(value.shape[0], dtype)](loc, 1, value)
+                    value = value.astype(np.float32, copy=False)
+                func = self._FUNC_MAP[(len(value), value.dtype.kind)]
+                func(loc, 1, value)
             else:
-                func1 = self._FUNC_MAP[(value.shape[0], value.shape[1])]
-                func1(loc, 1, GL_TRUE, value)
+                value = value.astype(np.float32, copy=False)
+                func = self._FUNC_MAP[tuple(value.shape[:2])]
+                func(loc, 1, GL_TRUE, value)
 
         # Call correct uniform function
-        elif isinstance(value, float):
-            glUniform1f(loc, value)
-        elif isinstance(value, int):
-            if unsigned:
-                glUniform1ui(loc, value)
-            else:
-                glUniform1i(loc, value)
-        elif isinstance(value, bool):
+        elif isinstance(value, (numbers.Real, np.floating)):
+            glUniform1f(loc, float(value))
+        elif isinstance(value, (numbers.Integer, np.integer)):
             if unsigned:
                 glUniform1ui(loc, int(value))
             else:
