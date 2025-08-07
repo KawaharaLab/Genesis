@@ -51,7 +51,9 @@ def rubber(object_name, object_euler, object_scale, grasp_pos, object_path, qpos
             upper_bound=(0.75, 1.0, 1.0),
             grid_density=128,
         ),
-        show_FPS=False,
+        profiling_options=gs.options.ProfilingOptions(
+            show_FPS= False,
+        )
     )
     # ---- 追加: オフスクリーンカメラ ------------------------
     cam = scene.add_camera(

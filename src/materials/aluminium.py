@@ -42,7 +42,9 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
             camera_fov=30,
         ),
         show_viewer=False,
-        show_FPS=False,
+        profiling_options=gs.options.ProfilingOptions(
+            show_FPS= False,
+        )
     )
     # ---- 追加: オフスクリーンカメラ ------------------------
     cam = scene.add_camera(
