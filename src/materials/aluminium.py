@@ -3,6 +3,9 @@ import genesis as gs
 import pandas as pd
 import torch
 from . import sim
+import numpy as np
+import genesis.utils.geom as gu
+
 
 
 def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, qpos_init, photo_interval, coup_friction=0.5):
@@ -25,7 +28,7 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
     # else:
     #     device = torch.device("cpu")
     #     gs.init(backend=gs.cpu, debug=True)
-    gs.init(backend=gs.gpu)
+    gs.init(backend=gs.cpu)
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
         camera_pos=(3, -1, 1.5),
@@ -47,15 +50,7 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
             show_FPS= False,
         )
     )
-    # ---- 追加: オフスクリーンカメラ ------------------------
-    cam = scene.add_camera(
-        res=(1280, 720),
-        # X 軸方向からのサイドビュー、Z を 0.1（缶の中心高さ程度）にして水平に
-        pos=(2.0, 2.0, 0.1),
-        lookat=(0.0, 0.0, 0.1),
-        fov=30,
-    )
-    # --------------------------------------------------------
+
     ########################## entities ##########################
     plane = scene.add_entity(
         gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
@@ -77,9 +72,21 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
         gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"),
         material=gs.materials.Rigid(coup_friction=coup_friction, friction=coup_friction),
     )
-
+        # ---- 追加: オフスクリーンカメラ ------------------------
+    # cam = scene.add_camera(
+    #     res=(1280, 720),
+    #     # X 軸方向からのサイドビュー、Z を 0.1（缶の中心高さ程度）にして水平に
+    #     pos=(2.0, 2.0, 0.1),
+    #     lookat=(0.0, 0.0, 0.1),
+    #     fov=30,
+    # )
+    # --------------------------------------------------------
+    cam = scene.add_camera(res=(1280, 1280))
+    R = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+    trans = np.array([0.0, -0.5, 0.3])
+    cam.attach(franka.get_link("link7"), gu.trans_R_to_T(trans, R))
     ########################## build ##########################
-    scene.build()
+    scene.build(n_envs=1)
     sim.control_franka(
         scene=scene,
         cam=cam,
