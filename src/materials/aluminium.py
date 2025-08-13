@@ -22,13 +22,10 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
                            "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz",
                            "dof_0", "dof_1", "dof_2", "dof_3", "dof_4", "dof_5", "dof_6", "dof_7", "dof_8"])
     ########################## init ##########################
-    # if torch.cuda.is_available():
-    #     device = torch.device("cuda")
-    #     gs.init(backend=gs.gpu)
-    # else:
-    #     device = torch.device("cpu")
-    #     gs.init(backend=gs.cpu, debug=True)
-    gs.init(backend=gs.cpu)
+    if torch.cuda.is_available():
+        gs.init(backend=gs.gpu)
+    else:
+        gs.init(backend=gs.cpu)
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
         camera_pos=(3, -1, 1.5),
@@ -82,9 +79,19 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
     # )
     # --------------------------------------------------------
     cam = scene.add_camera(res=(1280, 1280))
-    R = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
-    trans = np.array([0.0, -0.5, 0.3])
-    cam.attach(franka.get_link("link7"), gu.trans_R_to_T(trans, R))
+    degree_z = 90
+    theta_z = np.pi * degree_z / 180.0
+    R_z = np.array([[np.cos(theta_z), np.sin(theta_z), 0], [-np.sin(theta_z), np.cos(theta_z), 0], [0, 0, 1]])
+    #z反転
+    flip_z = np.array([[1, 0, 0], [0, 1, 0], [0, 0, -1]])
+    R = flip_z @ R_z
+    #z反転後、y軸周りにdegree[°]回転
+    degree = 15
+    theta = np.pi * degree / 180.0
+    R_y = np.array([[np.cos(theta), 0, -np.sin(theta)], [0, 1, 0], [np.sin(theta), 0, np.cos(theta)]])
+    R = R_y @ R
+    trans = np.array([0.2, 0, -0.5])
+    cam.attach(franka.get_link("hand"), gu.trans_R_to_T(trans, R))
     ########################## build ##########################
     scene.build(n_envs=1)
     sim.control_franka(
@@ -98,7 +105,7 @@ def aluminium(object_name, object_euler, object_scale, grasp_pos, object_path, q
         base_photo_name=base_photo_name,
         photo_interval=photo_interval
     )
-    
+
     # ---- 追加: 録画終了・保存 -------------------------------
     cam.stop_recording(save_to_filename=args.video, fps=1000/photo_interval)
     print(f"saved -> {args.video}")
