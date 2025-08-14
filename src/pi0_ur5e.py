@@ -124,14 +124,14 @@ def main():
     )
     qpos[0][6] = 0.04
     ur5e.set_dofs_position(qpos[:, :6], motors_dof)
-    ur5e.set_dofs_position(qpos[:, 6], fingers_dof)
+    ur5e.set_dofs_position(qpos[:, 6:7], fingers_dof)
     cam.start_recording()
     cam_wrist.start_recording()
     #=======================================================================================================
     # config = _config.get_config("pi0_fast_droid")
     # checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_fast_droid")
     config = _config.get_config("pi0_ur5e")
-    checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_base/assets/ur5e")
+    checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_base")
 
     policy = _policy_config.create_trained_policy(config, checkpoint_dir)
     for t in range (800):
@@ -140,16 +140,16 @@ def main():
             rgb_wrist, _, _, _ = cam_wrist.render(rgb=True)
         if t % 40 == 0:
             h_step = 0
-            dofs = ur5e.get_dofs_position()[0].numpy()
+            dofs = ur5e.get_dofs_position()[0].cpu().numpy()
             arm = dofs[:6]
             print("arm", arm)
-            finger = np.array(dofs[6])
-            print("rgb", rgb.shape, "rgb_wrist", rgb_wrist.shape, "arm", arm.shape)
+            finger = np.array(dofs[6:7])
+            print("rgb", rgb.shape, "rgb_wrist", rgb_wrist.shape, arm.shape, "finger", finger.shape)
             observation = {
-                "observation/exterior_image_1_left": rgb.astype(np.uint8),
-                "observation/wrist_image_left": rgb_wrist.astype(np.uint8),
-                "observation/joint_position": arm,
-                "observation/gripper_position": finger,
+                "base_rgb": rgb.astype(np.uint8),
+                "wrist_rgb": rgb_wrist.astype(np.uint8),
+                "joints": arm,
+                "gripper": finger,
                 "prompt": "pick up the yellow bottle",
             }
             result = policy.infer(observation)
@@ -158,7 +158,7 @@ def main():
         if t % 5 == 0:
             # ur5e.control_dofs_position([result["actions"][h_step][:-1]], motors_dof)
             ur5e.control_dofs_velocity([result["actions"][h_step][:6]], motors_dof)
-            finger_control = result["actions"][h_step][6]
+            finger_control = result["actions"][h_step][6:7]
             ur5e.control_dofs_position(finger_control, fingers_dof)
             h_step += 1
         scene.step()
