@@ -104,7 +104,6 @@ def main():
 
     motors_dof = np.arange(6)
     fingers_dof = np.arange(6, 7)
-    all_dofs = np.arange(7)
 
     # Optional: set control gains
     ur5e.set_dofs_kp(
@@ -121,11 +120,11 @@ def main():
         link=end_effector,
         pos=np.array([[0.65, 0.0, 0.25]]),
         quat=np.array([[0, 1, 0, 0]]),
-        dofs_idx_local = all_dofs,
+        dofs_idx_local = motors_dof,
     )
-    qpos[0][-1:] = 0.04
-    ur5e.set_dofs_position(qpos[:, :-1], motors_dof)
-    ur5e.set_dofs_position(qpos[:, -1:], fingers_dof)
+    qpos[0][6] = 0.04
+    ur5e.set_dofs_position(qpos[:, :6], motors_dof)
+    ur5e.set_dofs_position(qpos[:, 6], fingers_dof)
     cam.start_recording()
     cam_wrist.start_recording()
     #=======================================================================================================
@@ -141,10 +140,10 @@ def main():
             rgb_wrist, _, _, _ = cam_wrist.render(rgb=True)
         if t % 40 == 0:
             h_step = 0
-            dofs = ur5e.get_dofs_position()[0].cpu().numpy()
-            arm = dofs[:-1]
+            dofs = ur5e.get_dofs_position()[0].numpy()
+            arm = dofs[:6]
             print("arm", arm)
-            finger = np.array(dofs[-1])
+            finger = np.array(dofs[6])
             print("rgb", rgb.shape, "rgb_wrist", rgb_wrist.shape, "arm", arm.shape)
             observation = {
                 "observation/exterior_image_1_left": rgb.astype(np.uint8),
@@ -158,9 +157,9 @@ def main():
 
         if t % 5 == 0:
             # ur5e.control_dofs_position([result["actions"][h_step][:-1]], motors_dof)
-            ur5e.control_dofs_velocity([result["actions"][h_step][:-1]], motors_dof)
-            finger_control = result["actions"][h_step][-1]
-            ur5e.control_dofs_position([finger_control, finger_control], fingers_dof)
+            ur5e.control_dofs_velocity([result["actions"][h_step][:6]], motors_dof)
+            finger_control = result["actions"][h_step][6]
+            ur5e.control_dofs_position(finger_control, fingers_dof)
             h_step += 1
         scene.step()
     #================================================================================================================
