@@ -32,7 +32,7 @@ def main():
     #     gs.init(backend=gs.gpu)
     # else:
     #     gs.init(backend=gs.cpu)
-    gs.init(backend=gs.cpu, logging_level="ERROR")  # CPU backend for this example
+    gs.init(backend=gs.gpu, logging_level="ERROR")  # CPU backend for this example
 
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
@@ -66,7 +66,8 @@ def main():
     )
     switch = []
     # ---- 追加: カメラ ------------------------
-    cam = scene.add_camera(
+    cam_wrist = scene.add_camera(
+        model="thinlens",
         res=(224, 224),
         pos=(-1.4, 0.6, 0.55),
         lookat=(0.65, -0.2, 0.2),
@@ -75,7 +76,14 @@ def main():
     )
     end_effector = franka.get_link("hand")
 
-    cam_wrist = scene.add_camera(res=(224, 224))
+    cam = scene.add_camera(
+        model="thinlens",
+        res=(224, 224),
+        pos=(2.5, 0.0, 0.5),
+        lookat=(0.65, 0.0, 0.2),
+        fov=30,
+        GUI=False,
+    )
     degree_z = 90
     theta_z = np.pi * degree_z / 180.0
     R_z = np.array([[np.cos(theta_z), np.sin(theta_z), 0], [-np.sin(theta_z), np.cos(theta_z), 0], [0, 0, 1]])
@@ -88,7 +96,7 @@ def main():
     R_y = np.array([[np.cos(theta), 0, -np.sin(theta)], [0, 1, 0], [np.sin(theta), 0, np.cos(theta)]])
     R = R_y @ R
     trans = np.array([0.2, 0, -0.5])
-    cam_wrist.attach(franka.get_link("hand"), gu.trans_R_to_T(trans, R))
+    # cam_wrist.attach(franka.get_link("hand"), gu.trans_R_to_T(trans, R))
     # --------------------------------------------------------
 
     ########################## build ##########################
@@ -119,17 +127,19 @@ def main():
     cam.start_recording()
     cam_wrist.start_recording()
     #=======================================================================================================
-    config = _config.get_config("pi0_fast_droid")
-    checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_fast_droid")
+    # config = _config.get_config("pi0_fast_droid")
+    # checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_fast_droid")
+    config = _config.get_config("pi0_droid")
+    checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_base")
 
     policy = _policy_config.create_trained_policy(config, checkpoint_dir)
-    for t in range (400):
+    for t in range (800):
         if t % 5 == 0:
             rgb, _, _, _ = cam.render(rgb=True)
             rgb_wrist, _, _, _ = cam_wrist.render(rgb=True)
         if t % 40 == 0:
             h_step = 0
-            dofs = franka.get_dofs_position()[0].numpy()
+            dofs = franka.get_dofs_position()[0].cpu().numpy()
             arm = dofs[:-2]
             print("arm", arm)
             finger = np.array([(dofs[-2] + dofs[-1])/0.08])
@@ -145,6 +155,7 @@ def main():
             print("result:", result["actions"][h_step])
 
         if t % 5 == 0:
+            # franka.control_dofs_position([result["actions"][h_step][:-1]], motors_dof)
             franka.control_dofs_velocity([result["actions"][h_step][:-1]], motors_dof)
             finger_control = 0.04 * result["actions"][h_step][-1]
             franka.control_dofs_position([finger_control, finger_control], fingers_dof)

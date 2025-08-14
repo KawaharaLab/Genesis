@@ -9,6 +9,7 @@ from multiprocessing import Process
 
 import pandas as pd
 import numpy as np
+import torch
 
 # Mute the genesis welcome message for cleaner logs
 os.environ['GENESIS_VERBOSITY'] = '2' 
@@ -26,8 +27,8 @@ DATA_ROOT = PROJECT_ROOT / "data"
 
 PHOTO_INTERVAL = 100
 MATERIAL_TYPE = "Elastic"
-# TARGET_CHOICES = ['soft', 'medium', 'hard']
-TARGET_CHOICES = ['soft']  # For simplicity, only using 'soft' in this example
+TARGET_CHOICES = ['soft', 'medium', 'hard']
+# TARGET_CHOICES = ['soft']  # For simplicity, only using 'soft' in this example
 MAX_PARALLEL_PROCESSES = 8
 
 
@@ -41,19 +42,19 @@ def setup_paths(object_name: str, target_choice: str) -> dict:
     if not input_obj_path.exists():
         raise FileNotFoundError(f"Input file not found at: {input_obj_path}")
 
-    output_dir = DATA_ROOT / "raw" / object_name / simulation_id
-    images_dir = output_dir / "images"
+    output_dir = DATA_ROOT / "raw" / "csv" / object_name / MATERIAL_TYPE / target_choice
+    images_dir = DATA_ROOT / "raw" / "images" / object_name / MATERIAL_TYPE / target_choice
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    images_dir.mkdir(exist_ok=True)
+    images_dir.mkdir(parents=True, exist_ok=True)
 
     return {
         "input_obj": input_obj_path,
         "output_dir": output_dir,
         "images_dir": images_dir,
-        "force_data": output_dir / "force_data.csv",
-        "deformation_data": output_dir / "deformation_data.csv",
-        "segmentation_data": output_dir / "segmentation_data.csv",
+        "force_data": output_dir / f"{object_name}_{MATERIAL_TYPE}_{target_choice}.csv",
+        "deformation_data": output_dir / f"{object_name}_{MATERIAL_TYPE}_deform_{target_choice}.csv",
+        "segmentation_data": output_dir / f"{object_name}_{MATERIAL_TYPE}_steps_{target_choice}.csv",
         "object_name": object_name,
     }
 
@@ -105,11 +106,14 @@ def adjust_force_with_pd_control(current_force, deform_csv, target_vel):
 ## -------------------------- SIMULATION CORE -------------------------- ##
 
 def create_scene(obj_path: str):
-    gs.init(backend=gs.cpu)
+    if torch.cuda.is_available():
+        gs.init(backend=gs.gpu)
+    else:
+        gs.init(backend=gs.cpu)
     object_scale, object_euler = set_grasp(obj_path)
     color = random.choice([(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255),(255,0,255)])
     scene = gs.Scene(
-        sim_options=gs.options.SimOptions(dt=1e-3, substeps=15),
+        sim_options=gs.options.SimOptions(dt=1e-3, substeps=10),
         viewer_options=gs.options.ViewerOptions(camera_pos=(3,-1,1.5), camera_lookat=(0,0,0), camera_fov=30),
         show_viewer=False,
         mpm_options=gs.options.MPMOptions(lower_bound=(0,-0.1,-0.05), upper_bound=(0.75,1,1), grid_density=128)
@@ -139,21 +143,21 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.07
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
-    seg_df.loc[len(seg_df)] = ['start', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
     
     mm.move_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
     
     current_force = 3.0
     step_no += 50
-    seg_df.loc[len(seg_df)] = ['grasp', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['grasp', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
     for i in range(300):
         step_no += 1
         if not mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1):
             break
         if i % 2 == 0: current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
-    
-    seg_df.loc[len(seg_df)] = ['lift', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
+
+    seg_df.loc[len(seg_df)] = ['lift', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
     for i in range(200):
         step_no += 1; curr_z = z + (i * 0.00075)
         if not mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1):
@@ -165,7 +169,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     pickup_status = 'picked up' if np.min(particle_positions_np, axis=0)[2] > 0.01 else 'not_picked_up'
 
     # --- CHANGE 2: The line logging the pickup status is now back. ---
-    seg_df.loc[len(seg_df)] = [pickup_status, step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = [pickup_status, step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
 
     if pickup_status == 'not_picked_up':
         final_make_step(
@@ -184,12 +188,12 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     random.shuffle(actions)
     
     for i, action in enumerate(actions):
-        seg_df.loc[len(seg_df)] = [f'rotation {i+1}', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
+        seg_df.loc[len(seg_df)] = [f'rotation {i+1}', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
         print(f"Executing action: {action['name']} by {action['angle']} degrees...")
         mm.rotate_single_joint_by_angle(scene, cam, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, gso_object, gripper_force=-current_force, angle_degrees=action['angle'], joint_index=action['joint_index'], steps=action['steps'])
         step_no += action['steps']
-        seg_df.loc[len(seg_df)] = [f'rotation {i+1} end', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
-        
+        seg_df.loc[len(seg_df)] = [f'rotation {i+1} end', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+
         for _ in range(600 - action['steps']):
             franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
             make_step(
@@ -199,7 +203,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
             )
             step_no += 1
             
-    seg_df.loc[len(seg_df)] = ['wind down', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['wind down', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
     
     for _ in range(100):
         make_step(
@@ -207,8 +211,8 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
             photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name
         )
         step_no += 1
-        
-    seg_df.loc[len(seg_df)] = ['final', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
+
+    seg_df.loc[len(seg_df)] = ['final', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
     return pickup_status
     
 
@@ -256,7 +260,8 @@ def main(object_name: str, target_choice: str = 'soft'):
         paths = setup_paths(object_name, target_choice)
     except FileNotFoundError as e:
         print(f"❌ Aborting: {e}"); return
-    force_df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz", "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz", "dof_0", "dof_1", "dof_2", "dof_3", "dof_4", "dof_5", "dof_6", "dof_7", "dof_8"])
+    print(paths)
+    force_df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz", "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz", "dof_0", "dof_1", "dof_2", "dof_3", "dof_4", "dof_5", "dof_6", "dof_7", "dof_8", "eef_x", "eef_y", "eef_z", "control_dof_7", "control_dof_8", "obj_COM_x", "obj_COM_y", "obj_COM_z", "obj_mass"])
     deform_df = pd.DataFrame(columns=["step", "deformations", "grip_force"])
     segment_df = pd.DataFrame(columns=['action', 'step', 'hand_coordinate', 'object_bounding_box'])
     scene, cam, franka, gso_object = create_scene(str(paths['input_obj']))

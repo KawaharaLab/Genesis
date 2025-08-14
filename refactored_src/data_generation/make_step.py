@@ -29,7 +29,13 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     links_ft = franka.get_links_force_torque([9, 10])
     forces_torques = links_ft[0].tolist() + links_ft[1].tolist()
 
-    df.loc[len(df)] = [scene.t] + forces_torques + dofs
+    eef_pos = franka.get_links_pos([8]).tolist()[0]
+    finger_ctrl = franka.get_dofs_control_force([7, 8])
+    finger_control = finger_ctrl.tolist()
+    obj_com = gso_object.get_COM().tolist()
+    obj_mass = [gso_object.get_mass()]
+
+    df.loc[len(df)] = [scene.t] + forces_torques + dofs + eef_pos + finger_control + obj_com + obj_mass
 
     # Save photos from multiple camera angles if the condition is met
     if force_photo or (t % photo_interval == 0):
