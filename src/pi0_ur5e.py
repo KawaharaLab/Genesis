@@ -96,7 +96,7 @@ def main():
     R_y = np.array([[np.cos(theta), 0, -np.sin(theta)], [0, 1, 0], [np.sin(theta), 0, np.cos(theta)]])
     R = R_y @ R
     trans = np.array([0.2, 0, -0.5])
-    # cam_wrist.attach(ur5e.get_link("hand"), gu.trans_R_to_T(trans, R))
+    cam_wrist.attach(ur5e.get_link("wrist_3_link"), gu.trans_R_to_T(trans, R))
     # --------------------------------------------------------
 
     ########################## build ##########################
@@ -157,7 +157,7 @@ def main():
 
         if t % 5 == 0:
             # ur5e.control_dofs_position([result["actions"][h_step][:-1]], motors_dof)
-            ur5e.control_dofs_velocity([result["actions"][h_step][:6]], motors_dof)
+            ur5e.control_dofs_position([result["actions"][h_step][:6]], motors_dof)
             finger_control = result["actions"][h_step][6:7]
             ur5e.control_dofs_position(finger_control, fingers_dof)
             h_step += 1
