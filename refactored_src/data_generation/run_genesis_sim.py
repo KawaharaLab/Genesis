@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
 
 PHOTO_INTERVAL = 100
-MATERIAL_TYPE = "Elastic"
+MATERIAL_TYPE = "Rigid"
 # TARGET_CHOICES = ['soft', 'medium', 'hard']
 TARGET_CHOICES = ['soft']  # For simplicity, only using 'soft' in this example
 MAX_PARALLEL_PROCESSES = 8
@@ -87,10 +87,13 @@ def set_grasp(obj_path):
     return scale, euler
 
 def get_bounding_box(gso_object):
-    particle_positions = gso_object.get_state().pos.detach().cpu().numpy()[0]
-    min_coords = np.min(particle_positions, axis=0)
-    max_coords = np.max(particle_positions, axis=0)
-    return [min_coords[0], max_coords[0], min_coords[1], max_coords[1], min_coords[2], max_coords[2]]
+    if MATERIAL_TYPE == 'Elastic':
+        particle_positions = gso_object.get_state().pos.detach().cpu().numpy()[0]
+        min_coords = np.min(particle_positions, axis=0)
+        max_coords = np.max(particle_positions, axis=0)
+        return [min_coords[0], max_coords[0], min_coords[1], max_coords[1], min_coords[2], max_coords[2]]
+    elif MATERIAL_TYPE == "Rigid":
+        return gso_object.get_AABB().view(-1).numpy().reshape(1,6)
 
 def adjust_force_with_pd_control(current_force, deform_csv, target_vel):
     if len(deform_csv) < 2: return current_force
@@ -112,16 +115,27 @@ def create_scene(obj_path: str):
         sim_options=gs.options.SimOptions(dt=1e-3, substeps=15),
         viewer_options=gs.options.ViewerOptions(camera_pos=(3,-1,1.5), camera_lookat=(0,0,0), camera_fov=30),
         show_viewer=False,
-        mpm_options=gs.options.MPMOptions(lower_bound=(0,-0.1,-0.05), upper_bound=(0.75,1,1), grid_density=128)
+        #mpm_options=gs.options.MPMOptions(lower_bound=(0,-0.1,-0.05), upper_bound=(0.75,1,1), grid_density=128)
+        rigid_options=gs.options.RigidOptions(
+            dt=1e-3,
+            # gravity=(0, 0, 0),
+        ),
     )
     cam = scene.add_camera(res=(1280, 720), pos=(-1.5, 1.5, 0.25), lookat=(0.45, 0.45, 0.4), fov=30)
     scene.add_entity(gs.morphs.Plane(), material=gs.materials.Rigid(coup_friction=0.0))
     franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), material=gs.materials.Rigid(coup_friction=3.0))
-    gso_object = scene.add_entity(
-        material=gs.materials.MPM.Elastic(),
-        morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=(0.45, 0.45, 0.001), euler=object_euler),
-        surface=gs.surfaces.Default(color=color)
-    )
+    if MATERIAL_TYPE == 'Elastic':
+        gso_object = scene.add_entity(
+            #material=gs.materials.Rigid,
+            morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=(0.45, 0.45, 0.001), euler=object_euler),
+            surface=gs.surfaces.Default(color=color)
+        )
+    elif MATERIAL_TYPE == 'Rigid':
+        gso_object = scene.add_entity(
+            #material=gs.materials.Rigid,
+            morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=(0.45, 0.45, 0.001), euler=object_euler),
+            surface=gs.surfaces.Default(color=color)
+        )
     # material=gs.materials.MPM.Elastic(E=1.5e6, nu=0.45, rho=1100.0, sampler="pbs", model="corotation") : Self-made Elas
     scene.build()
     return scene, cam, franka, gso_object
@@ -134,8 +148,13 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     end_effector = franka.get_link("hand")
     vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0012}
     target_vel = vel_limits.get(target_choice, 0.0002)
-    particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
-    upper_obj_bound = np.max(particle_positions_np, axis=0)
+    if MATERIAL_TYPE == 'Elastic':
+        particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
+        upper_obj_bound = np.max(particle_positions_np, axis=0)
+    elif MATERIAL_TYPE == 'Rigid':
+        aabb_min, upper_obj_bound = gso_object.get_AABB()
+        
+    
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.07
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
@@ -161,8 +180,12 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         if i % 2 == 0: current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
     
     # --- CHANGE 1: Status string changed to 'picked up' ---
-    particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
-    pickup_status = 'picked up' if np.min(particle_positions_np, axis=0)[2] > 0.01 else 'not_picked_up'
+    if MATERIAL_TYPE == 'Elastic':
+        particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
+        pickup_status = 'picked up' if np.min(particle_positions_np, axis=0)[2] > 0.01 else 'not_picked_up'
+    elif MATERIAL_TYPE == 'Rigid':
+        low, hi = gso_object.get_AABB()
+        pickup_status = 'picked up' if hi[2] > 0.01 else 'not_picked_up'
 
     # --- CHANGE 2: The line logging the pickup status is now back. ---
     seg_df.loc[len(seg_df)] = [pickup_status, step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
@@ -198,6 +221,8 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
                 gripper_force=-current_force
             )
             step_no += 1
+
+    
             
     seg_df.loc[len(seg_df)] = ['wind down', step_no, end_effector.get_pos(), get_bounding_box(gso_object)]
     
@@ -271,16 +296,24 @@ def main(object_name: str, target_choice: str = 'soft'):
 ## -------------------------- BATCH EXECUTION -------------------------- ##
 
 def get_tasks_to_run():
+    if 0:
+        return [('3D_Dollhouse_Refrigerator', 'Soft')]
+    
     tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "objects", DATA_ROOT / "raw"
     if not objects_dir.exists():
         print(f"❌ Error: Input directory '{objects_dir}' not found."); return []
     object_names = [d.name for d in objects_dir.iterdir() if d.is_dir()]
     print(f"🔍 Found {len(object_names)} objects in '{objects_dir}'.")
     for name in object_names:
-        for target in TARGET_CHOICES:
+        if MATERIAL_TYPE == 'Elastic':
+            for target in TARGET_CHOICES:
+                if not (raw_data_dir / name).exists():
+                    print(f"  - Queueing '{name}' with target '{target}' (no previous runs).")
+                    tasks.append((name, target))
+        elif MATERIAL_TYPE == 'Rigid':
             if not (raw_data_dir / name).exists():
-                print(f"  - Queueing '{name}' with target '{target}' (no previous runs).")
-                tasks.append((name, target))
+                print(f"  - Queueing '{name}' (no previous runs).")
+                tasks.append((name, 'none'))
     return tasks
 
 if __name__ == "__main__":

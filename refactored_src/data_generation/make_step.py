@@ -4,6 +4,8 @@ import os
 import imageio.v3 as iio
 import numpy as np
 
+ELASTIC = 0
+
 def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, photo_interval,
                            name, gso_object, gripper_force=0.0, force_photo=False):
     """
@@ -17,11 +19,12 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     t = int(scene.t) - 1
 
     # Get the maximum deformation value for the specified object
-    all_defs = scene.sim.mpm_solver.deformation_metric.to_numpy()
-    obj_defs = all_defs[:, gso_object.particle_start : gso_object.particle_start + gso_object.n_particles]
-    max_deformation = obj_defs.max() if obj_defs.size > 0 else 0.0
+    if ELASTIC:
+        all_defs = scene.sim.mpm_solver.deformation_metric.to_numpy()
+        obj_defs = all_defs[:, gso_object.particle_start : gso_object.particle_start + gso_object.n_particles]
+        max_deformation = obj_defs.max() if obj_defs.size > 0 else 0.0
 
-    deform_csv.loc[len(deform_csv)] = [scene.t, max_deformation, gripper_force]
+        deform_csv.loc[len(deform_csv)] = [scene.t, max_deformation, gripper_force]
 
     # Record robot state (DOFs and force/torque on end-effector links)
     dofs = franka.get_dofs_position().tolist()
