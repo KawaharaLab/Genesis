@@ -22,8 +22,8 @@ import genesis.utils.geom as gu
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-v", "--video", default="grasp_bottle_world_weaker_contact_ur5e.mp4")
-    parser.add_argument("-o", "--outfile", default="grasp_bottle_world_weaker_contact_ur5e.csv")
+    parser.add_argument("-v", "--video", default="pi0_ur5e.mp4")
+    parser.add_argument("-o", "--outfile", default="pi0_ur5e.csv")
     args = parser.parse_args()
     df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz",
                            "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz"])
@@ -62,41 +62,58 @@ def main():
         # visualize_contact=True,
     )
     ur5e = scene.add_entity(
-        gs.morphs.URDF(file="ur5e_robotiq85/ur5e_robotiq85.urdf", fixed=True),
+        gs.morphs.URDF(file="src/ur5e_robotiq85/ur5e_robotiq85.urdf", fixed=True),
     )
     switch = []
     # ---- 追加: カメラ ------------------------
+    # cam_wrist = scene.add_camera(
+    #     model="thinlens",
+    #     res=(224, 224),
+    #     pos=(-1.4, 0.6, 0.55),
+    #     lookat=(0.65, -0.2, 0.2),
+    #     fov=30,
+    #     GUI=False,
+    # )
+    end_effector = ur5e.get_link("wrist_3_link")
+
+    # cam = scene.add_camera(
+    #     model="thinlens",
+    #     res=(224, 224),
+    #     pos=(2.5, 0.0, 0.5),
+    #     lookat=(0.65, 0.0, 0.2),
+    #     fov=30,
+    #     GUI=False,
+    # )
+    # degree_z = 90
+    # theta_z = np.pi * degree_z / 180.0
+    # R_z = np.array([[np.cos(theta_z), np.sin(theta_z), 0], [-np.sin(theta_z), np.cos(theta_z), 0], [0, 0, 1]])
+    # #z反転
+    # flip_z = np.array([[1, 0, 0], [0, 1, 0], [0, 0, -1]])
+    # R = flip_z @ R_z
+    # #z反転後、y軸周りにdegree[°]回転
+    # degree = 15
+    # theta = np.pi * degree / 180.0
+    # R_y = np.array([[np.cos(theta), 0, -np.sin(theta)], [0, 1, 0], [np.sin(theta), 0, np.cos(theta)]])
+    # R = R_y @ R
+    # trans = np.array([0.2, 0, -0.5])
+    # cam_wrist.attach(ur5e.get_link("wrist_3_link"), gu.trans_R_to_T(trans, R))
     cam_wrist = scene.add_camera(
         model="thinlens",
         res=(224, 224),
-        pos=(-1.4, 0.6, 0.55),
+        pos=(-1.2, 1.2, 0.55),
         lookat=(0.65, -0.2, 0.2),
         fov=30,
         GUI=False,
     )
-    end_effector = ur5e.get_link("wrist_3_link")
 
     cam = scene.add_camera(
         model="thinlens",
         res=(224, 224),
-        pos=(2.5, 0.0, 0.5),
+        pos=(2.0, 0.4, 0.5),
         lookat=(0.65, 0.0, 0.2),
         fov=30,
         GUI=False,
     )
-    degree_z = 90
-    theta_z = np.pi * degree_z / 180.0
-    R_z = np.array([[np.cos(theta_z), np.sin(theta_z), 0], [-np.sin(theta_z), np.cos(theta_z), 0], [0, 0, 1]])
-    #z反転
-    flip_z = np.array([[1, 0, 0], [0, 1, 0], [0, 0, -1]])
-    R = flip_z @ R_z
-    #z反転後、y軸周りにdegree[°]回転
-    degree = 15
-    theta = np.pi * degree / 180.0
-    R_y = np.array([[np.cos(theta), 0, -np.sin(theta)], [0, 1, 0], [np.sin(theta), 0, np.cos(theta)]])
-    R = R_y @ R
-    trans = np.array([0.2, 0, -0.5])
-    cam_wrist.attach(ur5e.get_link("wrist_3_link"), gu.trans_R_to_T(trans, R))
     # --------------------------------------------------------
 
     ########################## build ##########################
@@ -128,18 +145,18 @@ def main():
     cam.start_recording()
     cam_wrist.start_recording()
     #=======================================================================================================
-    # config = _config.get_config("pi0_fast_droid")
-    # checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_fast_droid")
-    config = _config.get_config("pi0_ur5e")
-    checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_base")
+    # config = _config.get_config("pi0_droid")
+    # checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_base")
+    config = _config.get_config("pi0_fast_ur5e")
+    checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_fast_base")
 
     policy = _policy_config.create_trained_policy(config, checkpoint_dir)
-    for t in range (800):
+    for t in range (4000):
         if t % 5 == 0:
             rgb, _, _, _ = cam.render(rgb=True)
             rgb_wrist, _, _, _ = cam_wrist.render(rgb=True)
         if t % 40 == 0:
-            h_step = 0
+            h_step = -1
             dofs = ur5e.get_dofs_position()[0].cpu().numpy()
             arm = dofs[:6]
             print("arm", arm)
@@ -150,17 +167,16 @@ def main():
                 "wrist_rgb": rgb_wrist.astype(np.uint8),
                 "joints": arm,
                 "gripper": finger,
-                "prompt": "pick up the yellow bottle",
+                "prompt": "pick up and lift the yellow bottle",
             }
             result = policy.infer(observation)
             print("result:", result["actions"][h_step])
-
         if t % 5 == 0:
-            # ur5e.control_dofs_position([result["actions"][h_step][:-1]], motors_dof)
-            ur5e.control_dofs_position([result["actions"][h_step][:6]], motors_dof)
-            finger_control = result["actions"][h_step][6:7]
-            ur5e.control_dofs_position(finger_control, fingers_dof)
             h_step += 1
+        # ur5e.control_dofs_position([result["actions"][h_step][:-1]], motors_dof)
+        ur5e.control_dofs_position([result["actions"][h_step][:6]], motors_dof)
+        finger_control = result["actions"][h_step][6:7]
+        ur5e.control_dofs_position(finger_control, fingers_dof)
         scene.step()
     #================================================================================================================
 

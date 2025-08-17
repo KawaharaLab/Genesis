@@ -6,7 +6,7 @@ import pandas as pd
 
 # path = "/home/ghoti/sim/Genesis/data/csv/004_sugar_box/004_sugar_box_aluminium_150.csv"
 # path  = "/home/ghoti/sim/Genesis/grasp_bottle_world.csv"
-path ="data/csv/002_master_chef_can/002_master_chef_can_aluminium_050.csv"
+path ="data/raw/csv/002_master_chef_can/Rigid/none/002_master_chef_can_Rigid_none.csv"
 df = pd.read_csv(path)
 # lines =  [430, 530, 780, 880]
 lines = []

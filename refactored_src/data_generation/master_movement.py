@@ -1,11 +1,10 @@
 # Save as: your-project/src/master_movement.py
 
-import math
 import numpy as np
 from make_step import make_step # Import the simplified function
 
 def move_to_pose(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                 qpos, motors_dof, fingers_dof, steps=100):
+                 qpos, motors_dof, fingers_dof, steps=1):
     """Moves the robot to a target joint configuration (qpos) over several steps."""
     for _ in range(steps):
         franka.set_dofs_position(qpos[:-2], motors_dof)
@@ -18,14 +17,14 @@ def move_to_pose(scene, cam, franka, gso_object, df, deform_csv, photo_path, pho
 
 def descend_to_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
                       end_effector, x, y, z, motors_dof, fingers_dof,
-                      quat=np.array([0, 1, 0, 0]), steps=200, gripper_opening=0.04):
+                      quat=np.array([0, 1, 0, 0]), steps=300, gripper_opening=0.04):
     """Moves the end-effector down to a target position (x,y,z)."""
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z]), quat=quat)
     qpos[-2:] = gripper_opening
-    
-    for _ in range(steps):
-        franka.control_dofs_position(qpos[:-2], motors_dof)
-        franka.control_dofs_position(qpos[-2:], fingers_dof)
+    path = franka.plan_path(qpos, num_waypoints=steps)
+
+    for waypoint in path:
+        franka.control_dofs_position(waypoint)
         # --- CORRECTED CALL ---
         make_step(
             scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,

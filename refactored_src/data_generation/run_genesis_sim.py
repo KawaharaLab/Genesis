@@ -94,7 +94,7 @@ def get_bounding_box(gso_object):
         max_coords = np.max(particle_positions, axis=0)
         return [min_coords[0], max_coords[0], min_coords[1], max_coords[1], min_coords[2], max_coords[2]]
     elif MATERIAL_TYPE == "Rigid":
-        return gso_object.get_AABB().view(-1).numpy().reshape(1,6)
+        return gso_object.get_AABB().view(-1).cpu().numpy().reshape(1,6)
 
 def adjust_force_with_pd_control(current_force, deform_csv, target_vel):
     if len(deform_csv) < 2: return current_force
@@ -115,16 +115,20 @@ def create_scene(obj_path: str):
         gs.init(backend=gs.cpu)
     object_scale, object_euler = set_grasp(obj_path)
     color = random.choice([(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255),(255,0,255)])
-    scene = gs.Scene(
-        sim_options=gs.options.SimOptions(dt=1e-3, substeps=10),
-        viewer_options=gs.options.ViewerOptions(camera_pos=(3,-1,1.5), camera_lookat=(0,0,0), camera_fov=30),
-        show_viewer=False,
-        #mpm_options=gs.options.MPMOptions(lower_bound=(0,-0.1,-0.05), upper_bound=(0.75,1,1), grid_density=128)
-        rigid_options=gs.options.RigidOptions(
-            dt=1e-3,
-            # gravity=(0, 0, 0),
-        ),
-    )
+
+    if MATERIAL_TYPE == 'Elastic':
+        scene = gs.Scene(
+            sim_options=gs.options.SimOptions(dt=1e-3, substeps=10),
+            viewer_options=gs.options.ViewerOptions(camera_pos=(3,-1,1.5), camera_lookat=(0,0,0), camera_fov=30),
+            show_viewer=False,
+            mpm_options=gs.options.MPMOptions(lower_bound=(0,-0.1,-0.05), upper_bound=(0.75,1,1), grid_density=128)
+        )
+    else:
+        scene = gs.Scene(
+            sim_options=gs.options.SimOptions(dt=1e-2, substeps=1),
+            viewer_options=gs.options.ViewerOptions(camera_pos=(3,-1,1.5), camera_lookat=(0,0,0), camera_fov=30),
+            show_viewer=False,
+        )
     cam = scene.add_camera(res=(1280, 720), pos=(-1.5, 1.5, 0.25), lookat=(0.45, 0.45, 0.4), fov=30)
     scene.add_entity(gs.morphs.Plane(), material=gs.materials.Rigid(coup_friction=0.0))
     franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), material=gs.materials.Rigid(coup_friction=3.0))
@@ -156,11 +160,10 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
         upper_obj_bound = np.max(particle_positions_np, axis=0)
     elif MATERIAL_TYPE == 'Rigid':
-        aabb_min, upper_obj_bound = gso_object.get_AABB()
-        
-    
+        aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
+    # cam.start_recording()
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.07
-    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z]), quat=np.array([0,1,0,0]))
+    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
     seg_df.loc[len(seg_df)] = ['start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
     
@@ -170,7 +173,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     current_force = 3.0
     step_no += 50
     seg_df.loc[len(seg_df)] = ['grasp', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
-    for i in range(300):
+    for i in range(200):
         step_no += 1
         if not mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1):
             break
@@ -236,6 +239,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         step_no += 1
 
     seg_df.loc[len(seg_df)] = ['final', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    # cam.stop_recording(fps=10)
     return pickup_status
     
 
@@ -299,8 +303,9 @@ def main(object_name: str, target_choice: str = 'soft'):
 ## -------------------------- BATCH EXECUTION -------------------------- ##
 
 def get_tasks_to_run():
-    if 0:
-        return [('3D_Dollhouse_Refrigerator', 'Soft')]
+    if 1:
+        # return [('3D_Dollhouse_Refrigerator', 'Soft')]
+        return [('002_master_chef_can', 'none')]
     
     tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "objects", DATA_ROOT / "raw"
     if not objects_dir.exists():
