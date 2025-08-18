@@ -11,8 +11,6 @@ import pandas as pd
 import numpy as np
 import torch
 
-# Mute the genesis welcome message for cleaner logs
-os.environ['GENESIS_VERBOSITY'] = '2' 
 import genesis as gs
 
 # Assuming these are your custom modules within the src/ directory
@@ -25,8 +23,9 @@ from make_step import make_step, final_make_step
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
 
-PHOTO_INTERVAL = 100
+PHOTO_INTERVAL = 10
 MATERIAL_TYPE = "Rigid"
+# MATERIAL_TYPE = "Elastic"
 # TARGET_CHOICES = ['soft', 'medium', 'hard']
 TARGET_CHOICES = ['soft']  # For simplicity, only using 'soft' in this example
 MAX_PARALLEL_PROCESSES = 8
@@ -125,7 +124,7 @@ def create_scene(obj_path: str):
         )
     else:
         scene = gs.Scene(
-            sim_options=gs.options.SimOptions(dt=1e-2, substeps=1),
+            sim_options=gs.options.SimOptions(dt=1e-2, substeps=5),
             viewer_options=gs.options.ViewerOptions(camera_pos=(3,-1,1.5), camera_lookat=(0,0,0), camera_fov=30),
             show_viewer=False,
         )
@@ -134,13 +133,13 @@ def create_scene(obj_path: str):
     franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), material=gs.materials.Rigid(coup_friction=3.0))
     if MATERIAL_TYPE == 'Elastic':
         gso_object = scene.add_entity(
-            #material=gs.materials.Rigid,
+            material=gs.materials.MPM.Elastic(),
             morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=(0.45, 0.45, 0.001), euler=object_euler),
             surface=gs.surfaces.Default(color=color)
         )
     elif MATERIAL_TYPE == 'Rigid':
         gso_object = scene.add_entity(
-            #material=gs.materials.Rigid,
+            material=gs.materials.Rigid(),
             morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=(0.45, 0.45, 0.001), euler=object_euler),
             surface=gs.surfaces.Default(color=color)
         )
@@ -161,13 +160,13 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         upper_obj_bound = np.max(particle_positions_np, axis=0)
     elif MATERIAL_TYPE == 'Rigid':
         aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
-    # cam.start_recording()
+    cam.start_recording()
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.07
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
     seg_df.loc[len(seg_df)] = ['start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
     
-    mm.move_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
+    mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
     
     current_force = 3.0
@@ -230,18 +229,16 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
             step_no += 1
             
     seg_df.loc[len(seg_df)] = ['wind down', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
-    
-    for _ in range(100):
-        make_step(
-            scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
-            photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name
-        )
-        step_no += 1
+
+    mm.place_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + 0.07, motors_dof, fingers_dof, grip_force=-current_force, steps=1)
 
     seg_df.loc[len(seg_df)] = ['final', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
-    # cam.stop_recording(fps=10)
+    cam.stop_recording(fps=10)
+    final_make_step(
+        scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+        photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
+    )
     return pickup_status
-    
 
 
 ## -------------------------- GENERATE PLOTS (not used) -------------------------- ##
@@ -304,9 +301,10 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 def get_tasks_to_run():
     if 1:
-        # return [('3D_Dollhouse_Refrigerator', 'Soft')]
-        return [('002_master_chef_can', 'none')]
-    
+        # return [('3D_Dollhouse_Refrigerator', 'soft')]
+        return [('026_sponge', 'none')]
+        # return [('002_master_chef_can', 'hard')]
+
     tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "objects", DATA_ROOT / "raw"
     if not objects_dir.exists():
         print(f"❌ Error: Input directory '{objects_dir}' not found."); return []

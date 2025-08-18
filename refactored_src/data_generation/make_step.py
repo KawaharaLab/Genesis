@@ -29,7 +29,7 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     # Record robot state (DOFs and force/torque on end-effector links)
     dofs = franka.get_dofs_position().tolist()
     # Links 9 and 10 are the gripper fingers
-    links_ft = franka.get_links_force_torque([9, 10])
+    links_ft = franka.get_links_force_torque([9, 10], sensor=True)
     forces_torques = links_ft[0].tolist() + links_ft[1].tolist()
 
     eef_pos = franka.get_links_pos([8]).tolist()[0]
@@ -37,18 +37,17 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     finger_control = finger_ctrl.tolist()
     if ELASTIC:
         obj_com = gso_object.get_COM().tolist()
+    else:
+        obj_com = gso_object.get_root_COM().tolist()
     obj_mass = [gso_object.get_mass()]
 
-    if ELASTIC:
-        df.loc[len(df)] = [scene.t] + forces_torques + dofs + eef_pos + finger_control + obj_com + obj_mass
-    else:
-        df.loc[len(df)] = [scene.t] + forces_torques + dofs + eef_pos + finger_control + [0,0,0] + obj_mass
+    df.loc[len(df)] = [scene.t] + forces_torques + dofs + eef_pos + finger_control + obj_com + obj_mass
 
     # Save photos from multiple camera angles if the condition is met
     if force_photo or (t % photo_interval == 0):
         camera_poses = [
-            {'pos': (2.1, -1.2, 0.1), 'lookat': (0.45, 0.45, 0.5)},
-            {'pos': (-1.5, 1.5, 0.25), 'lookat': (0.45, 0.45, 0.4)},
+            # {'pos': (2.1, -1.2, 0.1), 'lookat': (0.45, 0.45, 0.5)},
+            # {'pos': (-1.5, 1.5, 0.25), 'lookat': (0.45, 0.45, 0.4)},
             {'pos': (2, 2, 0.1), 'lookat': (0, 0, 0.1)}
         ]
         for i, pose in enumerate(camera_poses):

@@ -1576,6 +1576,23 @@ class RigidEntity(Entity):
             gs.raise_exception("Neither `name` nor `uid` is provided.")
 
     @gs.assert_built
+    def get_root_COM(self, envs_idx=None, *, unsafe=False):
+        """
+        Returns the position of the entity's root center of mass (COM).
+
+        Parameters
+        ----------
+        envs_idx : None | array_like, optional
+            The indices of the environments. If None, all environments will be considered. Defaults to None.
+
+        Returns
+        -------
+        com : torch.Tensor, shape (3,) or (n_envs, 3)
+            The position of the entity's root center of mass.
+        """
+        return self._solver.get_links_root_COM(self._base_links_idx, envs_idx, unsafe=unsafe).squeeze(-2)
+
+    @gs.assert_built
     def get_pos(self, envs_idx=None, *, unsafe=False):
         """
         Returns position of the entity's base link.
