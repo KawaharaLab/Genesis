@@ -1,7 +1,7 @@
 import numpy as np
 import trimesh
 
-import taichi as ti
+import gstaichi as ti
 
 import genesis as gs
 import genesis.utils.geom as gu
@@ -74,6 +74,8 @@ class RasterizerContext:
         self.scene = scene
         self.sim = scene.sim
         self.visualizer = scene.visualizer
+
+        # Update visuals at this point avoids nasty visual artifacts during Scene build
         self.visualizer.update_visual_states()
 
         if self.rendered_envs_idx is None:

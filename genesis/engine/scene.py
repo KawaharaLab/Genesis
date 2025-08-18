@@ -2,10 +2,11 @@ import os
 import pickle
 import sys
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
-import taichi as ti
+import gstaichi as ti
 from numpy.typing import ArrayLike
 
 import genesis as gs
@@ -41,6 +42,9 @@ from genesis.utils.tools import FPSTracker
 from genesis.utils.misc import redirect_libc_stderr, tensor_to_array
 from genesis.vis import Visualizer
 from genesis.utils.warnings import warn_once
+
+if TYPE_CHECKING:
+    from genesis.sensors.base_sensor import SensorOptions
 
 
 @gs.assert_initialized
@@ -515,6 +519,10 @@ class Scene(RBC):
             gs.raise_exception("Adding lights is only supported by 'RayTracer' and 'BatchRenderer'.")
 
     @gs.assert_unbuilt
+    def add_sensor(self, sensor_options: "SensorOptions"):
+        return self._sim._sensor_manager.create_sensor(sensor_options)
+
+    @gs.assert_unbuilt
     def add_camera(
         self,
         model="pinhole",
@@ -529,6 +537,7 @@ class Scene(RBC):
         spp=256,
         denoise=None,
         env_idx=None,
+        debug=False,
     ):
         """
         Add a camera to the scene.
@@ -567,6 +576,12 @@ class Scene(RBC):
             Whether to denoise the camera's rendered image. Only available when using the RayTracer renderer. Defaults
             to True on Linux, otherwise False. If OptiX denoiser is not available in your platform, consider enabling
             the OIDN denoiser option when building the RayTracer.
+        debug : bool
+            Whether to use the debug camera. It enables to create cameras that can used to monitor / debug the
+            simulation without being part of the "sensors". Their output is rendered by the usual simple Rasterizer
+            systematically, no matter if BatchRender and RayTracer is enabled. This way, it is possible to record the
+            simulation with arbitrary resolution and camera pose, without interfering with what robots can perceive
+            from their environment. Defaults to False.
 
         Returns
         -------
@@ -576,7 +591,7 @@ class Scene(RBC):
         if denoise is None:
             denoise = sys.platform != "darwin"
         return self._visualizer.add_camera(
-            res, pos, lookat, up, model, fov, aperture, focus_dist, GUI, spp, denoise, env_idx
+            res, pos, lookat, up, model, fov, aperture, focus_dist, GUI, spp, denoise, env_idx, debug
         )
 
     @gs.assert_unbuilt
@@ -1157,9 +1172,9 @@ class Scene(RBC):
         """
         arrays: dict[str, np.ndarray] = {}
 
-        for name, field in self.__dict__.items():
-            if isinstance(field, ti.Field):
-                arrays[".".join((self.__class__.__name__, name))] = field.to_numpy()
+        for name, value in self.__dict__.items():
+            if isinstance(value, (ti.Field, ti.Ndarray)):
+                arrays[".".join((self.__class__.__name__, name))] = value.to_numpy()
 
         for solver in self.active_solvers:
             arrays.update(solver.dump_ckpt_to_numpy())
@@ -1197,11 +1212,11 @@ class Scene(RBC):
 
         arrays = state["arrays"]
 
-        for name, field in self.__dict__.items():
-            if isinstance(field, ti.Field):
+        for name, value in self.__dict__.items():
+            if isinstance(value, (ti.Field, ti.Ndarray)):
                 key = ".".join((self.__class__.__name__, name))
                 if key in arrays:
-                    field.from_numpy(arrays[key])
+                    value.from_numpy(arrays[key])
 
         for solver in self.active_solvers:
             solver.load_ckpt_from_numpy(arrays)
@@ -1273,7 +1288,7 @@ class Scene(RBC):
         return self._sim.requires_grad
 
     @property
-    def is_built(self):
+    def is_built(self) -> bool:
         """Whether the scene has been built."""
         return self._is_built
 
