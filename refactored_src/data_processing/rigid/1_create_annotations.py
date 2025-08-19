@@ -10,17 +10,21 @@ import pandas as pd
 import numpy as np
 from multiprocessing import Process
 import time
+from pathlib import Path
+import csv
 
-BASE_PATH = "/home/user/Genesis"
+BASE_PATH = Path(__file__).resolve().parent.parent.parent
 
 #------------------- Generate labels -------------------#
 
 def extract_floats_from_string(data_string: str) -> list[float]:
 
-    arr = eval(data_string)  # Evaluates the string as Python code
-    arr = np.array(arr)  # Convert to NumPy array if not already
+    if pd.isna(data_string):
+        return []
+    # Remove brackets/quotes and split on whitespace
+    cleaned = data_string.replace("[", " ").replace("]", " ").replace("\n", " ")
+    return [float(x) for x in cleaned.split() if x]
 
-    return arr
 
 def split_for_model(df):
     unique_array = np.sort(df.iloc[:,1].unique())
@@ -101,11 +105,13 @@ def logical(i, deform_csv, force_csv, steps_csv, deformation, start_step, end_st
         # find length of initial bounding box from centre to outer xy corner
         ibbline = ((ibbox[1] - ibbox[0])**2 + (ibbox[3] - ibbox[2])**2)/2
         bbox = (extract_floats_from_string(steps_df.loc[steps_df['step'] == exp_bbox_idx].iloc[0, 3]))
+        # print(f"Bounding box for action {action} at step {exp_bbox_idx}: {bbox}")
         bbox_center = np.mean(np.array(bbox).reshape(3, 2), axis=1)
         bbox_center_top = bbox_center + np.array([0, 0, (bbox[5]-bbox[4])/2])  # Adjusting the center to the top of the bounding box
         arm_center = steps_df.loc[steps_df['step'] == exp_bbox_idx].iloc[0, 2]
         arm_center = eval(arm_center.replace("tensor", ""))
         arm_center -= np.array([0, 0, 0.07])  # Adjusting the hand center to match the finger center
+        # print(f"Arm center: {arm_center}, Bounding box center: {bbox_center}")
         xy_distance = np.linalg.norm(bbox_center_top[:2] - arm_center[:2])
         z_distance = bbox_center_top[2] - arm_center[2] # Only considering the z-coordinate for distance
         # print(f"Action: {action} at step {start_step}| Distance between arm center and bounding box center top: {distance}")
@@ -115,35 +121,81 @@ def logical(i, deform_csv, force_csv, steps_csv, deformation, start_step, end_st
         elif z_distance > 0.01:
             dropped = 'dropped'
             # print("failed at z distance")
+        # elif xy_distance > ibbline:
+        #     dropped = 'dropped'
+        #     print("failed at xy distance")
+        # print(f"Action: {action} at step {start_step}| Distance = {xy_distance} | bbox center top: {bbox_center_top} | arm center: {arm_center} | ibbox: {ibbox} - {dropped if 'dropped' in locals() else 'not dropped'}")
+        # print(f"ibbline: {ibbline} | xy distance: {xy_distance} |  bbox: {bbox} |")
+        # print(f"Action: {action} at step {start_step}| Distance = {distance} | bbox center top: {bbox_center_top} | arm center: {arm_center} | bbox: {bbox} - {dropped if 'dropped' in locals() else 'not dropped'}")
+        # print(f"Bounding box for action {action} at step {exp_bbox_idx}: {bbox} - {dropped if 'dropped' in locals() else 'not dropped'}")
 
+    # bbox_center = np.mean(np.array(bbox).reshape(3, 2), axis=1)
+    # return (action, deformation_level, force_level)
     return labeler.generate_sentence(action, deformation_level, force_level, stability = None, add_trend = add_trends, angle=angle, dropped=dropped), action, dropped
 
-def get_picked_up_objects(all_objects, material='Elastic'):
+def get_picked_up_objects(all_objects, material='Rigid'):
     to_do = []
-    for obj_name in all_objects:
-        picked_up_path = os.path.join(BASE_PATH, 'data', 'picked_up', 'csv' , obj_name)
-        if obj_name == '.DS_Store':
-            continue
-        for target in os.listdir(os.path.join(picked_up_path, material)):
-            if target == '.DS_Store':
+    if material == 'Rigid':
+        for obj_name in all_objects:
+            picked_up_path = os.path.join(BASE_PATH, 'data', 'raw', 'csv' , obj_name, material, 'soft') # Hardcoded soft for now
+            print(f'pup {picked_up_path}')
+            if obj_name == '.DS_Store':
                 continue
-            test_path = os.path.join(picked_up_path, material, target)
+            
             # if csv_path is empty, then do not include this object
-            if not os.path.exists(test_path) or not os.listdir(test_path):
-                print(f'❌ {obj_name}, {target} is not picked up.')
+            csv_path = os.path.join(picked_up_path, f'{obj_name}_{material}_soft.csv') # Hardcoded soft for now
+            with open(csv_path, newline='') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)  # Read header (if present)
+                first_data_row = next(reader, None)
+
+                if first_data_row is None:
+                    print("File has no data rows")
+                else:
+                    print(f'✅ {obj_name}')
+                    to_do.append((obj_name, 'soft'))
+    elif material == 'Elastic':
+        for obj_name in all_objects:
+            picked_up_path = os.path.join(BASE_PATH, 'data', 'raw', 'csv' , obj_name)
+            if obj_name == '.DS_Store':
                 continue
-            else:
-                to_do.append((obj_name, target))
-                print(f'✅ {obj_name}, {target} is picked up.')
+            for target in os.listdir(os.path.join(picked_up_path, material)):
+                if target == '.DS_Store':
+                    continue
+                test_path = os.path.join(picked_up_path, material, target)
+                # if csv_path is empty, then do not include this object
+                if not os.path.exists(test_path) or not os.listdir(test_path):
+                    print(f'❌ {obj_name}, {target} is not picked up.')
+                    continue
+                else:
+                    to_do.append((obj_name, target))
+                    print(f'✅ {obj_name}, {target} is picked up.')
+       
+
+        
     return to_do
 
 
-def main(obj_name, picked_up_path, deformation, material='Elastic'):
+def main(obj_name, csv_path, deformation, material='Rigid'):
     #------------------ Set up dataframe ------------------#
     annotations_df = pd.DataFrame(columns=['action','step start', 'step end', 'annotation'])
     #------------------ Choose an object and deformation level ------------------#
-    csv_path = picked_up_path
+
     drop_logic = None
+
+    # #------------------- Check if paths contain files -------------------#
+    # # If the picked up path does not exist or is empty
+    # if not os.path.isdir(picked_up_path) or not os.listdir(picked_up_path):
+    #     # If the not picked up path does not exist or is empty, then the object is invalid
+    #     if not os.listdir(not_picked_up_path):
+    #         raise ValueError(f"Invalid object: {object}. No data available for the specified material and deformation level.")
+    #     else:
+    #         # If the not picked up path exists and has files, use it instead
+    #         csv_path = not_picked_up_path
+    #     print(f"not picked up path: {object}")
+    #     exit()
+    # else:
+    #     csv_path = picked_up_path
 
     #------------------- Load the CSV files -------------------#
     # deform_csv: step, deformations, grip_force
@@ -159,24 +211,26 @@ def main(obj_name, picked_up_path, deformation, material='Elastic'):
     # force_df = pd.read_csv(force_csv)
 
     pairings, insertions, exp_bbox = split_for_model(steps_df)
+    # print(f"Pairings: {pairings}, Insertions: {insertions}, Expanded BBox: {exp_bbox}")
     for i, (start, end) in enumerate(pairings):
         annotation, action, drop_logic = logical(i, deform_csv, force_csv, steps_csv, deformation, start, end, insertions, exp_bbox[i], drop_logic)
         annotations_df.loc[len(annotations_df)] = {'action': action, 'step start': start, 'step end': end, 'annotation': annotation}
 
+
     # ------------------- Save the annotations to a CSV file -------------------#
-    os.makedirs(os.path.join(BASE_PATH, 'data', 'picked_up', f'{COMPLEXITY}_annotations_2'), exist_ok=True)
-    output_csv_path = os.path.join(BASE_PATH, 'data', 'picked_up', f'{COMPLEXITY}_annotations_2', f"{obj_name}_{material}_{deformation}_annotations.csv")
+    os.makedirs(os.path.join(BASE_PATH, 'data', 'processed', f'{COMPLEXITY}_annotations'), exist_ok=True)
+    output_csv_path = os.path.join(BASE_PATH, 'data', 'processed', f'{COMPLEXITY}_annotations', f"{obj_name}_{material}_{deformation}_annotations.csv")
     annotations_df.to_csv(output_csv_path, index=False)
 
 labeler = RobotLabelTemplate()
 
 if __name__ == "__main__":
-    folder_path = os.path.join(BASE_PATH, "data", "picked_up", 'csv')
+    folder_path = os.path.join(BASE_PATH, "data", "raw", "csv")
     all_objects = os.listdir(folder_path)
     selected_objects = get_picked_up_objects(all_objects)
     # selected_objects = [('Crayola_Bonus_64_Crayons', 'medium')]
     
-    material = 'Elastic'
+    material = 'Rigid' # or Elastic
     processes = []
 
     for task in selected_objects:

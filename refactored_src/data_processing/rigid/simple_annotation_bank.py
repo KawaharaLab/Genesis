@@ -3,34 +3,6 @@ import random
 class RobotLabelTemplate:
     def __init__(self):
         self.actions = {
-            # 'start': ['starting movement', 'initiating', 'advancing', 'aligning', 'reaching', 'positioning', 'preparing', 'approaching'],
-            
-            # 'grasp': ['grasping', 'gripping', 'holding', 'securing', 'clasping', 'clamping', 'capturing', 'pinching', 'squeezing'],
-            # 'grasp pt1': ['grasping', 'gripping', 'holding', 'securing', 'clasping', 'clamping', 'capturing', 'pinching', 'squeezing'],
-            # 'grasp pt2': ['grasping', 'gripping', 'holding', 'securing', 'clasping', 'clamping', 'capturing', 'pinching', 'squeezing'],
-            
-            # 'lift': ['lifting', 'raising', 'elevating', 'picking up'],
-            
-            # 'rotation 1': ['rotating', 'turning', 'twisting'],
-            # 'rotation 1 pt1': ['rotating', 'turning', 'twisting'],
-            # 'rotation 1 pt2': ['rotating', 'turning', 'twisting'],
-
-            # 'buffer 1':   ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-            # 'buffer 1 pt1': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-            # 'buffer 1 pt2': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-
-            # 'rotation 2': ['rotating', 'turning', 'twisting'],
-            # 'rotation 2 pt1': ['rotating', 'turning', 'twisting'],
-            # 'rotation 2 pt2': ['rotating', 'turning', 'twisting'],
-
-            # 'buffer 2':   ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-            # 'buffer 2 pt1': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-            # 'buffer 2 pt2': ['holding position of', 'maintaining hold of', 'pausing motion of', 'steadying'],
-
-            # 'wind_down':  ['slowing down motion of', 'decelerating motion of', 'coming to rest with']
-
-
-
             'start': 'start',
             'lift': 'lifting',
             'grasp': 'grasping',
@@ -144,28 +116,25 @@ class RobotLabelTemplate:
         #     angle_phrase = f"by an angle of {angle} degrees"
         #     parts.append(angle_phrase)
         
-        if action in ['buffer 1', 'buffer 1 pt1', 'buffer 1 pt2', 'buffer 2', 'buffer 2 pt1', 'buffer 2 pt2']:
-            parts.append("maintaining a stable hold")
+        # if action in ['buffer 1', 'buffer 1 pt1', 'buffer 1 pt2', 'buffer 2', 'buffer 2 pt1', 'buffer 2 pt2']:
+        #     parts.append("maintaining a stable hold")
 
-        if force_level:
-            #force_phrase = random.choice(self.force_descriptors.get(force_level, []))
-            force_phrase = self.force_descriptors.get(force_level, [])
-            parts.append(f"using {force_phrase}")
+        # if force_level:
+        #     #force_phrase = random.choice(self.force_descriptors.get(force_level, []))
+        #     force_phrase = self.force_descriptors.get(force_level, [])
+        #     parts.append(f"using {force_phrase}")
 
-        if deformation_level:
-            # deform_phrase = random.choice(self.deformation_levels.get(deformation_level, []))
-            deform_phrase = self.deformation_levels.get(deformation_level, [])
-            parts.append(f"causing {deform_phrase}")
+        
 
-        if stability:
-            #stability_phrase = random.choice(self.stability_descriptors.get(stability, []))
-            stability_phrase = self.stability_descriptors.get(stability, [])
-            parts.append(f"maintaining {stability_phrase}")
+        # if stability:
+        #     #stability_phrase = random.choice(self.stability_descriptors.get(stability, []))
+        #     stability_phrase = self.stability_descriptors.get(stability, [])
+        #     parts.append(f"maintaining {stability_phrase}")
 
-        if add_trend:
-            #add_trend_phrase = random.choice(self.add_trends.get(add_trend, []))
-            add_trend_phrase = self.add_trends.get(add_trend, [])
-            parts.append(f"with {add_trend_phrase}")
+        # if add_trend:
+        #     #add_trend_phrase = random.choice(self.add_trends.get(add_trend, []))
+        #     add_trend_phrase = self.add_trends.get(add_trend, [])
+        #     parts.append(f"with {add_trend_phrase}")
 
         if dropped:
             sentence = f"{object_ref} has been {random.choice(self.droppped.get(dropped, []))}."
