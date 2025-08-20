@@ -1,9 +1,12 @@
 import random
 
+import numpy as np
+import pandas as pd
+
 class RobotLabelTemplate:
     def __init__(self):
         self.actions = {
-            'start': 'start',
+            'start': 'start', # TODO: make it more simple
             'lift': 'lifting',
             'grasp': 'grasping',
             'grasp pt1': 'grasping',
@@ -23,32 +26,7 @@ class RobotLabelTemplate:
             'wind_down':  'stopping'
         }
 
-        self.deformation_levels = {
-            # 'none': ['undeformed shape', 'maintaining shape', 'contactless', 'form-conservation',
-            #          'shape-conservation', 'unyielding'],
-            # 'soft': ['soft-deformation', 'gentle-compression', 'lightly-yielding', 'minimal-resistance',
-            #          'slight-yielding', 'cushioned-contact'],
-            # 'medium': ['medium-deformation', 'moderate-compression', 'controlled-yielding', 'steady-resistance',
-            #            'balanced-yielding', 'firm-contact'],
-            # 'hard': ['hard-deformation', 'significant-compression', 'firm-yielding', 'strong-resistance',
-            #          'substantial-yielding', 'rigid-contact'],
-
-            'none': 'undeformed shape',
-            'soft': 'soft-deformation',
-            'medium': 'medium-deformation',
-            'hard': 'hard-deformation'
-        }
-
         self.force_descriptors = {
-            # 'none': ['forceless methods', 'zero-pressure', 'zero-force', 'contactless method'],
-            # 'low': ['gentle force', 'light pressure', 'minimal force', 'soft contact',
-            #         'cushioned pressure', 'slight force', 'subtle force'],
-            # 'medium': ['moderate force', 'controlled pressure', 'steady force', 'balanced pressure',
-            #            'firm contact', 'moderate force'],
-            # 'high': ['strong force', 'firm pressure', 'significant force', 'intense pressure',
-            #          'heavy force', 'strong contact'],
-
-
             'none': 'zero-force',
             'low': 'gentle force',
             'medium': 'moderate force',
@@ -57,19 +35,12 @@ class RobotLabelTemplate:
         }
 
         self.stability_descriptors = {
-            #'stable': ['stable grasp', 'secure hold', 'firm grip', 'controlled grasp', 'steady contact'],
-            #'unstable': ['unstable grasp', 'loose grip', 'slipping contact', 'precarious hold', 'uncertain grip']
             'stable': ['stable grasp'],
             'unstable': ['unstable grasp']
 
         }
 
         self.add_trends = {
-            # 'increasing': ['increasing force', 'growing pressure', 'rising force'],
-            # 'decreasing': ['decreasing force', 'reducing pressure', 'diminishing force', 'lessening pressure'],
-            # 'constant': ['constant force', 'steady pressure', 'unchanging force'],
-            # 'deformation': ['progressive deformation', 'gradual yielding', 'increasing compression']
-            
             'increasing': 'increasing force',
             'decreasing':'decreasing force',
             'constant': 'constant force',
@@ -77,87 +48,84 @@ class RobotLabelTemplate:
 
         }
 
-        # self.positional_terms = ['end-effector', 'gripper', 'fingers', 'gripping mechanism']
-        # self.object_refs = ['the object', 'target object', 'item']
-        self.positional_terms = 'end-effector'
         self.object_refs = 'the object'
         self.transitions = ['while', 'as', 'during', 'throughout', 'simultaneously', 'then', 'followed by']
 
-        self.droppped = {
-            # 'dropped': ['dropped', 'released', 'let go of'],
+        self.dropped = {
             'dropped': ['dropped']
         }
 
-    def generate_sentence(self, action: str, deformation_level: str = None,
+    def dist_from_COM(self, com: np.ndarray, pos: np.ndarray) -> str:
+        """
+        Calculate the distance between the grasp position and the center of mass (COM), and return whether it is far or near.
+        Considers only the first timestep of the timeseries.
+        Args:
+            com [t, 3]: A time series of the center of mass position.
+            pos [t, 3]: A time series of the grasp position.
+        TODO:
+            This code means that it annotates 'far' when the distance is greater than 0.1[meters]. 
+            We need to check whether this is a good threshold value.
+            Maybe we need to change this to be relative to the size of the object being grasped.
+            Also, the [x, y] distance may be more important than the [z] distance, because the gravity is acting downwards.
+        """
+        distance = np.linalg.norm((com - pos)[0])
+        return "far from" if distance > 0.1 else "near"
+
+    def slip_detection(self, grasp_pos: np.ndarray, com: np.ndarray) -> str:
+        """
+        Detect whether a slip has occurred based on the distance between the grasp position and the center of mass (COM).
+        Args:
+            com [t, 3]: A time series of the center of mass position.
+            grasp_pos [t, 3]: A time series of the grasp position.
+        TODO:
+            First of all we need to check if the code works correctly.
+            The code now uses the diff of the distances to determine slip velocity.
+            Since each timestep is 0.01 seconds for rigid objects, if the distance changes by more than 0.005 meters in 1 timestep, the slip velocity is 0.5m/s.
+            Is this a good threshold to separate 'slipping quickly' from 'slipping slowly'?
+            Remember that VLAs can re-generate action chunks once in 0.8s, and the size of the Franka finger.
+            Maybe it's better to use bounding box information rather than the COM position.
+        """
+        distances = np.linalg.norm(grasp_pos - com, axis=1)
+        # Decide the slip velocity from the time series of distances
+        slip_velocities = np.diff(distances, prepend=0)
+        return "slipping quickly" if np.any(slip_velocities > 0.005) else "slipping slowly" if np.any(slip_velocities > 0.001) else "no slip"
+
+    def generate_sentence(self, action: str, force_df: pd.DataFrame,
                           force_level: str = None, stability: str = None,
                           add_trend: str = None, angle: int = None, dropped: str = None) -> str:
         """
         Generate a sentence using selected values.
         """
-        parts = []
+        annotation = ""
 
-        # effector = random.choice(self.positional_terms)
-        # object_ref = random.choice(self.object_refs)
-        # action_phrase = random.choice(self.actions.get(action))
-        effector = self.positional_terms
-        object_ref = self.object_refs
         action_phrase = self.actions[action]
-        if action in ['grasp pt2', 'rotation 1 pt2', 'rotation 2 pt2', 'buffer 1 pt2', 'buffer 2 pt2']:
-            base = f"{effector} continue {action_phrase} {object_ref}"
-        else:
-            base = f"{effector} {action_phrase} {object_ref}"
-        parts.append(base)
 
-        if action == 'start':
-            sentence = f"{effector} {action_phrase} towards {object_ref}, to begin the task."
-            return sentence[0].upper() + sentence[1:]
-        
-        # if angle:
-        #     angle_phrase = f"by an angle of {angle} degrees"
-        #     parts.append(angle_phrase)
-        
-        # if action in ['buffer 1', 'buffer 1 pt1', 'buffer 1 pt2', 'buffer 2', 'buffer 2 pt1', 'buffer 2 pt2']:
-        #     parts.append("maintaining a stable hold")
+        mass = force_df['mass'].values[0]
+        mass_str = "heavy" if mass > 1.0 else "light" #TODO: Check whether 1 [kg] is a good threshold
+
+        annotation += f"{action_phrase} a {mass_str} object. " # explain the movement very simply
+
+        com_pos = force_df[['com_x', 'com_y', 'com_z']].values
+        right_finger_pos = force_df[['right_finger_x', 'right_finger_y', 'right_finger_z']].values
+        left_finger_pos = force_df[['left_finger_x', 'left_finger_y', 'left_finger_z']].values
+        grasp_pos = (right_finger_pos + left_finger_pos)/2
+        annotation += f"{self.dist_from_COM(com_pos, grasp_pos)} the center of mass. "
+
+        annotation += f"with {self.slip_detection(grasp_pos, com_pos)}."
 
         # if force_level:
         #     #force_phrase = random.choice(self.force_descriptors.get(force_level, []))
         #     force_phrase = self.force_descriptors.get(force_level, [])
         #     parts.append(f"using {force_phrase}")
 
-        
-
         # if stability:
         #     #stability_phrase = random.choice(self.stability_descriptors.get(stability, []))
         #     stability_phrase = self.stability_descriptors.get(stability, [])
         #     parts.append(f"maintaining {stability_phrase}")
 
-        # if add_trend:
-        #     #add_trend_phrase = random.choice(self.add_trends.get(add_trend, []))
-        #     add_trend_phrase = self.add_trends.get(add_trend, [])
-        #     parts.append(f"with {add_trend_phrase}")
-
         if dropped:
-            sentence = f"{object_ref} has been {random.choice(self.droppped.get(dropped, []))}."
+            sentence = f"a {mass_str} object has been {random.choice(self.dropped.get(dropped, []))}." #TODO: Describe what was happening before the drop, and why it dropped.
             return sentence[0].upper() + sentence[1:]
-            
+        #TODO: add the case of "successfully placed object"
 
-        # Join sentence with transitions or commas
-        if len(parts) == 1:
-            sentence = parts[0]
-        elif len(parts) == 2:
-            connector = random.choice([' ', ', ', ' while '])
-            sentence = connector.join(parts)
-        else:
-            sentence = parts[0] + ", " + ", ".join(parts[1:])
-
-        sentence = sentence.strip().rstrip(',') # remove trailing comma
-        if not sentence.endswith('.'):
-            sentence += '.'
-
-        return sentence[0].upper() + sentence[1:] 
-
-
-
-
-
-
+        return annotation
