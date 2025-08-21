@@ -8,12 +8,12 @@ BASE_PATH = "/home/mdxuser/Genesis/main/data/picked_up"
 ANNOTATION_PATH = os.path.join(BASE_PATH, f"{COMPLEXITY}_annotations_2")
 CSV_PATH = os.path.join(BASE_PATH, "picked_up_upsampled_IB_2")
 
-MATERIAL = "Elastic"
+MATERIAL = "Rigid"
 
 # Directory containing all FORMAT 2 CSVs
 # Output CSV in FORMAT 1
 output_csv = os.path.join(BASE_PATH, f"{COMPLEXITY}_formatted_training_data_IB_2.csv")
-LENGTH = 200  # Number of steps to interpolate to
+LENGTH = 80  # Number of steps to interpolate to
 
 
 # List to collect rows for FORMAT 1

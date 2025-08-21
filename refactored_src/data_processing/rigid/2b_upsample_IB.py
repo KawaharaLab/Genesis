@@ -3,19 +3,20 @@ import numpy as np
 from scipy.interpolate import interp1d
 import os
 import math
-
+from pathlib import Path
 # Load your full CSV
 # df = pd.read_csv("/Users/no.166/Documents/Azka's Workspace/Genesis/main/data/picked_up_csv/ASICS_GELBlur33_20_GS_BlackWhiteSafety_Orange/Elastic/soft/ASICS_GELBlur33_20_GS_BlackWhiteSafety_Orange_Elastic_soft.csv")
 # df_steps = pd.read_csv("/Users/no.166/Documents/Azka's Workspace/Genesis/main/data/annotations/ASICS_GELBlur33_20_GS_BlackWhiteSafety_Orange_Elastic_soft_annotations.csv")
 
-BASE_PATH = "/home/mdxuser/Genesis/main/data/picked_up"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+BASE_PATH = PROJECT_ROOT + "/data/raw"
 
 DATA_DIR = os.path.join(BASE_PATH, "csv")
 os.makedirs(os.path.join(BASE_PATH, "picked_up_upsampled_IB_2"), exist_ok=True)  # exists_ok=True to avoid errors if the directory already exists
 OUTPUT_DIR = os.path.join(BASE_PATH, "picked_up_upsampled_IB_2")
 os.makedirs(OUTPUT_DIR, exist_ok=True) # exists_ok=True to avoid errors if the directory already exists
-LENGTH = 200  # Number of steps to interpolate to
-MATERIAL = "Elastic"
+LENGTH = 80  # Number of steps to interpolate to
+MATERIAL = "Rigid"
 
 def main(df, df_steps):
     # Partition boundaries

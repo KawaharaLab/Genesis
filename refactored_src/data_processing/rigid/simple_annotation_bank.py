@@ -37,7 +37,6 @@ class RobotLabelTemplate:
         self.stability_descriptors = {
             'stable': ['stable grasp'],
             'unstable': ['unstable grasp']
-
         }
 
         self.add_trends = {
@@ -45,7 +44,6 @@ class RobotLabelTemplate:
             'decreasing':'decreasing force',
             'constant': 'constant force',
             'deformation': 'progressive deformation'
-
         }
 
         self.object_refs = 'the object'
@@ -88,43 +86,37 @@ class RobotLabelTemplate:
         distances = np.linalg.norm(grasp_pos - com, axis=1)
         # Decide the slip velocity from the time series of distances
         slip_velocities = np.diff(distances, prepend=0)
-        return "slipping quickly" if np.any(slip_velocities > 0.005) else "slipping slowly" if np.any(slip_velocities > 0.001) else "no slip"
+        return "slipping quickly" if np.any(slip_velocities > 0.005) else "slipping slowly" if np.any(slip_velocities > 0.001) else "no slip" # TODO: something's wrong with the calculation?
 
-    def generate_sentence(self, action: str, force_df: pd.DataFrame,
-                          force_level: str = None, stability: str = None,
-                          add_trend: str = None, angle: int = None, dropped: str = None) -> str:
+    def drop_detection(self, bbox: np.ndarray, grasp_pos: np.ndarray) -> str:
+        return False
+        if bbox[4] <= 0.01: # If min z value is less than or equal to 0.01, then the object is not picked up
+            dropped = 'dropped' # TODO: it might have been placed successfully
+            # print("failed at bbox min z value")
+        elif z_distance > 0.01:
+            dropped = 'dropped'
+
+    def generate_sentence(self, action: str, start: int, force_df: pd.DataFrame) -> str:
         """
         Generate a sentence using selected values.
         """
         annotation = ""
 
-        action_phrase = self.actions[action]
-
-        mass = force_df['mass'].values[0]
+        mass = force_df['obj_mass'].values[0]
         mass_str = "heavy" if mass > 1.0 else "light" #TODO: Check whether 1 [kg] is a good threshold
 
-        annotation += f"{action_phrase} a {mass_str} object. " # explain the movement very simply
+        annotation += f"{action} a {mass_str} object " # explain the movement very simply
 
-        com_pos = force_df[['com_x', 'com_y', 'com_z']].values
+        com_pos = force_df[['obj_COM_x', 'obj_COM_y', 'obj_COM_z']].values
         right_finger_pos = force_df[['right_finger_x', 'right_finger_y', 'right_finger_z']].values
         left_finger_pos = force_df[['left_finger_x', 'left_finger_y', 'left_finger_z']].values
         grasp_pos = (right_finger_pos + left_finger_pos)/2
-        annotation += f"{self.dist_from_COM(com_pos, grasp_pos)} the center of mass. "
+        annotation += f"{self.dist_from_COM(com_pos, grasp_pos)} the center of mass, "
 
-        annotation += f"with {self.slip_detection(grasp_pos, com_pos)}."
+        annotation += f"{self.slip_detection(grasp_pos, com_pos)}."
 
-        # if force_level:
-        #     #force_phrase = random.choice(self.force_descriptors.get(force_level, []))
-        #     force_phrase = self.force_descriptors.get(force_level, [])
-        #     parts.append(f"using {force_phrase}")
-
-        # if stability:
-        #     #stability_phrase = random.choice(self.stability_descriptors.get(stability, []))
-        #     stability_phrase = self.stability_descriptors.get(stability, [])
-        #     parts.append(f"maintaining {stability_phrase}")
-
-        if dropped:
-            sentence = f"a {mass_str} object has been {random.choice(self.dropped.get(dropped, []))}." #TODO: Describe what was happening before the drop, and why it dropped.
+        if self.drop_detection(com_pos, grasp_pos):
+            sentence = f"a {mass_str} object has been {random.choice(self.dropped.get('dropped', []))}." #TODO: Describe what was happening before the drop, and why it dropped.
             return sentence[0].upper() + sentence[1:]
         #TODO: add the case of "successfully placed object"
 

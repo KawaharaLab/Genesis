@@ -6,6 +6,16 @@ import numpy as np
 
 ELASTIC = 0
 
+def get_bounding_box(gso_object):
+    if ELASTIC:
+        particle_positions = gso_object.get_state().pos.detach().cpu().numpy()[0]
+        min_coords = np.min(particle_positions, axis=0)
+        max_coords = np.max(particle_positions, axis=0)
+        return min_coords.tolist() + max_coords.tolist()
+    else:
+        AABBs = gso_object.get_AABB().cpu().numpy()
+        return AABBs[0].tolist() + AABBs[1].tolist()
+
 def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, photo_interval,
                            name, gso_object, gripper_force=0.0, force_photo=False):
     """
@@ -32,7 +42,7 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     links_ft = franka.get_links_force_torque([9, 10], sensor=True)
     forces_torques = links_ft[0].tolist() + links_ft[1].tolist()
 
-    eef_pos = franka.get_links_pos([8]).tolist()[0]
+    eef_pos = franka.get_links_pos([8, 9, 10]).flatten().tolist()
     finger_ctrl = franka.get_dofs_control_force([7, 8])
     finger_control = finger_ctrl.tolist()
     if ELASTIC:
@@ -40,8 +50,22 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     else:
         obj_com = gso_object.get_root_COM().tolist()
     obj_mass = [gso_object.get_mass()]
+    obj_bounding_box = get_bounding_box(gso_object)
 
-    df.loc[len(df)] = [scene.t] + forces_torques + dofs + eef_pos + finger_control + obj_com + obj_mass
+    if ELASTIC:
+        obj_contacts = [None, None, None]
+    else:
+        obj_contacts = [0, 0, 0]
+        obj_contact_info = gso_object.get_contacts()
+        obj_contact_pairs = obj_contact_info["link_a"]
+        if franka.get_link("left_finger").idx in obj_contact_pairs:
+            obj_contacts[0] = 1
+        if franka.get_link("right_finger").idx in obj_contact_pairs:
+            obj_contacts[1] = 1
+        if 0 in obj_contact_pairs:
+            obj_contacts[2] = 1
+
+    df.loc[len(df)] = [scene.t] + forces_torques + dofs + eef_pos + finger_control + obj_com + obj_mass + obj_bounding_box + obj_contacts
 
     # Save photos from multiple camera angles if the condition is met
     if force_photo or (t % photo_interval == 0):
