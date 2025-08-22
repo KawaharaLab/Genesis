@@ -274,7 +274,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z + 0.1]), quat=np.array([0, 1, 0, 0]))
     qpos[-2:] = 0.04
-    seg_df.loc[len(seg_df)] = ['start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['start', int(scene.t)]
 
     mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
                    PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
@@ -284,7 +284,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
     # === Grasp (force-controlled with PD adjustment) ===
     current_force = 3.0
     step_no += 50
-    seg_df.loc[len(seg_df)] = ['grasp', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['grasp', int(scene.t)]
     for i in range(200):
         step_no += 1
         if not mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
@@ -295,7 +295,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
     # === Lift (position + force) ===
-    seg_df.loc[len(seg_df)] = ['lift', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]
     for i in range(200):
         step_no += 1
         curr_z = z + (i * 0.00075)
@@ -309,7 +309,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
     # === Pickup check (reuse your logic) ===
     low, hi = gso_object.get_AABB()
     pickup_status = 'picked up' if hi[2] > 0.01 else 'not_picked_up'
-    seg_df.loc[len(seg_df)] = [pickup_status, step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = [pickup_status, int(scene.t)]
     if pickup_status == 'not_picked_up':
         final_make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
                         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL,
@@ -320,37 +320,37 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
     # === NEW MOVEMENT TEST (PUT IN BOX)===
     # Choose a farther zone than placement to ensure a true ballistic test
     #ZONE = (0.55, 0.80, 0.35, 0.60)
-    '''    seg_df.loc[len(seg_df)] = ['drop_in_box start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
-    # Example zone center
-    print(RUNNING_DROP_IN_BOX)
-    (cx, cy) = RUNNING_DROP_IN_BOX
+    # seg_df.loc[len(seg_df)] = ['drop_in_box start', int(scene.t)]
+    # # Example zone center
+    # print(RUNNING_DROP_IN_BOX)
+    # (cx, cy) = RUNNING_DROP_IN_BOX
 
-    print("YASSS", "x", cx, "y", cy)
-    success = mm.drop_in_box(
-        scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
-        end_effector, cx, cy, 0.0,  # z ignored; current EEF z is used
-        motors_dof, fingers_dof, grip_force=(-current_force)-2, quat=np.array([0,1,0,0])
-    )'''
+    # print("YASSS", "x", cx, "y", cy)
+    # success = mm.drop_in_box(
+    #     scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+    #     end_effector, cx, cy, 0.0,  # z ignored; current EEF z is used
+    #     motors_dof, fingers_dof, grip_force=(-current_force)-2, quat=np.array([0,1,0,0])
+    # )
 
     # === NEW MOVEMENT TEST (SHAKE WHILE HOLDING Z-axiz)===
 
-    '''seg_df.loc[len(seg_df)] = ['shake start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    # seg_df.loc[len(seg_df)] = ['shake start', int(scene.t)]
 
-    success = mm.shake_in_place(
-        scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
-        end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
-    )'''
+    # success = mm.shake_in_place(
+    #     scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+    #     end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
+    # )
 
     # === NEW MOVEMENT TEST (WIGGLE WHILE HOLDING Y-axis)===
-    '''seg_df.loc[len(seg_df)] = ['wiggle start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['wiggle start', int(scene.t)]
     print(type(gso_object))
     success = mm.wiggle_rotation(
         scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
         end_effector, motors_dof, fingers_dof, grip_force=-current_force
-    )'''
+    )
 
     # === NEW MOVEMENT: Push to Target ===
-    seg_df.loc[len(seg_df)] = ['push start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    '''seg_df.loc[len(seg_df)] = ['push start', int(scene.t)]
 
     # Random target within bounds
     target_xy = (
@@ -366,7 +366,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
         scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
         end_effector, motors_dof, fingers_dof, target_xy, push_vector
     )
-    seg_df.loc[len(seg_df)] = ['push end', step_no + 40, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['push end', int(scene.t)]
     # Wind-down for clean segmentation
     for _ in range(40):
         make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
@@ -374,8 +374,8 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
                   gso_object=gso_object, name=name)
         step_no += 1
 
-    seg_df.loc[len(seg_df)] = ['drop_in_box end', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
-
+    seg_df.loc[len(seg_df)] = ['drop_in_box end', int(scene.t)]
+    '''
     cam.stop_recording(fps=10)
     final_make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
                     photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL,
