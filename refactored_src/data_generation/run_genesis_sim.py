@@ -2,6 +2,7 @@
 
 import os
 import random
+import sys
 import time
 from pathlib import Path
 from datetime import datetime
@@ -10,7 +11,8 @@ from multiprocessing import Process
 import pandas as pd
 import numpy as np
 import torch
-
+#This is just for Nicks computer to work
+#sys.path.insert(0,"/Users/nick/Desktop/Forked_Genesis/Genesis")
 import genesis as gs
 
 # Assuming these are your custom modules within the src/ directory
@@ -30,14 +32,14 @@ MATERIAL_TYPE = "Rigid"
 TARGET_CHOICES = ['soft']  # For simplicity, only using 'soft' in this example
 MAX_PARALLEL_PROCESSES = 8
 
-
+RUNNING_DROP_IN_BOX = True
 ## -------------------------- PATH SETUP -------------------------- ##
 
 def setup_paths(object_name: str, target_choice: str) -> dict:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     simulation_id = f"{target_choice}_{MATERIAL_TYPE.lower()}_{timestamp}"
 
-    input_obj_path = DATA_ROOT / "objects" / object_name / "model.obj"
+    input_obj_path = DATA_ROOT / "gso_obj" / object_name / "model.obj"
     if not input_obj_path.exists():
         raise FileNotFoundError(f"Input file not found at: {input_obj_path}")
 
@@ -106,8 +108,16 @@ def adjust_force_with_pd_control(current_force, deform_csv, target_vel):
 
 
 ## -------------------------- SIMULATION CORE -------------------------- ##
+def sample_drop_box_bounds(cx_range=(-0.55, 0.75),cy_range=(0.35, 0.85),inner_w=0.25,inner_h=0.25):
+    cx = random.uniform(*cx_range)
+    cy = random.uniform(*cy_range)
+    x_min, x_max = cx - inner_w/2.0, cx + inner_w/2.0
+    y_min, y_max = cy - inner_h/2.0, cy + inner_h/2.0
+    return (x_min, x_max, y_min, y_max), (cx, cy)
+
 
 def create_scene(obj_path: str):
+    global RUNNING_DROP_IN_BOX
     if torch.cuda.is_available():
         gs.init(backend=gs.gpu)
     else:
@@ -144,6 +154,18 @@ def create_scene(obj_path: str):
             surface=gs.surfaces.Default(color=color)
         )
     # material=gs.materials.MPM.Elastic(E=1.5e6, nu=0.45, rho=1100.0, sampler="pbs", model="corotation") : Self-made Elas
+        # ---------- HARD-CODED FLOOR ZONE MARKER ----------
+    if RUNNING_DROP_IN_BOX == True:
+        drop_box_bounds, (cx, cy) = sample_drop_box_bounds()
+        print("HOLY", cx,cy)
+        box_mesh_path = "/Users/nick/Desktop/Forked_Genesis/Genesis/data/vla_enviorment_objs/box.obj"  # e.g., PROJECT_ROOT / "assets" / "drop_box.obj"
+        scene.add_entity(
+                material=gs.materials.Rigid(coup_friction=3.0),
+                morph=gs.morphs.Mesh(file=str(box_mesh_path), scale=1.0, pos=(cx, cy, 0.0), euler=(0,0,0)),
+                surface=gs.surfaces.Default(color=(0, 200, 0))
+        )
+        RUNNING_DROP_IN_BOX = (cx, cy)
+        # ---------------------------------------------------
     scene.build()
     return scene, cam, franka, gso_object
 
@@ -161,14 +183,14 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     elif MATERIAL_TYPE == 'Rigid':
         aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
     cam.start_recording()
-    x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.07
+    x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
     seg_df.loc[len(seg_df)] = ['start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
-    
+
     mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
-    
+
     current_force = 3.0
     step_no += 50
     seg_df.loc[len(seg_df)] = ['grasp', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
@@ -184,7 +206,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         if not mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1):
             break
         if i % 2 == 0: current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
-    
+
     # --- CHANGE 1: Status string changed to 'picked up' ---
     if MATERIAL_TYPE == 'Elastic':
         particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
@@ -202,7 +224,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
             photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name
         )
         return pickup_status
-    
+
     actions = []
     angle_choices, joint_indices = [-90, -60, -45, 45, 60, 90], [1, 7]
     STEPS_PER_DEGREE = 6
@@ -211,7 +233,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         num_steps = int(abs(chosen_angle) * STEPS_PER_DEGREE)
         actions.append({"name": f"Rotating Joint {joint_idx}", "angle": chosen_angle, "steps": num_steps, "joint_index": joint_idx})
     random.shuffle(actions)
-    
+
     for i, action in enumerate(actions):
         seg_df.loc[len(seg_df)] = [f'rotation {i+1}', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
         print(f"Executing action: {action['name']} by {action['angle']} degrees...")
@@ -227,7 +249,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
                 gripper_force=-current_force
             )
             step_no += 1
-            
+
     seg_df.loc[len(seg_df)] = ['wind down', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
 
     mm.place_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + 0.07, motors_dof, fingers_dof, grip_force=-current_force, steps=1)
@@ -239,6 +261,141 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
     )
     return pickup_status
+
+def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, target_choice):
+    """
+    Rigid-only sequence:
+      1) Approach + descend + grasp (force)     [reuses existing mm primitives]
+      2) Lift to safe Z                         [reuses existing mm primitives]
+      3) Throw toward a planar zone             [new mm.throw_to_zone primitive]
+    """
+    name, step_no = paths['object_name'], 0
+    motors_dof, fingers_dof = np.arange(7), np.arange(7, 9)
+    franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,100,100]))
+    franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,10,10]))
+    end_effector = franka.get_link("hand")
+
+    vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0012}
+    target_vel = vel_limits.get(target_choice, 0.0002)
+
+    # Rigid bounds
+    aabb_min, aabb_max = gso_object.get_AABB().cpu().numpy()
+    upper_obj_bound = aabb_max
+
+    cam.start_recording()
+
+    # === Approach ===
+    x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
+    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z + 0.1]), quat=np.array([0, 1, 0, 0]))
+    qpos[-2:] = 0.04
+    seg_df.loc[len(seg_df)] = ['start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+
+    mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
+                   PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
+    mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
+                         PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
+
+    # === Grasp (force-controlled with PD adjustment) ===
+    current_force = 3.0
+    step_no += 50
+    seg_df.loc[len(seg_df)] = ['grasp', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    for i in range(200):
+        step_no += 1
+        if not mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
+                               PHOTO_INTERVAL, name, end_effector, x, y, z,
+                               motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1):
+            break
+        if i % 2 == 0:
+            current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
+
+    # === Lift (position + force) ===
+    seg_df.loc[len(seg_df)] = ['lift', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    for i in range(200):
+        step_no += 1
+        curr_z = z + (i * 0.00075)
+        if not mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
+                              PHOTO_INTERVAL, name, end_effector, x, y, curr_z,
+                              motors_dof, fingers_dof, grip_force=-current_force, steps=1):
+            break
+        if i % 2 == 0:
+            current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
+
+    # === Pickup check (reuse your logic) ===
+    low, hi = gso_object.get_AABB()
+    pickup_status = 'picked up' if hi[2] > 0.01 else 'not_picked_up'
+    seg_df.loc[len(seg_df)] = [pickup_status, step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    if pickup_status == 'not_picked_up':
+        final_make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+                        photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL,
+                        gso_object=gso_object, name=name)
+        cam.stop_recording(fps=10)
+        return pickup_status
+
+    # === NEW MOVEMENT TEST (PUT IN BOX)===
+    # Choose a farther zone than placement to ensure a true ballistic test
+    #ZONE = (0.55, 0.80, 0.35, 0.60)
+    '''    seg_df.loc[len(seg_df)] = ['drop_in_box start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    # Example zone center
+    print(RUNNING_DROP_IN_BOX)
+    (cx, cy) = RUNNING_DROP_IN_BOX
+
+    print("YASSS", "x", cx, "y", cy)
+    success = mm.drop_in_box(
+        scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+        end_effector, cx, cy, 0.0,  # z ignored; current EEF z is used
+        motors_dof, fingers_dof, grip_force=(-current_force)-2, quat=np.array([0,1,0,0])
+    )'''
+
+    # === NEW MOVEMENT TEST (SHAKE WHILE HOLDING Z-axiz)===
+
+    '''seg_df.loc[len(seg_df)] = ['shake start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+
+    success = mm.shake_in_place(
+        scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+        end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
+    )'''
+
+    # === NEW MOVEMENT TEST (WIGGLE WHILE HOLDING Y-axis)===
+    '''seg_df.loc[len(seg_df)] = ['wiggle start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    print(type(gso_object))
+    success = mm.wiggle_rotation(
+        scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+        end_effector, motors_dof, fingers_dof, grip_force=-current_force
+    )'''
+
+    # === NEW MOVEMENT: Push to Target ===
+    seg_df.loc[len(seg_df)] = ['push start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+
+    # Random target within bounds
+    target_xy = (
+        np.random.uniform(0.55, 0.75),  # X-range
+        np.random.uniform(0.35, 0.55)   # Y-range
+    )
+
+    # Random push direction (normalized 2D vector)
+    theta = np.random.uniform(-np.pi, np.pi)
+    push_vector = np.array([np.cos(theta), np.sin(theta)])
+
+    success = mm.push_object_to_xy(
+        scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+        end_effector, motors_dof, fingers_dof, target_xy, push_vector
+    )
+    seg_df.loc[len(seg_df)] = ['push end', step_no + 40, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    # Wind-down for clean segmentation
+    for _ in range(40):
+        make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+                  photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL,
+                  gso_object=gso_object, name=name)
+        step_no += 1
+
+    seg_df.loc[len(seg_df)] = ['drop_in_box end', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+
+    cam.stop_recording(fps=10)
+    final_make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+                    photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL,
+                    gso_object=gso_object, name=name)
+    return 'movement_success' if success else 'movement_failed'
+
 
 
 ## -------------------------- GENERATE PLOTS (not used) -------------------------- ##
@@ -289,7 +446,8 @@ def main(object_name: str, target_choice: str = 'soft'):
     deform_df = pd.DataFrame(columns=["step", "deformations", "grip_force"])
     segment_df = pd.DataFrame(columns=['action', 'step', 'hand_coordinate', 'object_bounding_box'])
     scene, cam, franka, gso_object = create_scene(str(paths['input_obj']))
-    pickup_status = run_rotation(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
+    #pickup_status = run_rotation(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
+    pickup_status = run_new_movement_test(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
     print(f"💾 Saving results to {paths['output_dir']}")
     force_df.to_csv(paths['force_data'], index=False)
     deform_df.to_csv(paths['deformation_data'], index=False)
@@ -301,8 +459,8 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 def get_tasks_to_run():
     if 1:
-        # return [('3D_Dollhouse_Refrigerator', 'soft')]
-        return [('026_sponge', 'none')]
+        return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
+        #return [('026_sponge', 'none')]
         # return [('002_master_chef_can', 'hard')]
 
     tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "objects", DATA_ROOT / "raw"
