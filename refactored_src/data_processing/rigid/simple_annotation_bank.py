@@ -69,7 +69,7 @@ class RobotLabelTemplate:
         distance = np.linalg.norm((com - pos)[0])
         return "far from" if distance > 0.1 else "near"
 
-    def slip_detection(self, grasp_pos: np.ndarray, com: np.ndarray) -> str:
+    def slip_detection(self, grasp_pos: np.ndarray, com: np.ndarray, start: int) -> str:
         """
         Detect whether a slip has occurred based on the distance between the grasp position and the center of mass (COM).
         Args:
@@ -85,7 +85,7 @@ class RobotLabelTemplate:
         """
         distances = np.linalg.norm(grasp_pos - com, axis=1)
         # Decide the slip velocity from the time series of distances
-        slip_velocities = np.diff(distances, prepend=0)
+        slip_velocities = np.diff(distances, prepend=0)[1+start:start+80]
         return "slipping quickly" if np.any(slip_velocities > 0.005) else "slipping slowly" if np.any(slip_velocities > 0.001) else "no slip" # TODO: something's wrong with the calculation?
 
     def drop_detection(self, bbox: np.ndarray, grasp_pos: np.ndarray) -> str:
@@ -112,8 +112,12 @@ class RobotLabelTemplate:
         left_finger_pos = force_df[['left_finger_x', 'left_finger_y', 'left_finger_z']].values
         grasp_pos = (right_finger_pos + left_finger_pos)/2
         annotation += f"{self.dist_from_COM(com_pos, grasp_pos)} the center of mass, "
-
-        annotation += f"{self.slip_detection(grasp_pos, com_pos)}."
+        
+        annotation += f"{self.slip_detection(grasp_pos, com_pos, start)}"
+        
+        
+        
+        
 
         if self.drop_detection(com_pos, grasp_pos):
             sentence = f"a {mass_str} object has been {random.choice(self.dropped.get('dropped', []))}." #TODO: Describe what was happening before the drop, and why it dropped.
