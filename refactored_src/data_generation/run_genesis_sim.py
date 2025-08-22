@@ -1,6 +1,3 @@
-# Save as: your-project/src/data_generation/run_genesis_sim.py
-
-import os
 import random
 import sys
 import time
@@ -19,8 +16,6 @@ import genesis as gs
 import master_movement as mm
 from make_step import make_step, final_make_step
 
-
-## -------------------------- CONFIGURATION -------------------------- ##
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
@@ -60,8 +55,6 @@ def setup_paths(object_name: str, target_choice: str) -> dict:
     }
 
 
-## -------------------------- HELPER FUNCTIONS -------------------------- ##
-
 def get_obj_bounding_box(obj_path):
     min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
     max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
@@ -74,6 +67,7 @@ def get_obj_bounding_box(obj_path):
                 min_y, max_y = min(min_y, y), max(max_y, y)
                 min_z, max_z = min(min_z, z), max(max_z, z)
     return [max_x - min_x, max_y - min_y, max_z - min_z]
+
 
 def set_grasp(obj_path):
     GRIPPER_MIN_WIDTH, GRIPPER_MAX_WIDTH = 0.002, 0.075
@@ -88,14 +82,6 @@ def set_grasp(obj_path):
         euler = (0, 0, 90) if bbox[0] < bbox[1] else (0, 0, 0)
     return scale, euler
 
-def get_bounding_box(gso_object):
-    if MATERIAL_TYPE == 'Elastic':
-        particle_positions = gso_object.get_state().pos.detach().cpu().numpy()[0]
-        min_coords = np.min(particle_positions, axis=0)
-        max_coords = np.max(particle_positions, axis=0)
-        return [min_coords[0], max_coords[0], min_coords[1], max_coords[1], min_coords[2], max_coords[2]]
-    elif MATERIAL_TYPE == "Rigid":
-        return gso_object.get_AABB().view(-1).cpu().numpy().reshape(1,6)
 
 def adjust_force_with_pd_control(current_force, deform_csv, target_vel):
     if len(deform_csv) < 2: return current_force
@@ -186,37 +172,35 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
-    seg_df.loc[len(seg_df)] = ['start', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['start', int(scene.t)]
 
     mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
 
     current_force = 3.0
     step_no += 50
-    seg_df.loc[len(seg_df)] = ['grasp', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['grasp', int(scene.t)]
     for i in range(200):
         step_no += 1
         if not mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1):
             break
         if i % 2 == 0: current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
-    seg_df.loc[len(seg_df)] = ['lift', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]
     for i in range(200):
         step_no += 1; curr_z = z + (i * 0.00075)
         if not mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1):
             break
         if i % 2 == 0: current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
-    # --- CHANGE 1: Status string changed to 'picked up' ---
     if MATERIAL_TYPE == 'Elastic':
         particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
         pickup_status = 'picked up' if np.min(particle_positions_np, axis=0)[2] > 0.01 else 'not_picked_up'
     elif MATERIAL_TYPE == 'Rigid':
         low, hi = gso_object.get_AABB()
-        pickup_status = 'picked up' if hi[2] > 0.01 else 'not_picked_up'
+        pickup_status = 'picked up' if hi[2] > 0.01 else 'not_picked_up' # TODO: it can be improved with contact info
 
-    # --- CHANGE 2: The line logging the pickup status is now back. ---
-    seg_df.loc[len(seg_df)] = [pickup_status, step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = [pickup_status, int(scene.t)]
 
     if pickup_status == 'not_picked_up':
         final_make_step(
@@ -235,11 +219,11 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     random.shuffle(actions)
 
     for i, action in enumerate(actions):
-        seg_df.loc[len(seg_df)] = [f'rotation {i+1}', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+        seg_df.loc[len(seg_df)] = [f'rotate', int(scene.t)]
         print(f"Executing action: {action['name']} by {action['angle']} degrees...")
         mm.rotate_single_joint_by_angle(scene, cam, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, gso_object, gripper_force=-current_force, angle_degrees=action['angle'], joint_index=action['joint_index'], steps=action['steps'])
         step_no += action['steps']
-        seg_df.loc[len(seg_df)] = [f'rotation {i+1} end', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+        seg_df.loc[len(seg_df)] = [f'stop moving', int(scene.t)]
 
         for _ in range(600 - action['steps']):
             franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
@@ -250,11 +234,13 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
             )
             step_no += 1
 
-    seg_df.loc[len(seg_df)] = ['wind down', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
+    seg_df.loc[len(seg_df)] = ['rotate', int(scene.t)]
+    mm.move_to_place_xy(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, motors_dof, fingers_dof, grip_force=-current_force)
+    seg_df.loc[len(seg_df)] = ['descend', int(scene.t)]
+    mm.descend_to_place(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + 0.07, motors_dof, fingers_dof, grip_force=-current_force)
+    seg_df.loc[len(seg_df)] = ['place', int(scene.t)]
+    mm.release_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, fingers_dof, grip_force=-current_force)
 
-    mm.place_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + 0.07, motors_dof, fingers_dof, grip_force=-current_force, steps=1)
-
-    seg_df.loc[len(seg_df)] = ['final', step_no, end_effector.get_pos().cpu(), get_bounding_box(gso_object)]
     cam.stop_recording(fps=10)
     final_make_step(
         scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
@@ -442,9 +428,9 @@ def main(object_name: str, target_choice: str = 'soft'):
     except FileNotFoundError as e:
         print(f"❌ Aborting: {e}"); return
     print(paths)
-    force_df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz", "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz", "dof_0", "dof_1", "dof_2", "dof_3", "dof_4", "dof_5", "dof_6", "dof_7", "dof_8", "eef_x", "eef_y", "eef_z", "control_dof_7", "control_dof_8", "obj_COM_x", "obj_COM_y", "obj_COM_z", "obj_mass"])
+    force_df = pd.DataFrame(columns=["step", "left_fx", "left_fy", "left_fz", "left_tx", "left_ty", "left_tz", "right_fx", "right_fy", "right_fz", "right_tx", "right_ty", "right_tz", "dof_0", "dof_1", "dof_2", "dof_3", "dof_4", "dof_5", "dof_6", "dof_7", "dof_8", "eef_x", "eef_y", "eef_z", "left_finger_x", "left_finger_y", "left_finger_z", "right_finger_x", "right_finger_y", "right_finger_z", "control_left_finger", "control_right_finger", "obj_COM_x", "obj_COM_y", "obj_COM_z", "obj_mass", "obj_min_x", "obj_min_y", "obj_min_z", "obj_max_x", "obj_max_y", "obj_max_z", "obj_left_finger", "obj_right_finger", "obj_plane"])
     deform_df = pd.DataFrame(columns=["step", "deformations", "grip_force"])
-    segment_df = pd.DataFrame(columns=['action', 'step', 'hand_coordinate', 'object_bounding_box'])
+    segment_df = pd.DataFrame(columns=['action', 'step'])
     scene, cam, franka, gso_object = create_scene(str(paths['input_obj']))
     #pickup_status = run_rotation(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
     pickup_status = run_new_movement_test(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
@@ -455,7 +441,6 @@ def main(object_name: str, target_choice: str = 'soft'):
     print(f"✅ Finished simulation for '{object_name}'. Status: {pickup_status}")
 
 
-## -------------------------- BATCH EXECUTION -------------------------- ##
 
 def get_tasks_to_run():
     if 1:
@@ -479,6 +464,7 @@ def get_tasks_to_run():
                 print(f"  - Queueing '{name}' (no previous runs).")
                 tasks.append((name, 'none'))
     return tasks
+
 
 if __name__ == "__main__":
     tasks_to_run = get_tasks_to_run()
