@@ -144,6 +144,25 @@ def move_to_place_xy(scene, cam, franka, gso_object, df, deform_csv, photo_path,
             gripper_force=grip_force
         )
 
+def release_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
+                 fingers_dof, grip_force, steps=50):
+    finger_pos = franka.get_dofs_position(fingers_dof).cpu().numpy()
+    finger_margin = np.array([0.04, 0.04]) - finger_pos
+    for _ in range(steps*INTERPOLATE):
+        finger_pos += finger_margin / steps
+        franka.control_dofs_position(finger_pos, fingers_dof)
+        make_step(
+            scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+            photo_path=photo_path, photo_interval=photo_interval, gso_object=gso_object, name=name,
+            gripper_force=grip_force
+        )
+    for _ in range (70):
+        make_step(
+            scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+            photo_path=photo_path, photo_interval=photo_interval, gso_object=gso_object, name=name,
+            gripper_force=grip_force
+        )
+
 def descend_to_place(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
                      end_effector, x, y, z, motors_dof, fingers_dof, grip_force,
                      quat=np.array([0, 1, 0, 0]), steps=400):
