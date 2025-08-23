@@ -46,7 +46,10 @@ def detect_bugs(force_df: pd.DataFrame, start: int) -> bool:
     Returns True if a bug is detected, False otherwise.
     """
     # TODO: Implement bug detection logic here
-    return False
+
+    
+    
+    return False if force_df['left_finger_y'][start] < force_df['right_finger_y'][start] else True # Left finger y should always be less than right finger y
 
 def split_for_model(step_df, force_df): 
     """
@@ -77,7 +80,7 @@ def split_for_model(step_df, force_df):
 def get_picked_up_objects(all_objects, material='Rigid'):
     to_do = []
     for obj_name in all_objects:
-        picked_up_path = os.path.join(BASE_PATH, 'data', 'raw', 'csv' , obj_name, material, 'none') # Hardcoded soft for now
+        picked_up_path = os.path.join(BASE_PATH, 'data', 'raw', 'csv' , obj_name, material, 'none' ) # Hardcoded soft for now
         print(f'pup {picked_up_path}')
         if obj_name == '.DS_Store':
             continue
@@ -114,8 +117,13 @@ def main(obj_name, csv_path, deformation, material='Rigid'):
     labeler = RobotLabelTemplate()
 
     for row in added_steps_dicts:
+        if detect_bugs(force_df, row['start']):
+            raise "Fingers phased through each other, aborting..."
         annotation= labeler.generate_sentence(row['action'], row['start'], force_df)
         annotations_df.loc[len(annotations_df)] = {'action': row['action'], 'start': row['start'], 'annotation': annotation}
+
+
+    
 
     # ------------------- Save the annotations to a CSV file -------------------#
     os.makedirs(os.path.join(BASE_PATH, 'data', 'processed', f'simple_annotations'), exist_ok=True)
