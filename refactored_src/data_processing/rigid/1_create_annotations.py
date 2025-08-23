@@ -48,8 +48,8 @@ def detect_bugs(force_df: pd.DataFrame, start: int) -> bool:
     # TODO: Implement bug detection logic here
 
     
-    
-    return False if np.any(force_df['left_finger_y'][start:start+80]) < np.any(force_df['right_finger_y'][start:start+80]) else True # Left finger y should always be less than right finger y
+    return False if np.any(force_df['left_finger_y'][start:start+80] < force_df['right_finger_y'][start:start+80]) else True  # Left finger y should always be less than right finger y
+
 
 def split_for_model(step_df, force_df): 
     """
