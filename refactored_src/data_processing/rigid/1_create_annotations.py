@@ -119,11 +119,9 @@ def main(obj_name, csv_path, deformation, material='Rigid'):
     for row in added_steps_dicts:
         if detect_bugs(force_df, row['start']):
             raise "Fingers phased through each other, aborting..."
-        annotation= labeler.generate_sentence(row['action'], row['start'], force_df)
+        annotation= labeler.generate_sentence(row['action'], force_df.iloc[row['start']:row['start']+SEQUENCE_LENGTH].reset_index(drop=True))
         annotations_df.loc[len(annotations_df)] = {'action': row['action'], 'start': row['start'], 'annotation': annotation}
 
-
-    
 
     # ------------------- Save the annotations to a CSV file -------------------#
     os.makedirs(os.path.join(BASE_PATH, 'data', 'processed', f'simple_annotations'), exist_ok=True)

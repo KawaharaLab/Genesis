@@ -3,28 +3,10 @@ import random
 import numpy as np
 import pandas as pd
 
+SEQUENCE_LENGTH = 80
+
 class RobotLabelTemplate:
     def __init__(self):
-        self.actions = {
-            'start': 'start', # TODO: make it more simple
-            'lift': 'lifting',
-            'grasp': 'grasping',
-            'grasp pt1': 'grasping',
-            'grasp pt2': 'grasping',
-            'rotation 1': 'rotating',
-            'rotation 1 pt1': 'rotating',
-            'rotation 1 pt2': 'rotating',
-            'buffer 1':   'holding position of',
-            'buffer 1 pt1':   'holding position of',
-            'buffer 1 pt2':   'holding position of',
-            'buffer 2':   'holding position of',
-            'buffer 2 pt1':   'holding position of',
-            'buffer 2 pt2':   'holding position of',
-            'rotation 2': 'rotating',
-            'rotation 2 pt1': 'rotating',
-            'rotation 2 pt2': 'rotating',
-            'wind_down':  'stopping'
-        }
 
         self.force_descriptors = {
             'none': 'zero-force',
@@ -53,7 +35,7 @@ class RobotLabelTemplate:
             'dropped': ['dropped']
         }
 
-    def dist_from_COM(self, com: np.ndarray, pos: np.ndarray) -> str:
+    def dist_from_COM(self, com: np.ndarray, pos: np.ndarray, contact_range: np.ndarray) -> str:
         """
         Calculate the distance between the grasp position and the center of mass (COM), and return whether it is far or near.
         Considers only the first timestep of the timeseries.
@@ -66,10 +48,12 @@ class RobotLabelTemplate:
             Maybe we need to change this to be relative to the size of the object being grasped.
             Also, the [x, y] distance may be more important than the [z] distance, because the gravity is acting downwards.
         """
-        distance = np.linalg.norm((com - pos)[0])
-        return "far from" if distance > 0.1 else "near"
+        com = com[contact_range]
+        pos = pos[contact_range]
+        distance = np.linalg.norm((com - pos)[0]) # TODO: change to average
+        return "far from" if distance > 0.15 else "near"
 
-    def slip_detection(self, grasp_pos: np.ndarray, com: np.ndarray, start: int) -> str:
+    def slip_detection(self, grasp_pos: np.ndarray, com: np.ndarray, contact_range: np.ndarray) -> str:
         """
         Detect whether a slip has occurred based on the distance between the grasp position and the center of mass (COM).
         Args:
@@ -78,50 +62,60 @@ class RobotLabelTemplate:
         TODO:
             First of all we need to check if the code works correctly.
             The code now uses the diff of the distances to determine slip velocity.
-            Since each timestep is 0.01 seconds for rigid objects, if the distance changes by more than 0.005 meters in 1 timestep, the slip velocity is 0.5m/s.
+            Since each timestep is 0.01 seconds for rigid objects, if the distance changes by more than 0.0005 meters in 1 timestep, the slip velocity is 5cm/s.
             Is this a good threshold to separate 'slipping quickly' from 'slipping slowly'?
             Remember that VLAs can re-generate action chunks once in 0.8s, and the size of the Franka finger.
             Maybe it's better to use bounding box information rather than the COM position.
         """
+        grasp_pos = grasp_pos[contact_range]
+        com = com[contact_range]
         distances = np.linalg.norm(grasp_pos - com, axis=1)
         # Decide the slip velocity from the time series of distances
-        slip_velocities = np.diff(distances, prepend=0)[1+start:start+80]
-        return "slipping quickly" if np.any(slip_velocities > 0.005) else "slipping slowly" if np.any(slip_velocities > 0.001) else "no slip" # TODO: something's wrong with the calculation?
+        slip_velocities = np.diff(distances)
+        return "slipping quickly" if np.any(slip_velocities > 0.0005) else "slipping slowly" if np.any(slip_velocities > 0.0001) else "no slip" 
 
-    def drop_detection(self, bbox: np.ndarray, grasp_pos: np.ndarray) -> str:
-        return False
-        if bbox[4] <= 0.01: # If min z value is less than or equal to 0.01, then the object is not picked up
-            dropped = 'dropped' # TODO: it might have been placed successfully
-            # print("failed at bbox min z value")
-        elif z_distance > 0.01:
-            dropped = 'dropped'
-
-    def generate_sentence(self, action: str, start: int, force_df: pd.DataFrame) -> str:
+    def generate_sentence(self, action: str, force_df: pd.DataFrame) -> str:
         """
         Generate a sentence using selected values.
         """
+
+        contact_left = force_df['obj_left_finger'].to_numpy()
+        contact_right = force_df['obj_right_finger'].to_numpy()
+        contact_either = np.logical_or(contact_left, contact_right)
+        touched = False
+        touched_idx = -1
+        released_idx = -1
+        for i in range(len(contact_either)):
+            if contact_either[i] and not touched:
+                touched = True
+                touched_idx = i
+            if touched and not contact_either[i]:
+                if force_df['obj_min_z'].values[i] > 0.03:
+                    if "place" in action:
+                        action = action.replace("place", "drop")
+                    else:
+                        action = "drop when " + action
+                released_idx = i
+                break
+
+        if not touched:
+            return "moving with empty hands."
+
+        contact_range = np.array([False] * len(force_df))
+        contact_range[touched_idx:released_idx] = True
         annotation = ""
 
         mass = force_df['obj_mass'].values[0]
-        mass_str = "heavy" if mass > 1.0 else "light" #TODO: Check whether 1 [kg] is a good threshold
+        mass_str = "heavy" if mass > 0.5 else "light" #TODO: Check whether 0.5 [kg] is a good threshold
 
         annotation += f"{action} a {mass_str} object " # explain the movement very simply
 
-        com_pos = force_df[['obj_COM_x', 'obj_COM_y', 'obj_COM_z']].values
-        right_finger_pos = force_df[['right_finger_x', 'right_finger_y', 'right_finger_z']].values
-        left_finger_pos = force_df[['left_finger_x', 'left_finger_y', 'left_finger_z']].values
+        com_pos = force_df[['obj_COM_x', 'obj_COM_y', 'obj_COM_z']].to_numpy()
+        right_finger_pos = force_df[['right_finger_x', 'right_finger_y', 'right_finger_z']].to_numpy()
+        left_finger_pos = force_df[['left_finger_x', 'left_finger_y', 'left_finger_z']].to_numpy()
         grasp_pos = (right_finger_pos + left_finger_pos)/2
-        annotation += f"{self.dist_from_COM(com_pos, grasp_pos)} the center of mass, "
-        
-        annotation += f"{self.slip_detection(grasp_pos, com_pos, start)}"
-        
-        
-        
-        
+        annotation += f"{self.dist_from_COM(com_pos, grasp_pos, contact_range)} the center of mass, "
 
-        if self.drop_detection(com_pos, grasp_pos):
-            sentence = f"a {mass_str} object has been {random.choice(self.dropped.get('dropped', []))}." #TODO: Describe what was happening before the drop, and why it dropped.
-            return sentence[0].upper() + sentence[1:]
-        #TODO: add the case of "successfully placed object"
+        annotation += f"{self.slip_detection(grasp_pos, com_pos, contact_range)}"
 
         return annotation
