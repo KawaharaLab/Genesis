@@ -10,7 +10,8 @@ from simple_annotation_bank import RobotLabelTemplate
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
-WINDOW_STRIDE = 80
+WINDOW_STRIDE = 20
+DATA_TYPE = 'eval'
 
 #------------------- Generate labels -------------------#
 
@@ -44,12 +45,12 @@ def detect_bugs(force_df: pd.DataFrame, start: int) -> bool:
     Check for bugs in the force_df DataFrame at the given start step.
     For example, if the fingers penetrate each other, the joint angles would be smaller than zero.
     Returns True if a bug is detected, False otherwise.
+    The finger joint angles are sometimes small negative values when fingers are closed tight (and holding nothing)
+    Force sensors may also report small negative values when fingers are free and open.
     """
-    # TODO: Implement bug detection logic here
-
-    
-    return False if np.any(force_df['left_finger_y'][start:start+80] < force_df['right_finger_y'][start:start+80]) else True  # Left finger y should always be less than right finger y
-
+    left_minus = np.any(force_df['dof_7'][start:start+80].to_numpy() < -0.0001)
+    force_left_minus = np.any(force_df['left_fy'][start:start+80].to_numpy() < -0.01)
+    return True if left_minus and force_left_minus else False
 
 def split_for_model(step_df, force_df): 
     """
@@ -80,7 +81,7 @@ def split_for_model(step_df, force_df):
 def get_picked_up_objects(all_objects, material='Rigid'):
     to_do = []
     for obj_name in all_objects:
-        picked_up_path = os.path.join(BASE_PATH, 'data', 'raw', 'csv' , obj_name, material, 'none' ) # Hardcoded soft for now
+        picked_up_path = os.path.join(BASE_PATH, 'data', DATA_TYPE, 'csv' , obj_name, material, 'none' ) # Hardcoded soft for now
         print(f'pup {picked_up_path}')
         if obj_name == '.DS_Store':
             continue
@@ -129,7 +130,7 @@ def main(obj_name, csv_path, deformation, material='Rigid'):
     annotations_df.to_csv(output_csv_path, index=False)
 
 if __name__ == "__main__":
-    folder_path = os.path.join(BASE_PATH, "data", "raw", "csv")
+    folder_path = os.path.join(BASE_PATH, "data", DATA_TYPE, "csv")
     all_objects = os.listdir(folder_path)
     selected_objects = get_picked_up_objects(all_objects)
     # selected_objects = [('Crayola_Bonus_64_Crayons', 'medium')]

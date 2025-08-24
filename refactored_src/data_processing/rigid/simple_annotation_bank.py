@@ -82,14 +82,15 @@ class RobotLabelTemplate:
         contact_left = force_df['obj_left_finger'].to_numpy()
         contact_right = force_df['obj_right_finger'].to_numpy()
         contact_either = np.logical_or(contact_left, contact_right)
+        contact_both = np.logical_and(contact_left, contact_right)
         touched = False
         touched_idx = -1
         released_idx = -1
-        for i in range(len(contact_either)):
-            if contact_either[i] and not touched:
+        for i in range(len(contact_both)):
+            if contact_both[i] and not touched:
                 touched = True
                 touched_idx = i
-            if touched and not contact_either[i]:
+            if touched and not contact_both[i]:
                 if force_df['obj_min_z'].values[i] > 0.03:
                     if "place" in action:
                         action = action.replace("place", "drop")
