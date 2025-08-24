@@ -20,34 +20,36 @@ from make_step import make_step, final_make_step
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
 
-PHOTO_INTERVAL = 10
+PHOTO_INTERVAL = 80
 MATERIAL_TYPE = "Rigid"
 # MATERIAL_TYPE = "Elastic"
 # TARGET_CHOICES = ['soft', 'medium', 'hard']
-TARGET_CHOICES = ['soft']  # For simplicity, only using 'soft' in this example
+TARGET_CHOICES = ['none']  # For simplicity, only using 'soft' in this example
 MAX_PARALLEL_PROCESSES = 8
 
-RUNNING_DROP_IN_BOX = True
+RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
 
 def setup_paths(object_name: str, target_choice: str) -> dict:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     simulation_id = f"{target_choice}_{MATERIAL_TYPE.lower()}_{timestamp}"
 
-    input_obj_path = DATA_ROOT / "gso_obj" / object_name / "model.obj"
+    input_obj_path = DATA_ROOT / "objects" / object_name / "model.obj"
     if not input_obj_path.exists():
         raise FileNotFoundError(f"Input file not found at: {input_obj_path}")
 
     output_dir = DATA_ROOT / "raw" / "csv" / object_name / MATERIAL_TYPE / target_choice
-    images_dir = DATA_ROOT / "raw" / "images" / object_name / MATERIAL_TYPE / target_choice
+    image_root = DATA_ROOT / "raw" / "images" / object_name / MATERIAL_TYPE / target_choice
+    image_dirs = [image_root / f"camera_{i}" for i in range(3)]
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    images_dir.mkdir(parents=True, exist_ok=True)
+    for image_dir in image_dirs:
+        image_dir.mkdir(parents=True, exist_ok=True)
 
     return {
         "input_obj": input_obj_path,
         "output_dir": output_dir,
-        "images_dir": images_dir,
+        "images_dir": image_root,
         "force_data": output_dir / f"{object_name}_{MATERIAL_TYPE}_{target_choice}.csv",
         "deformation_data": output_dir / f"{object_name}_{MATERIAL_TYPE}_deform_{target_choice}.csv",
         "segmentation_data": output_dir / f"{object_name}_{MATERIAL_TYPE}_steps_{target_choice}.csv",
@@ -168,7 +170,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         upper_obj_bound = np.max(particle_positions_np, axis=0)
     elif MATERIAL_TYPE == 'Rigid':
         aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
-    cam.start_recording()
+    # cam.start_recording()
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
@@ -209,6 +211,20 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         )
         return pickup_status
 
+    if random.random() < 0.5:
+        seg_df.loc[len(seg_df)] = ['wiggle', int(scene.t)]
+        print(type(gso_object))
+        success = mm.wiggle_rotation(
+            scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+            end_effector, motors_dof, fingers_dof, grip_force=-current_force
+        )
+    else:
+        seg_df.loc[len(seg_df)] = ['shake', int(scene.t)]
+        success = mm.shake_in_place(
+            scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+            end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
+        )
+
     actions = []
     angle_choices, joint_indices = [-90, -60, -45, 45, 60, 90], [1, 7]
     STEPS_PER_DEGREE = 6
@@ -241,7 +257,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     seg_df.loc[len(seg_df)] = ['place', int(scene.t)]
     mm.release_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, fingers_dof, grip_force=-current_force)
 
-    cam.stop_recording(fps=10)
+    # cam.stop_recording(fps=10)
     final_make_step(
         scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
@@ -383,44 +399,6 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
     return 'movement_success' if success else 'movement_failed'
 
 
-
-## -------------------------- GENERATE PLOTS (not used) -------------------------- ##
-
-# def generate_plots(df, deform_csv, paths, target_choice):
-#     """Generates and saves the plots for the simulation results."""
-#     # This function encapsulates all matplotlib plotting logic.
-#     name = paths['object_name']
-#     fig, axs = plt.subplots(1, 2, figsize=(16, 6))
-
-#     # Deformation plot
-#     axs[0].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 1], marker='.', color='tab:blue', linewidth=0.5)
-#     axs[0].set_xlabel('Time Step')
-#     axs[0].set_ylabel('Deformation Metric')
-#     axs[0].set_ylim(0, 0.6)
-#     axs[0].set_title(f'Object: {name} | Target: {target_choice}')
-#     axs[0].grid(True)
-
-#     # Force components plot
-#     force_columns = ['left_fx', 'left_fy', 'left_fz', 'right_fx', 'right_fy', 'right_fz']
-#     for col in force_columns:
-#         axs[1].plot(df['step'], df[col], marker='.', label=col)
-#     axs[1].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 2], marker='.', linestyle='-', color='black', label='grip_force', linewidth=0.5)
-#     axs[1].set_ylim(-30, 25)
-#     axs[1].set_xlabel('Time Step')
-#     axs[1].set_ylabel('Force (N)')
-#     axs[1].set_title('Force Components Over Time')
-#     axs[1].grid(True)
-#     axs[1].legend()
-
-#     plt.tight_layout()
-#     plt.savefig(paths['plot'], dpi=300, bbox_inches='tight')
-#     print(f"Saved plot -> {paths['plot']}")
-#     plt.show()  # Show the plot for immediate feedback
-#     plt.close(fig) # Close the figure to free memory
-
-
-## -------------------------- MAIN ORCHESTRATION -------------------------- ##
-
 def main(object_name: str, target_choice: str = 'soft'):
     print(f"🚀 Starting simulation for '{object_name}' with target '{target_choice}'...")
     try:
@@ -432,8 +410,8 @@ def main(object_name: str, target_choice: str = 'soft'):
     deform_df = pd.DataFrame(columns=["step", "deformations", "grip_force"])
     segment_df = pd.DataFrame(columns=['action', 'step'])
     scene, cam, franka, gso_object = create_scene(str(paths['input_obj']))
-    #pickup_status = run_rotation(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
-    pickup_status = run_new_movement_test(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
+    pickup_status = run_rotation(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
+    # pickup_status = run_new_movement_test(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
     print(f"💾 Saving results to {paths['output_dir']}")
     force_df.to_csv(paths['force_data'], index=False)
     deform_df.to_csv(paths['deformation_data'], index=False)
@@ -444,9 +422,9 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 def get_tasks_to_run():
     if 1:
-        return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
-        #return [('026_sponge', 'none')]
-        # return [('002_master_chef_can', 'hard')]
+        # return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
+        return [('026_sponge', 'none')]
+        # return [('002_master_chef_can', 'none')]
 
     tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "objects", DATA_ROOT / "raw"
     if not objects_dir.exists():
