@@ -10,6 +10,7 @@ uv.lock
 *.csv
 *.png
 *.mp4
+*.sh
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

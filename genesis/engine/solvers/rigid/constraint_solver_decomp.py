@@ -181,7 +181,7 @@ class ConstraintSolver:
             static_rigid_sim_config=self._solver._static_rigid_sim_config,
         )
 
-    def handle_constraints(self):
+    def add_equality_constraints(self):
         add_equality_constraints(
             links_info=self._solver.links_info,
             links_state=self._solver.links_state,
@@ -195,6 +195,7 @@ class ConstraintSolver:
             static_rigid_sim_config=self._solver._static_rigid_sim_config,
         )
 
+    def add_frictionloss_constraints(self):
         add_frictionloss_constraints(
             links_info=self._solver.links_info,
             joints_info=self._solver.joints_info,
@@ -205,31 +206,34 @@ class ConstraintSolver:
             static_rigid_sim_config=self._solver._static_rigid_sim_config,
         )
 
-        if self._solver._enable_collision:
-            add_collision_constraints(
-                links_info=self._solver.links_info,
-                links_state=self._solver.links_state,
-                dofs_state=self._solver.dofs_state,
-                constraint_state=self.constraint_state,
-                collider_state=self._collider._collider_state,
-                static_rigid_sim_config=self._solver._static_rigid_sim_config,
-            )
+    def add_collision_constraints(self):
+        add_collision_constraints(
+            links_info=self._solver.links_info,
+            links_state=self._solver.links_state,
+            dofs_state=self._solver.dofs_state,
+            constraint_state=self.constraint_state,
+            collider_state=self._collider._collider_state,
+            static_rigid_sim_config=self._solver._static_rigid_sim_config,
+        )
 
-        if self._solver._enable_joint_limit:
-            add_joint_limit_constraints(
-                links_info=self._solver.links_info,
-                joints_info=self._solver.joints_info,
-                dofs_info=self._solver.dofs_info,
-                dofs_state=self._solver.dofs_state,
-                rigid_global_info=self._solver._rigid_global_info,
-                constraint_state=self.constraint_state,
-                static_rigid_sim_config=self._solver._static_rigid_sim_config,
-            )
-
-        if self._solver._enable_collision or self._solver._enable_joint_limit or self._solver.n_equalities > 0:
-            self.resolve()
+    def add_joint_limit_constraints(self):
+        add_joint_limit_constraints(
+            links_info=self._solver.links_info,
+            joints_info=self._solver.joints_info,
+            dofs_info=self._solver.dofs_info,
+            dofs_state=self._solver.dofs_state,
+            rigid_global_info=self._solver._rigid_global_info,
+            constraint_state=self.constraint_state,
+            static_rigid_sim_config=self._solver._static_rigid_sim_config,
+        )
 
     def resolve(self):
+        # Early return if there is nothing to solve
+        if not self._solver._enable_collision and not self._solver._enable_joint_limit:
+            has_equality_constraints = np.any(self.constraint_state.ti_n_equalities.to_numpy())
+            if not has_equality_constraints:
+                return
+
         # from genesis.utils.tools import create_timer
 
         # timer = create_timer(name="resolve", level=3, ti_sync=True, skip_first_call=True)
@@ -396,6 +400,7 @@ class ConstraintSolver:
         )
 
 
+@gs.maybe_pure
 @ti.kernel
 def constraint_solver_kernel_clear(
     envs_idx: ti.types.ndarray(),
@@ -410,6 +415,7 @@ def constraint_solver_kernel_clear(
         constraint_state.n_constraints_frictionloss[i_b] = 0
 
 
+@gs.maybe_pure
 @ti.kernel
 def constraint_solver_kernel_reset(
     envs_idx: ti.types.ndarray(),
@@ -429,6 +435,7 @@ def constraint_solver_kernel_reset(
             constraint_state.jac_n_relevant_dofs[i_c, i_b] = 0
 
 
+@gs.maybe_pure
 @ti.kernel
 def add_collision_constraints(
     links_info: array_class.LinksInfo,
@@ -497,7 +504,7 @@ def add_collision_constraints(
                             cdot_vel = dofs_state.cdof_vel[i_d, i_b]
 
                             t_quat = gu.ti_identity_quat()
-                            t_pos = contact_data_pos - links_state.COM[link, i_b]
+                            t_pos = contact_data_pos - links_state.root_COM[link, i_b]
                             _, vel = gu.ti_transform_motion_by_trans_quat(cdof_ang, cdot_vel, t_pos, t_quat)
 
                             diff = sign * vel
@@ -606,7 +613,7 @@ def func_equality_connect(
                     cdot_vel = dofs_state.cdof_vel[i_d, i_b]
 
                     t_quat = gu.ti_identity_quat()
-                    t_pos = pos - links_state.COM[link, i_b]
+                    t_pos = pos - links_state.root_COM[link, i_b]
                     ang, vel = gu.ti_transform_motion_by_trans_quat(cdof_ang, cdot_vel, t_pos, t_quat)
 
                     diff = sign * vel
@@ -713,6 +720,7 @@ def func_equality_joint(
     constraint_state.efc_D[n_con, i_b] = 1.0 / diag
 
 
+@gs.maybe_pure
 @ti.kernel
 def add_equality_constraints(
     links_info: array_class.LinksInfo,
@@ -879,7 +887,7 @@ def func_equality_weld(
                     cdot_vel = dofs_state.cdof_vel[i_d, i_b]
 
                     t_quat = gu.ti_identity_quat()
-                    t_pos = pos_anchor - links_state.COM[link, i_b]
+                    t_pos = pos_anchor - links_state.root_COM[link, i_b]
                     ang, vel = gu.ti_transform_motion_by_trans_quat(cdof_ang, cdot_vel, t_pos, t_quat)
                     diff = sign * vel
                     jac = diff[i]
@@ -957,6 +965,7 @@ def func_equality_weld(
         constraint_state.efc_D[i_con, i_b] = 1.0 / diag
 
 
+@gs.maybe_pure
 @ti.kernel
 def add_joint_limit_constraints(
     links_info: array_class.LinksInfo,
@@ -1014,6 +1023,7 @@ def add_joint_limit_constraints(
                             constraint_state.jac_relevant_dofs[n_con, 0, i_b] = i_d
 
 
+@gs.maybe_pure
 @ti.kernel
 def add_frictionloss_constraints(
     links_info: array_class.LinksInfo,
@@ -1282,6 +1292,7 @@ def func_nt_chol_solve(
         constraint_state.Mgrad[i_d, i_b] = constraint_state.Mgrad[i_d, i_b] / constraint_state.nt_H[i_d, i_d, i_b]
 
 
+@gs.maybe_pure
 @ti.kernel
 def func_update_contact_force(
     links_state: array_class.LinksState,
@@ -1334,6 +1345,7 @@ def func_update_contact_force(
                 links_state.contact_torque[contact_data_link_b, i_b] + torque_b
             )
 
+@gs.maybe_pure
 @ti.kernel
 def func_update_qacc(
     qacc_ws: array_class.V_ANNOTATION,
@@ -1353,6 +1365,7 @@ def func_update_qacc(
         qacc_ws[i_d, i_b] = constraint_state.qacc[i_d, i_b]
 
 
+@gs.maybe_pure
 @ti.kernel
 def func_solve(
     entities_info: array_class.EntitiesInfo,
@@ -1988,6 +2001,7 @@ def initialize_Ma(
             Ma[i_d1, i_b] = Ma_
 
 
+@gs.maybe_pure
 @ti.kernel
 def func_init_solver(
     dofs_state: array_class.DofsState,
@@ -2096,6 +2110,7 @@ def func_init_solver(
         constraint_state.search[i_d, i_b] = -constraint_state.Mgrad[i_d, i_b]
 
 
+@gs.maybe_pure
 @ti.kernel
 def kernel_add_weld_constraint(
     link1_idx: ti.i32,
@@ -2147,6 +2162,7 @@ def kernel_add_weld_constraint(
     return overflow
 
 
+@gs.maybe_pure
 @ti.kernel
 def kernel_delete_weld_constraint(
     link1_idx: ti.i32,
@@ -2172,6 +2188,7 @@ def kernel_delete_weld_constraint(
                 constraint_state.ti_n_equalities[i_b] = constraint_state.ti_n_equalities[i_b] - 1
 
 
+@gs.maybe_pure
 @ti.kernel
 def kernel_get_equality_constraints(
     is_padded: ti.template(),
