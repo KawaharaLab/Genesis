@@ -9,9 +9,9 @@ import pandas as pd
 import numpy as np
 import torch
 #This is just for Nicks computer to work
-#sys.path.insert(0,"/Users/nick/Desktop/Forked_Genesis/Genesis")
+sys.path.insert(0,"/Users/nick/Desktop/Forked_Genesis/Genesis")
 import genesis as gs
-
+import matplotlib.pyplot as plt
 # Assuming these are your custom modules within the src/ directory
 import master_movement as mm
 from make_step import make_step, final_make_step
@@ -33,8 +33,8 @@ RUNNING_DROP_IN_BOX = False
 def setup_paths(object_name: str, target_choice: str) -> dict:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     simulation_id = f"{target_choice}_{MATERIAL_TYPE.lower()}_{timestamp}"
-
-    input_obj_path = DATA_ROOT / "objects" / object_name / "model.obj"
+    input_obj_path = DATA_ROOT / "gso_obj" / object_name / "model.obj"
+    #input_obj_path = DATA_ROOT / "objects" / object_name / "model.obj"
     if not input_obj_path.exists():
         raise FileNotFoundError(f"Input file not found at: {input_obj_path}")
 
@@ -54,6 +54,7 @@ def setup_paths(object_name: str, target_choice: str) -> dict:
         "deformation_data": output_dir / f"{object_name}_{MATERIAL_TYPE}_deform_{target_choice}.csv",
         "segmentation_data": output_dir / f"{object_name}_{MATERIAL_TYPE}_steps_{target_choice}.csv",
         "object_name": object_name,
+        "plot": output_dir / f"{object_name}_force_graph"
     }
 
 
@@ -138,6 +139,7 @@ def create_scene(obj_path: str):
     elif MATERIAL_TYPE == 'Rigid':
         gso_object = scene.add_entity(
             material=gs.materials.Rigid(),
+            #material=gs.materials.Rigid(rho=25, coup_friction=5.0),
             morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=(0.45, 0.45, 0.001), euler=object_euler),
             surface=gs.surfaces.Default(color=color)
         )
@@ -170,9 +172,9 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         upper_obj_bound = np.max(particle_positions_np, axis=0)
     elif MATERIAL_TYPE == 'Rigid':
         aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
-    # cam.start_recording()
+    cam.start_recording()
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
-    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
+    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
     seg_df.loc[len(seg_df)] = ['start', int(scene.t)]
 
@@ -256,8 +258,15 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     mm.descend_to_place(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + 0.07, motors_dof, fingers_dof, grip_force=-current_force)
     seg_df.loc[len(seg_df)] = ['place', int(scene.t)]
     mm.release_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, fingers_dof, grip_force=-current_force)
-
-    # cam.stop_recording(fps=10)
+    # seg_df.loc[len(seg_df)] = ['pause', int(scene.t)]
+    # for _ in range(100):
+    #     franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
+    #     make_step(
+    #         scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+    #         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
+    #         gripper_force=-current_force
+    #     )
+    cam.stop_recording(fps=10)
     final_make_step(
         scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
@@ -398,6 +407,39 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
                     gso_object=gso_object, name=name)
     return 'movement_success' if success else 'movement_failed'
 
+# -------------------------- GENERATE PLOTS (not used) -------------------------- ##
+
+def generate_plots(df, deform_csv, paths, target_choice):
+    """Generates and saves the plots for the simulation results."""
+    # This function encapsulates all matplotlib plotting logic.
+    name = paths['object_name']
+    fig, axs = plt.subplots(1, 2, figsize=(16, 6))
+
+    # Deformation plot
+    # axs[0].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 1], marker='.', color='tab:blue', linewidth=0.5)
+    # axs[0].set_xlabel('Time Step')
+    # axs[0].set_ylabel('Deformation Metric')
+    # axs[0].set_ylim(0, 0.6)
+    # axs[0].set_title(f'Object: {name} | Target: {target_choice}')
+    # axs[0].grid(True)
+    axs[0].axis('off')
+    # Force components plot
+    force_columns = ['left_fx', 'left_fy', 'left_fz', 'right_fx', 'right_fy', 'right_fz']
+    for col in force_columns:
+        axs[1].plot(df['step'], df[col], marker='.', label=col)
+    #axs[1].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 2], marker='.', linestyle='-', color='black', label='grip_force', linewidth=0.5)
+    axs[1].set_ylim(-30, 25)
+    axs[1].set_xlabel('Time Step')
+    axs[1].set_ylabel('Force (N)')
+    axs[1].set_title('Force Components Over Time')
+    axs[1].grid(True)
+    axs[1].legend()
+
+    plt.tight_layout()
+    plt.savefig(paths['plot'], dpi=300, bbox_inches='tight')
+    print(f"Saved plot -> {paths['plot']}")
+    #plt.show()  # Show the plot for immediate feedback
+    plt.close(fig) # Close the figure to free memory
 
 def main(object_name: str, target_choice: str = 'soft'):
     print(f"🚀 Starting simulation for '{object_name}' with target '{target_choice}'...")
@@ -416,17 +458,22 @@ def main(object_name: str, target_choice: str = 'soft'):
     force_df.to_csv(paths['force_data'], index=False)
     deform_df.to_csv(paths['deformation_data'], index=False)
     segment_df.to_csv(paths['segmentation_data'], index=False)
+    generate_plots(df=force_df, deform_csv=deform_df, paths=paths, target_choice=target_choice)
     print(f"✅ Finished simulation for '{object_name}'. Status: {pickup_status}")
 
 
 
 def get_tasks_to_run():
     if 1:
-        # return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
-        return [('026_sponge', 'none')]
+        #return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none')]
+        return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Timberland_Mens_Earthkeepers_Heritage_2Eye_Boat_Shoe', 'none')]
+        #return [('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none')]
+        #return [('026_sponge', 'none')]
         # return [('002_master_chef_can', 'none')]
 
-    tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "objects", DATA_ROOT / "raw"
+    tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "gso_obj", DATA_ROOT / "raw"
+    #tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "objects", DATA_ROOT / "raw"
+
     if not objects_dir.exists():
         print(f"❌ Error: Input directory '{objects_dir}' not found."); return []
     object_names = [d.name for d in objects_dir.iterdir() if d.is_dir()]
