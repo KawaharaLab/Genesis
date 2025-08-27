@@ -5,6 +5,21 @@ import imageio.v3 as iio
 import numpy as np
 
 ELASTIC = 0
+MADE_CONTACT = 0
+
+#uncoment this for dectecting grasp and preventing force spike when an object is dropped (look at line 46 as well)
+'''def get_contact_state(franka):
+    global MADE_CONTACT
+    #print(len(franka.detect_collision()))
+    if len(franka.detect_collision()) == 1 and MADE_CONTACT == 0:
+        MADE_CONTACT = 1
+    elif MADE_CONTACT == 1 and len(franka.detect_collision()) == 0:
+        MADE_CONTACT = 2
+    # else:
+    #     MADE_CONTACT = 0
+
+    contact_state = MADE_CONTACT
+    return contact_state'''
 
 def get_bounding_box(gso_object):
     if ELASTIC:
@@ -25,6 +40,14 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     Args:
         force_photo (bool): If True, saves a photo regardless of the photo_interval.
     """
+
+    #uncoment this for dectecting grasp and preventing force spike when an object is dropped
+    '''    contact = get_contact_state(franka)
+    if contact == 2:
+        fingers_dof = np.arange(7, 9)
+        franka.control_dofs_force(np.array([0, 0]), fingers_dof)
+        franka.control_dofs_position(np.array([0.1, 0.1]), fingers_dof)'''
+
     scene.step()
     t = int(scene.t) - 1
 
@@ -64,15 +87,14 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
             obj_contacts[1] = 1
         if 0 in obj_contact_pairs:
             obj_contacts[2] = 1
-
     df.loc[len(df)] = [scene.t] + forces_torques + dofs + eef_pos + finger_control + obj_com + obj_mass + obj_bounding_box + obj_contacts
 
     # Save photos from multiple camera angles if the condition is met
     if force_photo or (t % photo_interval == 0):
         camera_poses = [
             {'pos': (2.1, -1.2, 0.1), 'lookat': (0.45, 0.45, 0.5)},
-            {'pos': (-1.5, 1.5, 0.25), 'lookat': (0.45, 0.45, 0.4)},
-            {'pos': (2, 2, 0.1), 'lookat': (0, 0, 0.1)}
+            #{'pos': (-1.5, 1.5, 0.25), 'lookat': (0.45, 0.45, 0.4)},
+            #{'pos': (2, 2, 0.1), 'lookat': (0, 0, 0.1)}
         ]
         for i, pose in enumerate(camera_poses):
             cam.set_pose(**pose)
@@ -82,7 +104,7 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
                 iio.imwrite(filepath, rgb)
 
     print(f"Step: {t:05d} | Object: {name}")
-    
+
     # Return False to stop the simulation if forces are too high (indicating instability)
     if abs(df.iloc[-1, 8]) > 100:
         return False
