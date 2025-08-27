@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from multiprocessing import Process
+import os
 
 import pandas as pd
 import numpy as np
@@ -21,11 +22,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
 
 PHOTO_INTERVAL = 80
-MATERIAL_TYPE = "Rigid"
-# MATERIAL_TYPE = "Elastic"
-# TARGET_CHOICES = ['soft', 'medium', 'hard']
-TARGET_CHOICES = ['none']  # For simplicity, only using 'soft' in this example
+MATERIAL_TYPE = "Rigid" # Rigid or Elastic
+
+if MATERIAL_TYPE == "Elastic":
+    TARGET_CHOICES = ['soft', 'medium', 'hard']
+else:
+    TARGET_CHOICES = ['none']
+
 MAX_PARALLEL_PROCESSES = 8
+DATA_TYPE = os.environ['DATA_TYPE']
+# DATA_TYPE = "raw"  # Options: "raw", "strong", "medium", "eval", "eval_medium", "eval_strong"
 
 RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
@@ -33,13 +39,15 @@ RUNNING_DROP_IN_BOX = False
 def setup_paths(object_name: str, target_choice: str) -> dict:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     simulation_id = f"{target_choice}_{MATERIAL_TYPE.lower()}_{timestamp}"
-    input_obj_path = DATA_ROOT / "gso_obj" / object_name / "model.obj"
-    #input_obj_path = DATA_ROOT / "objects" / object_name / "model.obj"
+    if DATA_TYPE == "eval":
+        input_obj_path = DATA_ROOT / "objects" / object_name / "model.obj"
+    else:
+        input_obj_path = DATA_ROOT / "objects/gso" / object_name / "model.obj"
     if not input_obj_path.exists():
         raise FileNotFoundError(f"Input file not found at: {input_obj_path}")
 
-    output_dir = DATA_ROOT / "raw" / "csv" / object_name / MATERIAL_TYPE / target_choice
-    image_root = DATA_ROOT / "raw" / "images" / object_name / MATERIAL_TYPE / target_choice
+    output_dir = DATA_ROOT / DATA_TYPE / "csv" / object_name / MATERIAL_TYPE / target_choice
+    image_root = DATA_ROOT / DATA_TYPE / "images" / object_name / MATERIAL_TYPE / target_choice
     image_dirs = [image_root / f"camera_{i}" for i in range(3)]
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -180,9 +188,12 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
 
     mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
-
-    current_force = 3.0
-    step_no += 50
+    if DATA_TYPE == "strong" or DATA_TYPE == "eval_strong":
+        current_force = 30.0
+    elif DATA_TYPE == "medium" or DATA_TYPE == "eval_medium":
+        current_force = 10.0
+    else:
+        current_force = 3.0
     seg_df.loc[len(seg_df)] = ['grasp', int(scene.t)]
     for i in range(200):
         step_no += 1
@@ -212,21 +223,21 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
             photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name
         )
         return pickup_status
-
-    if random.random() < 0.5:
+    r = random.random()
+    if r < 0.4:
         seg_df.loc[len(seg_df)] = ['wiggle', int(scene.t)]
         print(type(gso_object))
         success = mm.wiggle_rotation(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
             end_effector, motors_dof, fingers_dof, grip_force=-current_force
         )
-    else:
+    elif r < 0.4:
         seg_df.loc[len(seg_df)] = ['shake', int(scene.t)]
         success = mm.shake_in_place(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
             end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
         )
-
+    
     actions = []
     angle_choices, joint_indices = [-90, -60, -45, 45, 60, 90], [1, 7]
     STEPS_PER_DEGREE = 6
@@ -464,30 +475,27 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 
 def get_tasks_to_run():
-    if 1:
-        #return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none')]
-        return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Timberland_Mens_Earthkeepers_Heritage_2Eye_Boat_Shoe', 'none')]
-        #return [('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none')]
-        #return [('026_sponge', 'none')]
+    if 0:
+        # return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
+        return [('026_sponge', 'none')]
         # return [('002_master_chef_can', 'none')]
-
-    tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "gso_obj", DATA_ROOT / "raw"
-    #tasks, objects_dir, raw_data_dir = [], DATA_ROOT / "objects", DATA_ROOT / "raw"
-
+    tasks = []
+    raw_data_dir = DATA_ROOT / DATA_TYPE
+    if "eval" in DATA_TYPE:
+        objects_dir = DATA_ROOT / "objects"
+    else:
+        objects_dir = DATA_ROOT / "objects/gso"
     if not objects_dir.exists():
         print(f"❌ Error: Input directory '{objects_dir}' not found."); return []
     object_names = [d.name for d in objects_dir.iterdir() if d.is_dir()]
     print(f"🔍 Found {len(object_names)} objects in '{objects_dir}'.")
     for name in object_names:
-        if MATERIAL_TYPE == 'Elastic':
-            for target in TARGET_CHOICES:
-                if not (raw_data_dir / name).exists():
-                    print(f"  - Queueing '{name}' with target '{target}' (no previous runs).")
-                    tasks.append((name, target))
-        elif MATERIAL_TYPE == 'Rigid':
-            if not (raw_data_dir / name).exists():
-                print(f"  - Queueing '{name}' (no previous runs).")
-                tasks.append((name, 'none'))
+        for target in TARGET_CHOICES:
+            if not (raw_data_dir / "csv" / name / MATERIAL_TYPE / target / f"{name}_{MATERIAL_TYPE}_{target}.csv").exists():
+                print(f"  - Queueing '{name}' with target '{target}' (no previous runs).")
+                tasks.append((name, target))
+            else:
+                print(f"  - Skipping '{name}' with target '{target}' (already processed).")
     return tasks
 
 

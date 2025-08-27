@@ -11,7 +11,7 @@ from simple_annotation_bank import RobotLabelTemplate
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
 WINDOW_STRIDE = 20
-DATA_TYPE = 'eval'
+DATA_TYPE = "raw"
 
 #------------------- Generate labels -------------------#
 
@@ -125,8 +125,8 @@ def main(obj_name, csv_path, deformation, material='Rigid'):
 
 
     # ------------------- Save the annotations to a CSV file -------------------#
-    os.makedirs(os.path.join(BASE_PATH, 'data', 'processed', f'simple_annotations'), exist_ok=True)
-    output_csv_path = os.path.join(BASE_PATH, 'data', 'processed', f'simple_annotations', f"{obj_name}_{material}_{deformation}_annotations.csv")
+    os.makedirs(os.path.join(BASE_PATH, 'data', 'processed', DATA_TYPE, f'simple_annotations'), exist_ok=True)
+    output_csv_path = os.path.join(BASE_PATH, 'data', 'processed', DATA_TYPE, f'simple_annotations', f"{obj_name}_{material}_{deformation}_annotations.csv")
     annotations_df.to_csv(output_csv_path, index=False)
 
 if __name__ == "__main__":

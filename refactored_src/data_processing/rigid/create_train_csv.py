@@ -3,10 +3,10 @@ import os
 import sys
 
 import pandas as pd
-
+DATA_TYPE = "raw"
 
 def main() -> int:
-    base_dir = os.path.join("data", "processed", "simple_annotations")
+    base_dir = os.path.join("data", "processed", DATA_TYPE, "simple_annotations")
     pattern = os.path.join(base_dir, "*.csv")
     files = sorted(glob.glob(pattern))
 
