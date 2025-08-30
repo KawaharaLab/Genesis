@@ -73,6 +73,24 @@ class RobotLabelTemplate:
         # Decide the slip velocity from the time series of distances
         slip_velocities = np.diff(distances)
         return "slipping quickly" if np.any(slip_velocities > 0.0005) else "slipping slowly" if np.any(slip_velocities > 0.0001) else "no slip" 
+    
+    def torque_annotation(self, force_df, contact_range):
+        lf = force_df[['left_fx', 'left_fy', 'left_fz']].to_numpy()[contact_range]
+        lp = force_df[['left_finger_x', 'left_finger_y', 'left_finger_z']].to_numpy()[contact_range]
+        rf = force_df[['right_fx', 'right_fy', 'right_fz']].to_numpy()[contact_range]
+        rp = force_df[['right_finger_x', 'right_finger_y', 'right_finger_z']].to_numpy()[contact_range]
+        com = force_df[['obj_COM_x', 'obj_COM_y', 'obj_COM_z']].to_numpy()[contact_range]
+
+        tau = np.linalg.norm(np.cross(lp - com, lf) + np.cross(rp - com, rf), axis=1)
+
+        if np.any(tau >= 1.0):
+            return "high"
+        elif np.any(tau >= 0.1):
+            return "moderate"
+        else:
+            return "none"
+
+    
 
     def generate_sentence(self, action: str, force_df: pd.DataFrame) -> str:
         """
@@ -118,5 +136,6 @@ class RobotLabelTemplate:
         annotation += f"{self.dist_from_COM(com_pos, grasp_pos, contact_range)} the center of mass, "
 
         annotation += f"{self.slip_detection(grasp_pos, com_pos, contact_range)}"
+        annotation += f" under {self.torque_annotation(force_df, contact_range)} torque stress"
 
         return annotation
