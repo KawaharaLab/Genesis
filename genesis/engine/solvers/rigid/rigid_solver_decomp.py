@@ -6820,7 +6820,7 @@ def kernel_get_links_force_torque(
         i_b = envs_idx[i_b_]
 
         #internal force and torque expressed at links origin in world coordinates
-        cpos = links_state.pos[i_l, i_b] - links_state.COM[i_l, i_b]
+        cpos = links_state.pos[i_l, i_b] - links_state.root_COM[i_l, i_b]
         internal_force = -links_state.cfrc_vel[i_l, i_b]
         internal_torque = -links_state.cfrc_ang[i_l, i_b] - cpos.cross(internal_force)
 
