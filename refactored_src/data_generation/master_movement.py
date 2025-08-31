@@ -123,6 +123,7 @@ def place_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, pho
             gripper_force=grip_force
         )
     for _ in range (70):
+        franka.control_dofs_position(qpos[:-2], motors_dof)
         make_step(
             scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
             photo_path=photo_path, photo_interval=photo_interval, gso_object=gso_object, name=name,

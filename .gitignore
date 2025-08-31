@@ -11,6 +11,7 @@ uv.lock
 *.png
 *.mp4
 *.sh
+playground.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

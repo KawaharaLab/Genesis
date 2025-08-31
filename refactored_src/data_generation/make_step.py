@@ -102,8 +102,8 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
             if photo_path:
                 filepath = os.path.join(photo_path, f"camera_{i}/{name}_{t:05d}.png")
                 iio.imwrite(filepath, rgb)
-
-    print(f"Step: {t:05d} | Object: {name}")
+    if t % 100 == 0 or force_photo:
+        print(f"Step: {t:05d} | Object: {name}")
 
     # Return False to stop the simulation if forces are too high (indicating instability)
     if abs(df.iloc[-1, 8]) > 100:

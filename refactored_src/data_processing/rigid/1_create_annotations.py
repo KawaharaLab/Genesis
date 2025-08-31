@@ -10,8 +10,8 @@ from simple_annotation_bank import RobotLabelTemplate
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
-WINDOW_STRIDE = 20
-DATA_TYPE = "raw"
+WINDOW_STRIDE = 10
+DATA_TYPE = "YCB_0824"
 
 #------------------- Generate labels -------------------#
 
@@ -31,8 +31,11 @@ def action_at_step(steps_df: pd.DataFrame, step_value: int | float) -> str:
 
     Assumes steps_df has columns ['action','step', ...].
     """
+    # Remove rows where step=0 and action="start"
+    filtered_df = steps_df[~((steps_df['step'] == 0) & (steps_df['action'] == "start"))]
+    
     # Ensure sorted by step ascending
-    sdf = steps_df.sort_values('step', kind='mergesort')  # stable
+    sdf = filtered_df.sort_values('step', kind='mergesort')  # stable
     steps = sdf['step'].to_numpy()
     # position of rightmost value <= step_value
     pos = np.searchsorted(steps, step_value, side='right') - 1
@@ -60,12 +63,10 @@ def split_for_model(step_df, force_df):
     """
     start = 0
     added_steps_dicts = []
-    print(f"len(force_df): {len(force_df)}")
     while start + SEQUENCE_LENGTH < len(force_df):
         end = start + SEQUENCE_LENGTH
         action_label_start = action_at_step(step_df, start)
         action_label_end = action_at_step(step_df, end)
-        print(f"segment [{start},{end}) -> start:{action_label_start}, end:{action_label_end}")
         if (action_label_start != action_label_end):
             action = action_label_start + " then " + action_label_end # TODO: memorize the timestep when the action changed
         else:

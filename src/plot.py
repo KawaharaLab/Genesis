@@ -6,7 +6,7 @@ import pandas as pd
 
 # path = "/home/ghoti/sim/Genesis/data/csv/004_sugar_box/004_sugar_box_aluminium_150.csv"
 # path  = "/home/ghoti/sim/Genesis/grasp_bottle_world.csv"
-path ="data/raw/csv/002_master_chef_can/Rigid/none/002_master_chef_can_Rigid_none.csv"
+path ="/home/user/Genesis/data/eval_tmp/csv/bottle_drop2/Rigid/none/bottle_drop2_Rigid_none.csv"
 df = pd.read_csv(path)
 # lines =  [430, 530, 780, 880]
 lines = []
@@ -22,8 +22,8 @@ for ax, col in zip(axs[0], ["left_fx", "left_fy", "left_fz"]):
     ax.set_ylabel(col)
     for line in lines:
         ax.axvline(x=line, color='r', linestyle='--')
-    # ax.set_xlim(0, 14000)
-    # ax.set_ylim(-500, 500)
+    ax.set_xlim(0, 100)
+    # ax.set_ylim(-10, 10)
 
 # 下段：left_tx, left_ty, left_tz
 for ax, col in zip(axs[1], ["left_tx", "left_ty", "left_tz"]):
@@ -33,7 +33,7 @@ for ax, col in zip(axs[1], ["left_tx", "left_ty", "left_tz"]):
     ax.set_ylabel(col)
     for line in lines:
         ax.axvline(x=line, color='r', linestyle='--')
-    # ax.set_xlim(0, 14000)
+    ax.set_xlim(0, 100)
     # ax.set_ylim(-500, 500)
 
 fig.tight_layout()
@@ -50,7 +50,7 @@ for ax, col in zip(axs[0], ["right_fx", "right_fy", "right_fz"]):
     ax.set_ylabel(col)
     for line in lines:
         ax.axvline(x=line, color='r', linestyle='--')
-    # ax.set_xlim(0, 14000)
+    ax.set_xlim(0, 100)
     # ax.set_ylim(-500, 500)
 # 下段：right_tx, right_ty, right_tz
 for ax, col in zip(axs[1], ["right_tx", "right_ty", "right_tz"]):

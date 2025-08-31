@@ -130,7 +130,7 @@ def main():
     # config = _config.get_config("pi0_fast_droid")
     # checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_fast_droid")
     config = _config.get_config("pi0_droid")
-    checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_base")
+    checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_droid")
 
     policy = _policy_config.create_trained_policy(config, checkpoint_dir)
     for t in range (800):

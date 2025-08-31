@@ -21,7 +21,7 @@ from make_step import make_step, final_make_step
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
 
-PHOTO_INTERVAL = 80
+PHOTO_INTERVAL = 10
 MATERIAL_TYPE = "Rigid" # Rigid or Elastic
 
 if MATERIAL_TYPE == "Elastic":
@@ -30,8 +30,8 @@ else:
     TARGET_CHOICES = ['none']
 
 MAX_PARALLEL_PROCESSES = 8
-DATA_TYPE = os.environ['DATA_TYPE']
-# DATA_TYPE = "raw"  # Options: "raw", "strong", "medium", "eval", "eval_medium", "eval_strong"
+# DATA_TYPE = os.environ['DATA_TYPE']
+DATA_TYPE = "eval_tmp"  # Options: "raw", "strong", "medium", "eval", "eval_medium", "eval_strong"
 
 RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
@@ -39,7 +39,7 @@ RUNNING_DROP_IN_BOX = False
 def setup_paths(object_name: str, target_choice: str) -> dict:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     simulation_id = f"{target_choice}_{MATERIAL_TYPE.lower()}_{timestamp}"
-    if DATA_TYPE == "eval":
+    if "eval" in DATA_TYPE:
         input_obj_path = DATA_ROOT / "objects" / object_name / "model.obj"
     else:
         input_obj_path = DATA_ROOT / "objects/gso" / object_name / "model.obj"
@@ -137,7 +137,7 @@ def create_scene(obj_path: str):
         )
     cam = scene.add_camera(res=(1280, 720), pos=(-1.5, 1.5, 0.25), lookat=(0.45, 0.45, 0.4), fov=30)
     scene.add_entity(gs.morphs.Plane(), material=gs.materials.Rigid(coup_friction=0.0))
-    franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), material=gs.materials.Rigid(coup_friction=3.0))
+    franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), material=gs.materials.Rigid(coup_friction=3.0, friction=1.0))
     if MATERIAL_TYPE == 'Elastic':
         gso_object = scene.add_entity(
             material=gs.materials.MPM.Elastic(),
@@ -148,6 +148,16 @@ def create_scene(obj_path: str):
         gso_object = scene.add_entity(
             material=gs.materials.Rigid(),
             #material=gs.materials.Rigid(rho=25, coup_friction=5.0),
+            # morph=gs.morphs.URDF(
+            #     file="urdf/3763/mobility_vhacd.urdf",
+            #     scale=0.09,
+            #     pos=(0.45, 0.45, 0.036),
+            #     euler=(0, 90, 0),
+            # ),
+            # morph=gs.morphs.Box(
+            #     size=(0.04, 0.04, 0.04),
+            #     pos=(0.45, 0.45, 0.02),
+            # ),
             morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=(0.45, 0.45, 0.001), euler=object_euler),
             surface=gs.surfaces.Default(color=color)
         )
@@ -170,8 +180,12 @@ def create_scene(obj_path: str):
 def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, target_choice):
     name, step_no = paths['object_name'], 0
     motors_dof, fingers_dof = np.arange(7), np.arange(7, 9)
-    franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,100,100]))
-    franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,10,10]))
+    franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,10,10]))
+    franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,1,1]))
+    franka.set_dofs_force_range(
+        np.array([-87, -87, -87, -87, -12, -12, -12, -5, -5]),
+        np.array([87, 87, 87, 87, 12, 12, 12, 5, 5]),
+    )
     end_effector = franka.get_link("hand")
     vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0012}
     target_vel = vel_limits.get(target_choice, 0.0002)
@@ -181,8 +195,9 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     elif MATERIAL_TYPE == 'Rigid':
         aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
     cam.start_recording()
-    x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
-    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z]), quat=np.array([0,1,0,0]))
+    offset = 0.07
+    x, y, z = 0.45, 0.45, upper_obj_bound[2] + offset
+    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
     seg_df.loc[len(seg_df)] = ['start', int(scene.t)]
 
@@ -195,11 +210,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     else:
         current_force = 3.0
     seg_df.loc[len(seg_df)] = ['grasp', int(scene.t)]
-    for i in range(200):
-        step_no += 1
-        if not mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1):
-            break
-        if i % 2 == 0: current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
+    mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
 
     seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]
     for i in range(200):
@@ -266,7 +277,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     seg_df.loc[len(seg_df)] = ['rotate', int(scene.t)]
     mm.move_to_place_xy(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, motors_dof, fingers_dof, grip_force=-current_force)
     seg_df.loc[len(seg_df)] = ['descend', int(scene.t)]
-    mm.descend_to_place(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + 0.07, motors_dof, fingers_dof, grip_force=-current_force)
+    mm.descend_to_place(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + offset, motors_dof, fingers_dof, grip_force=-current_force)
     seg_df.loc[len(seg_df)] = ['place', int(scene.t)]
     mm.release_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, fingers_dof, grip_force=-current_force)
     # seg_df.loc[len(seg_df)] = ['pause', int(scene.t)]
@@ -439,7 +450,7 @@ def generate_plots(df, deform_csv, paths, target_choice):
     for col in force_columns:
         axs[1].plot(df['step'], df[col], marker='.', label=col)
     #axs[1].plot(deform_csv.iloc[:, 0], deform_csv.iloc[:, 2], marker='.', linestyle='-', color='black', label='grip_force', linewidth=0.5)
-    axs[1].set_ylim(-30, 25)
+    # axs[1].set_ylim(-30, 25)
     axs[1].set_xlabel('Time Step')
     axs[1].set_ylabel('Force (N)')
     axs[1].set_title('Force Components Over Time')
@@ -475,10 +486,13 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 
 def get_tasks_to_run():
-    if 0:
+    if 1:
         # return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
-        return [('026_sponge', 'none')]
-        # return [('002_master_chef_can', 'none')]
+        # return [('001_chips_can', 'none')]
+        # return [('026_sponge', 'none')]
+        return [('002_master_chef_can', 'none')]
+        # return [('bottle', 'none')]
+        # return [('cube', 'none')]
     tasks = []
     raw_data_dir = DATA_ROOT / DATA_TYPE
     if "eval" in DATA_TYPE:

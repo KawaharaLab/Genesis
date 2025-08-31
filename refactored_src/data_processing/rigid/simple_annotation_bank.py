@@ -72,7 +72,7 @@ class RobotLabelTemplate:
         distances = np.linalg.norm(grasp_pos - com, axis=1)
         # Decide the slip velocity from the time series of distances
         slip_velocities = np.diff(distances)
-        return "slipping quickly" if np.any(slip_velocities > 0.0005) else "slipping slowly" if np.any(slip_velocities > 0.0001) else "no slip" 
+        return "slipping quickly" if np.any(slip_velocities > 0.0005) else "slipping slowly" if np.any(slip_velocities > 0.0001) else "stable" 
     
     def torque_annotation(self, force_df, contact_range):
         lf = force_df[['left_fx', 'left_fy', 'left_fz']].to_numpy()[contact_range]
@@ -101,14 +101,15 @@ class RobotLabelTemplate:
         contact_right = force_df['obj_right_finger'].to_numpy()
         contact_either = np.logical_or(contact_left, contact_right)
         contact_both = np.logical_and(contact_left, contact_right)
-        touched = False
+        touched_both = False
+        touched_either = np.any(contact_either)
         touched_idx = -1
-        released_idx = -1
+        released_idx = SEQUENCE_LENGTH - 1
         for i in range(len(contact_both)):
-            if contact_both[i] and not touched:
-                touched = True
+            if contact_both[i] and not touched_both:
+                touched_both = True
                 touched_idx = i
-            if touched and not contact_both[i]:
+            if touched_both and not contact_both[i]:
                 if force_df['obj_min_z'].values[i] > 0.03:
                     if "place" in action:
                         action = action.replace("place", "drop")
@@ -116,12 +117,16 @@ class RobotLabelTemplate:
                         action = "drop when " + action
                 released_idx = i
                 break
+        
 
-        if not touched:
-            return "moving with empty hands."
+        if not touched_both:
+            if touched_either:
+                return "touched an object."
+            else:
+                return "moving with empty hands."
 
         contact_range = np.array([False] * len(force_df))
-        contact_range[touched_idx:released_idx] = True
+        contact_range[touched_idx:released_idx+1] = True
         annotation = ""
 
         mass = force_df['obj_mass'].values[0]
