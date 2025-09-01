@@ -72,7 +72,7 @@ class RobotLabelTemplate:
         distances = np.linalg.norm(grasp_pos - com, axis=1)
         # Decide the slip velocity from the time series of distances
         slip_velocities = np.diff(distances)
-        return "slipping quickly" if np.any(slip_velocities > 0.0005) else "slipping slowly" if np.any(slip_velocities > 0.0001) else "stable" 
+        return "letting it slip quickly" if np.any(slip_velocities > 0.0005) else "letting it slip slowly" if np.any(slip_velocities > 0.0001) else "keeping it stable" 
     
     def torque_annotation(self, force_df, contact_range):
         lf = force_df[['left_fx', 'left_fy', 'left_fz']].to_numpy()[contact_range]
@@ -114,7 +114,7 @@ class RobotLabelTemplate:
                     if "place" in action:
                         action = action.replace("place", "drop")
                     else:
-                        action = "drop when " + action
+                        action = "dropping when trying to " + action
                 released_idx = i
                 break
         

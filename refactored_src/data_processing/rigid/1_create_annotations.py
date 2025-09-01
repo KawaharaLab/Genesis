@@ -41,6 +41,17 @@ def action_at_step(steps_df: pd.DataFrame, step_value: int | float) -> str:
     pos = np.searchsorted(steps, step_value, side='right') - 1
     if pos < 0:
         pos = 0
+        
+    action = str(sdf.iloc[pos]['action'])
+    if action == 'rotate':
+        return 'rotating'
+    elif action == 'grasp':
+        return 'grasping'
+    elif action == 'lift':
+        return 'lifting'
+    
+
+    
     return str(sdf.iloc[pos]['action'])
 
 def detect_bugs(force_df: pd.DataFrame, start: int) -> bool:
