@@ -2910,3 +2910,46 @@ def test_mesh_primitive_COM(show_viewer, tol):
     # root and link COM should be the same for single link
     assert_allclose(root_bunny_z, bunny_z, atol=tol)
     assert_allclose(root_cube_z, cube_z, atol=tol)
+
+
+@pytest.mark.required
+def test_batched_aabb(tol):
+    scene = gs.Scene()
+    plane = scene.add_entity(
+        gs.morphs.Plane(
+            normal=(0, 0, 1),
+            pos=(0, 0, 0),
+        ),
+    )
+    box = scene.add_entity(
+        gs.morphs.Box(
+            size=(0.1, 0.1, 0.1),
+            pos=(0.5, 0, 0.05),
+        ),
+    )
+    sphere = scene.add_entity(
+        gs.morphs.Sphere(
+            radius=0.05,
+            pos=(-0.5, 0, 0.05),
+        ),
+    )
+    scene.build()
+
+    all_aabbs = scene.sim.rigid_solver.get_aabb()
+    plane_aabb = plane.get_aabb()
+    box_aabb = box.get_aabb()
+    sphere_aabb = sphere.get_aabb()
+
+    assert_allclose(all_aabbs.shape, (3, 2, 3), atol=0)
+    assert_allclose(plane_aabb.shape[-1], 3, atol=0)
+    assert_allclose(box_aabb.shape[-1], 3, atol=0)
+    assert_allclose(sphere_aabb.shape[-1], 3, atol=0)
+    assert_allclose((plane_aabb, box_aabb, sphere_aabb), all_aabbs, atol=tol)
+
+    box_aabb_min, box_aabb_max = box_aabb
+    assert_allclose(box_aabb_min, (0.45, -0.05, 0.0), atol=tol)
+    assert_allclose(box_aabb_max, (0.55, 0.05, 0.1), atol=tol)
+
+    sphere_aabb_min, sphere_aabb_max = sphere_aabb
+    assert_allclose(sphere_aabb_min, (-0.55, -0.05, 0.0), atol=tol)
+    assert_allclose(sphere_aabb_max, (-0.45, 0.05, 0.1), atol=tol)

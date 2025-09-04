@@ -333,7 +333,7 @@ class Scene(RBC):
             if surface.vis_mode is None:
                 surface.vis_mode = "visual"
 
-            if surface.vis_mode not in ["visual", "collision", "sdf"]:
+            if surface.vis_mode not in ("visual", "collision", "sdf"):
                 gs.raise_exception(
                     f"Unsupported `surface.vis_mode` for material {material}: '{surface.vis_mode}'. Expected one of: ['visual', 'collision', 'sdf']."
                 )
@@ -352,7 +352,7 @@ class Scene(RBC):
             if surface.vis_mode is None:
                 surface.vis_mode = "particle"
 
-            if surface.vis_mode not in ["particle", "recon"]:
+            if surface.vis_mode not in ("particle", "recon"):
                 gs.raise_exception(
                     f"Unsupported `surface.vis_mode` for material {material}: '{surface.vis_mode}'. Expected one of: ['particle', 'recon']."
                 )
@@ -370,7 +370,7 @@ class Scene(RBC):
             if surface.vis_mode is None:
                 surface.vis_mode = "visual"
 
-            if surface.vis_mode not in ["visual", "particle", "recon"]:
+            if surface.vis_mode not in ("visual", "particle", "recon"):
                 gs.raise_exception(
                     f"Unsupported `surface.vis_mode` for material {material}: '{surface.vis_mode}'. Expected one of: ['visual', 'particle', 'recon']."
                 )
@@ -581,6 +581,12 @@ class Scene(RBC):
             Whether to denoise the camera's rendered image. Only available when using the RayTracer renderer. Defaults
             to True on Linux, otherwise False. If OptiX denoiser is not available in your platform, consider enabling
             the OIDN denoiser option when building the RayTracer.
+        env_idx : int, optional
+            The specific environment index to bind to the camera. This option must be specified if and only if a
+            non-batched renderer is being used. If provided, only this environment will be taken into account when
+            following a rigid entity via 'follow_entity' and when being attached to some rigid link via 'attach'. Note
+            that this option is unrelated to which environment is being rendering on the scene. Default to None for
+            batched renderers (ie BatchRender), 'rendered_envs_idx[0]' otherwise (ie Raytracer or Rasterizer).
         debug : bool
             Whether to use the debug camera. It enables to create cameras that can used to monitor / debug the
             simulation without being part of the "sensors". Their output is rendered by the usual simple Rasterizer
@@ -612,11 +618,13 @@ class Scene(RBC):
         Parameters
         ----------
         material : gs.materials.Material
-            The material of the fluid to be emitted. Must be an instance of `gs.materials.MPM.Base` or `gs.materials.SPH.Base`.
+            The material of the fluid to be emitted. Must be an instance of `gs.materials.MPM.Base`,
+            `gs.materials.SPH.Base`, `gs.materials.PBD.Particle` or `gs.materials.PBD.Liquid`.
         max_particles : int
-            The maximum number of particles that can be emitted by the emitter. Particles will be recycled once this limit is reached.
+            The maximum number of particles that can be emitted by the emitter. Particles will be recycled once this
+            limit is reached.
         surface : gs.surfaces.Surface | None, optional
-            The surface of the emitter. If None, use ``gs.surfaces.Default(color=(0.6, 0.8, 1.0, 1.0))``.
+            The surface of the emitter. If None, use `gs.surfaces.Default(color=(0.6, 0.8, 1.0, 1.0))`.
 
         Returns
         -------
@@ -631,11 +639,17 @@ class Scene(RBC):
             material, (gs.materials.MPM.Base, gs.materials.SPH.Base, gs.materials.PBD.Particle, gs.materials.PBD.Liquid)
         ):
             gs.raise_exception(
-                "Non-supported material for emitter. Supported materials are: `gs.materials.MPM.Base`, `gs.materials.SPH.Base`, `gs.materials.PBD.Particle`, `gs.materials.PBD.Liquid`."
+                "Non-supported material for emitter. Supported materials are: `gs.materials.MPM.Base`, "
+                "`gs.materials.SPH.Base`, `gs.materials.PBD.Particle`, `gs.materials.PBD.Liquid`."
             )
 
         if surface is None:
             surface = gs.surfaces.Default(color=(0.6, 0.8, 1.0, 1.0))
+
+        if surface.vis_mode is None:
+            surface.vis_mode = "particle"
+        if surface.vis_mode == "visual":
+            gs.raise_exception("surface.vis_mode='visual' is not supported for fluid emitters.")
 
         emitter = Emitter(max_particles)
         entity = self.add_entity(

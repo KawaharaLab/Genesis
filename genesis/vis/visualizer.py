@@ -1,8 +1,4 @@
-import os
-
 import pyglet
-import numpy as np
-import torch
 
 import genesis as gs
 from genesis.repr_base import RBC
@@ -53,7 +49,7 @@ class Visualizer(RBC):
             if pyglet.version < "2.0":
                 display = pyglet.canvas.Display()
                 screen = display.get_default_screen()
-                scale = 1.0
+                screen_scale = 1.0
             else:
                 display = pyglet.display.get_display()
                 screen = display.get_default_screen()
@@ -62,7 +58,7 @@ class Visualizer(RBC):
                 except NotImplementedError:
                     # Probably some headless screen
                     screen_scale = 1.0
-                screen_height, screen_width = screen.height, screen.width
+            screen_height, screen_width = screen.height, screen.width
             self._has_display = True
         except Exception as e:
             if show_viewer:
@@ -160,7 +156,7 @@ class Visualizer(RBC):
         if self._batch_renderer is not None:
             self._batch_renderer.add_light(pos, dir, intensity, directional, castshadow, cutoff)
         else:
-            gs.raise_exception("`add_light` is specifically for batch renderer.")
+            gs.raise_exception("`add_light` is specific to batch renderer.")
 
     def reset(self):
         self._t = -1
