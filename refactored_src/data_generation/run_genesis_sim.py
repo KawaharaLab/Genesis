@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import torch
 #This is just for Nicks computer to work
-sys.path.insert(0,"/Users/nick/Desktop/Forked_Genesis/Genesis")
+#sys.path.insert(0,"/Users/nick/Desktop/Forked_Genesis/Genesis")
 import genesis as gs
 import matplotlib.pyplot as plt
 # Assuming these are your custom modules within the src/ directory
@@ -31,7 +31,7 @@ else:
 
 MAX_PARALLEL_PROCESSES = 8
 # DATA_TYPE = os.environ['DATA_TYPE']
-DATA_TYPE = "eval_tmp"  # Options: "raw", "strong", "medium", "eval", "eval_medium", "eval_strong"
+DATA_TYPE = "eval"  # Options: "raw", "strong", "medium", "eval", "eval_medium", "eval_strong"
 
 RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
@@ -209,10 +209,10 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         current_force = 10.0
     else:
         current_force = 3.0
-    seg_df.loc[len(seg_df)] = ['grasp', int(scene.t)]
+    seg_df.loc[len(seg_df)] = ['grasping', int(scene.t)]
     mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
 
-    seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]
+    seg_df.loc[len(seg_df)] = ['lifting', int(scene.t)]
     for i in range(200):
         step_no += 1; curr_z = z + (i * 0.00075)
         if not mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1):
@@ -236,14 +236,14 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         return pickup_status
     r = random.random()
     if r < 0.4:
-        seg_df.loc[len(seg_df)] = ['wiggle', int(scene.t)]
+        seg_df.loc[len(seg_df)] = ['wiggling', int(scene.t)]
         print(type(gso_object))
         success = mm.wiggle_rotation(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
             end_effector, motors_dof, fingers_dof, grip_force=-current_force
         )
     elif r < 0.4:
-        seg_df.loc[len(seg_df)] = ['shake', int(scene.t)]
+        seg_df.loc[len(seg_df)] = ['shaking', int(scene.t)]
         success = mm.shake_in_place(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
             end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
@@ -259,7 +259,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     random.shuffle(actions)
 
     for i, action in enumerate(actions):
-        seg_df.loc[len(seg_df)] = [f'rotate', int(scene.t)]
+        seg_df.loc[len(seg_df)] = [f'rotating', int(scene.t)]
         print(f"Executing action: {action['name']} by {action['angle']} degrees...")
         mm.rotate_single_joint_by_angle(scene, cam, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, gso_object, gripper_force=-current_force, angle_degrees=action['angle'], joint_index=action['joint_index'], steps=action['steps'])
         step_no += action['steps']
@@ -274,7 +274,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
             )
             step_no += 1
 
-    seg_df.loc[len(seg_df)] = ['rotate', int(scene.t)]
+    seg_df.loc[len(seg_df)] = ['rotating', int(scene.t)]
     mm.move_to_place_xy(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, motors_dof, fingers_dof, grip_force=-current_force)
     seg_df.loc[len(seg_df)] = ['descend', int(scene.t)]
     mm.descend_to_place(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + offset, motors_dof, fingers_dof, grip_force=-current_force)
@@ -331,7 +331,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
     # === Grasp (force-controlled with PD adjustment) ===
     current_force = 3.0
     step_no += 50
-    seg_df.loc[len(seg_df)] = ['grasp', int(scene.t)]
+    seg_df.loc[len(seg_df)] = ['grasping', int(scene.t)]
     for i in range(200):
         step_no += 1
         if not mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
@@ -342,7 +342,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
             current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
 
     # === Lift (position + force) ===
-    seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]
+    seg_df.loc[len(seg_df)] = ['lifting', int(scene.t)]
     for i in range(200):
         step_no += 1
         curr_z = z + (i * 0.00075)
@@ -389,7 +389,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
     # )
 
     # === NEW MOVEMENT TEST (WIGGLE WHILE HOLDING Y-axis)===
-    seg_df.loc[len(seg_df)] = ['wiggle start', int(scene.t)]
+    seg_df.loc[len(seg_df)] = ['wiggling start', int(scene.t)]
     print(type(gso_object))
     success = mm.wiggle_rotation(
         scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
@@ -487,10 +487,10 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 def get_tasks_to_run():
     if 1:
-        # return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
+        return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
         # return [('001_chips_can', 'none')]
         # return [('026_sponge', 'none')]
-        return [('002_master_chef_can', 'none')]
+        #return [('002_master_chef_can', 'none')]
         # return [('bottle', 'none')]
         # return [('cube', 'none')]
     tasks = []

@@ -11,7 +11,7 @@ from simple_annotation_bank import RobotLabelTemplate
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
 WINDOW_STRIDE = 10
-DATA_TYPE = "YCB_0824"
+DATA_TYPE = "eval"
 
 #------------------- Generate labels -------------------#
 
@@ -40,17 +40,7 @@ def action_at_step(steps_df: pd.DataFrame, step_value: int | float) -> str:
     # position of rightmost value <= step_value
     pos = np.searchsorted(steps, step_value, side='right') - 1
     if pos < 0:
-        pos = 0
-        
-    action = str(sdf.iloc[pos]['action'])
-    if action == 'rotate':
-        return 'rotating'
-    elif action == 'grasp':
-        return 'grasping'
-    elif action == 'lift':
-        return 'lifting'
-    
-
+        pos = 0    
     
     return str(sdf.iloc[pos]['action'])
 
@@ -128,6 +118,8 @@ def main(obj_name, csv_path, deformation, material='Rigid'):
     added_steps_dicts = split_for_model(steps_df, force_df)
 
     labeler = RobotLabelTemplate()
+
+    print(f'For {csv_path}, {added_steps_dicts}')
 
     for row in added_steps_dicts:
         if detect_bugs(force_df, row['start']):
