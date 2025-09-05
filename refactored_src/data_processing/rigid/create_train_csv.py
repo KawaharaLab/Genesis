@@ -3,7 +3,7 @@ import os
 import sys
 
 import pandas as pd
-DATA_TYPE = "YCB_0824"
+DATA_TYPE = "train"
 
 def main() -> int:
     base_dir = os.path.join("data", "processed", DATA_TYPE)

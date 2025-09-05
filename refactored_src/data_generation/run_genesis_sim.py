@@ -31,7 +31,7 @@ else:
 
 MAX_PARALLEL_PROCESSES = 8
 # DATA_TYPE = os.environ['DATA_TYPE']
-DATA_TYPE = "eval"  # Options: "raw", "strong", "medium", "eval", "eval_medium", "eval_strong"
+DATA_TYPE = "eval"  # Options: "train", "eval"
 
 RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
@@ -199,8 +199,8 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + offset
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
-    seg_df.loc[len(seg_df)] = ['start', int(scene.t)]
 
+    seg_df.loc[len(seg_df)] = ['grasp', int(scene.t)]
     mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
     if DATA_TYPE == "strong" or DATA_TYPE == "eval_strong":
@@ -209,10 +209,9 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         current_force = 10.0
     else:
         current_force = 3.0
-    seg_df.loc[len(seg_df)] = ['grasping', int(scene.t)]
     mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
 
-    seg_df.loc[len(seg_df)] = ['lifting', int(scene.t)]
+    seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]
     for i in range(200):
         step_no += 1; curr_z = z + (i * 0.00075)
         if not mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1):
@@ -236,14 +235,14 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         return pickup_status
     r = random.random()
     if r < 0.4:
-        seg_df.loc[len(seg_df)] = ['wiggling', int(scene.t)]
+        seg_df.loc[len(seg_df)] = ['wiggle', int(scene.t)]
         print(type(gso_object))
         success = mm.wiggle_rotation(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
             end_effector, motors_dof, fingers_dof, grip_force=-current_force
         )
     elif r < 0.4:
-        seg_df.loc[len(seg_df)] = ['shaking', int(scene.t)]
+        seg_df.loc[len(seg_df)] = ['shake', int(scene.t)]
         success = mm.shake_in_place(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
             end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
@@ -259,11 +258,11 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     random.shuffle(actions)
 
     for i, action in enumerate(actions):
-        seg_df.loc[len(seg_df)] = [f'rotating', int(scene.t)]
+        seg_df.loc[len(seg_df)] = [f'rotate', int(scene.t)]
         print(f"Executing action: {action['name']} by {action['angle']} degrees...")
         mm.rotate_single_joint_by_angle(scene, cam, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, gso_object, gripper_force=-current_force, angle_degrees=action['angle'], joint_index=action['joint_index'], steps=action['steps'])
         step_no += action['steps']
-        seg_df.loc[len(seg_df)] = [f'stop moving', int(scene.t)]
+        seg_df.loc[len(seg_df)] = [f'stop', int(scene.t)]
 
         for _ in range(600 - action['steps']):
             franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
@@ -274,7 +273,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
             )
             step_no += 1
 
-    seg_df.loc[len(seg_df)] = ['rotating', int(scene.t)]
+    seg_df.loc[len(seg_df)] = ['rotate', int(scene.t)]
     mm.move_to_place_xy(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, motors_dof, fingers_dof, grip_force=-current_force)
     seg_df.loc[len(seg_df)] = ['descend', int(scene.t)]
     mm.descend_to_place(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + offset, motors_dof, fingers_dof, grip_force=-current_force)

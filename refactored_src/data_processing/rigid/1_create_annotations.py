@@ -11,7 +11,7 @@ from simple_annotation_bank import RobotLabelTemplate
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
 WINDOW_STRIDE = 10
-DATA_TYPE = "eval"
+DATA_TYPE = "train"
 
 #------------------- Generate labels -------------------#
 
