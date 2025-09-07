@@ -21,7 +21,7 @@ from make_step import make_step, final_make_step
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
 
-PHOTO_INTERVAL = 10
+PHOTO_INTERVAL = 80
 MATERIAL_TYPE = "Rigid" # Rigid or Elastic
 
 if MATERIAL_TYPE == "Elastic":
@@ -31,7 +31,7 @@ else:
 
 MAX_PARALLEL_PROCESSES = 8
 # DATA_TYPE = os.environ['DATA_TYPE']
-DATA_TYPE = "eval"  # Options: "train", "eval"
+DATA_TYPE = "train"  # Options: "train", "eval"
 
 RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
@@ -194,7 +194,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         upper_obj_bound = np.max(particle_positions_np, axis=0)
     elif MATERIAL_TYPE == 'Rigid':
         aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
-    cam.start_recording()
+    # cam.start_recording()
     offset = 0.07
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + offset
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
@@ -287,7 +287,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     #         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
     #         gripper_force=-current_force
     #     )
-    cam.stop_recording(fps=10)
+    # cam.stop_recording(fps=10)
     final_make_step(
         scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
@@ -485,8 +485,8 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 
 def get_tasks_to_run():
-    if 1:
-        return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
+    # if 1:
+        # return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
         # return [('001_chips_can', 'none')]
         # return [('026_sponge', 'none')]
         #return [('002_master_chef_can', 'none')]

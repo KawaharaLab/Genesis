@@ -13,7 +13,6 @@ class RobotLabelTemplate:
             'low': 'gentle force',
             'medium': 'moderate force',
             'high': 'strong force'
-
         }
 
         self.stability_descriptors = {
@@ -72,8 +71,8 @@ class RobotLabelTemplate:
         distances = np.linalg.norm(grasp_pos - com, axis=1)
         # Decide the slip velocity from the time series of distances
         slip_velocities = np.diff(distances)
-        return "letting it slip quickly" if np.any(slip_velocities > 0.0005) else "letting it slip slowly" if np.any(slip_velocities > 0.0001) else "keeping it stable" 
-    
+        return "letting it slip" if np.any(slip_velocities > 0.0001) else "keeping it stable" 
+
     def torque_annotation(self, force_df, contact_range):
         lf = force_df[['left_fx', 'left_fy', 'left_fz']].to_numpy()[contact_range]
         lp = force_df[['left_finger_x', 'left_finger_y', 'left_finger_z']].to_numpy()[contact_range]
@@ -117,14 +116,15 @@ class RobotLabelTemplate:
                         action = "dropping when trying to " + action
                 released_idx = i
                 break
-        
 
         if not touched_both:
             if touched_either:
-                return "touched an object."
+                return "touch an object."
             else:
-                return "moving with empty hands."
+                return "move with empty hands."
 
+        if "grasp" in action and touched_idx == 0:
+            action = action.replace("grasp", "hold")
         contact_range = np.array([False] * len(force_df))
         contact_range[touched_idx:released_idx+1] = True
         annotation = ""
@@ -141,6 +141,6 @@ class RobotLabelTemplate:
         annotation += f"{self.dist_from_COM(com_pos, grasp_pos, contact_range)} the center of mass, "
 
         annotation += f"{self.slip_detection(grasp_pos, com_pos, contact_range)}"
-        annotation += f" under {self.torque_annotation(force_df, contact_range)} torque stress"
+        # annotation += f" under {self.torque_annotation(force_df, contact_range)} torque stress"
 
         return annotation

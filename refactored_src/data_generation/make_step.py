@@ -93,8 +93,8 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     if force_photo or (t % photo_interval == 0):
         camera_poses = [
             {'pos': (2.1, -1.2, 0.1), 'lookat': (0.45, 0.45, 0.5)},
-            #{'pos': (-1.5, 1.5, 0.25), 'lookat': (0.45, 0.45, 0.4)},
-            #{'pos': (2, 2, 0.1), 'lookat': (0, 0, 0.1)}
+            {'pos': (-1.5, 1.5, 0.25), 'lookat': (0.45, 0.45, 0.4)},
+            {'pos': (2, 2, 0.1), 'lookat': (0, 0, 0.1)}
         ]
         for i, pose in enumerate(camera_poses):
             cam.set_pose(**pose)
@@ -105,9 +105,9 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     if t % 100 == 0 or force_photo:
         print(f"Step: {t:05d} | Object: {name}")
 
-    # Return False to stop the simulation if forces are too high (indicating instability)
-    if abs(df.iloc[-1, 8]) > 100:
-        return False
+    # # Return False to stop the simulation if forces are too high (indicating instability)
+    # if abs(df.iloc[-1, 8]) > 100:
+    #     return False
     return True
 
 # Define the public-facing functions that call the internal helper

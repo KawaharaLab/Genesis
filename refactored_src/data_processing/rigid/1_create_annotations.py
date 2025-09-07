@@ -11,7 +11,7 @@ from simple_annotation_bank import RobotLabelTemplate
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
 WINDOW_STRIDE = 10
-DATA_TYPE = "train"
+DATA_TYPE = "eval"
 
 #------------------- Generate labels -------------------#
 
@@ -124,6 +124,8 @@ def main(obj_name, csv_path, deformation, material='Rigid'):
     for row in added_steps_dicts:
         if detect_bugs(force_df, row['start']):
             raise "Fingers phased through each other, aborting..."
+        if row['start'] + SEQUENCE_LENGTH > len(force_df):
+           continue
         annotation= labeler.generate_sentence(row['action'], force_df.iloc[row['start']:row['start']+SEQUENCE_LENGTH].reset_index(drop=True))
         annotations_df.loc[len(annotations_df)] = {'action': row['action'], 'start': row['start'], 'annotation': annotation}
 

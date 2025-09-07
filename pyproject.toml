@@ -75,6 +75,9 @@ dependencies = [
     "fast_simplification>=0.1.12",
     # Surface reconstruction library for particle data from SPH simulations
     "pysplashsurf<=0.12.0.2", # tmp workaround. 0.13.0.0 changes api and will break our code
+    "transformers>=4.56.1",
+    "sentencepiece>=0.2.1",
+    "protobuf>=6.32.0",
 ]
 
 [project.optional-dependencies]

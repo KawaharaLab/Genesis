@@ -1,9 +1,11 @@
 import pandas as pd
 import numpy as np
-DATA_DIR = "/home/user/Genesis/data/train"
-N = 25
-df = pd.read_csv(f"{DATA_DIR}/train.csv")
-# df = pd.read_csv(f"{DATA_DIR}/train.csv").iloc[385:390]
+
+DATA_TYPE = "eval"
+DATA_DIR = f"/home/user/Genesis/data/{DATA_TYPE}"
+N = 10
+df = pd.read_csv(f"{DATA_DIR}/{DATA_TYPE}.csv")
+# df = pd.read_csv(f"{DATA_DIR}/{DATA_TYPE}.csv").iloc[385:390]
 data_len = df.shape[0]
 print(data_len)
 unique_csv_paths = df["csv_path"].unique()
@@ -18,14 +20,13 @@ nc = []
 for i, row in df.iterrows():
     force_df = data_cache[row['csv_path']]
     if np.all(force_df['obj_left_finger'][row['start']:row['start']+80]) and np.all(force_df['obj_right_finger'][row['start']:row['start']+80]):
-        if ("slips." in row['label']) or ("Grabs" in row['label']):
+        if ("slip" in row['annotation']) or ("grasp" in row['annotation']):
             continue
         hold.append(i)
     elif not (np.any(force_df['obj_left_finger'][row['start']:row['start']+80]) or np.any(force_df['obj_right_finger'][row['start']:row['start']+80])):
         nc.append(i)
 print("hold", len(hold))
 print("no contact", len(nc))
-
 # ---------------- Thin out to N% each for hold and no-contact ---------------- #
 target = int(np.floor(data_len * (N / 100)))
 print(f"target per class: {target} rows (N={N}% of total {data_len})")
@@ -49,7 +50,9 @@ print(f"total drop: {len(to_drop)}")
 
 df_thin = df.drop(index=to_drop)
 print(f"final size: {len(df_thin)} (was {data_len})")
+print("new hold", len(set(hold) - drop_hold))
+print("new no contact", len(set(nc) - drop_nc))
 
-out_path = f"{DATA_DIR}/train_thin_{N}pct.csv"
+out_path = f"{DATA_DIR}/{DATA_TYPE}_thin_{N}pct.csv"
 df_thin.to_csv(out_path, index=False)
 print(f"saved -> {out_path}")

@@ -16,6 +16,7 @@ playground.py
 __pycache__/
 *.py[cod]
 *$py.class
+hugging_face_object_data/
 
 # C extensions
 *.pyc
