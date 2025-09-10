@@ -23,10 +23,7 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
         elif "no slip" in annotation:
             df.at[idx, 'label'] = "hold"
         elif "slip" in annotation:
-            if "quickly" in annotation:
-                df.at[idx, "label"] = "slip quickly"
-            else:
-                df.at[idx, "label"] = "slip slowly"
+            df.at[idx, "label"] = "slip"
         elif "empty" in annotation:
             df.at[idx, "label"] = "empty"
         else:
