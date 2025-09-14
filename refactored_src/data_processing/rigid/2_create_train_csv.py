@@ -4,36 +4,68 @@ import sys
 
 import pandas as pd
 
-DATA_TYPE = "eval"
+DATA_TYPE = "eval_heavy"  # "train_old" or "eval_heavy"
+DATA_DIR = "/home/user/Genesis/data/"
 out_path = f"/home/user/Genesis/data/{DATA_TYPE}/{DATA_TYPE}.csv"
 
 def add_labels(df: pd.DataFrame) -> pd.DataFrame:
 
     df['label'] = None
-
+    df['action'] = None
+    df['weight'] = None
+    df['interaction'] = None
     for idx, row in df.iterrows():
         annotation = row["annotation"]
-
-        if "place" in annotation:
+        #label
+        if "empty" in annotation:
+            df.at[idx, "label"] = "hand is empty"
+        elif "place" in annotation:
             df.at[idx, "label"] = "place"
         elif "grasp" in annotation:
             df.at[idx, "label"] = "grasp"
         elif "drop" in annotation:
-            df.at[idx, "label"] = "drop"
-        elif "no slip" in annotation:
-            df.at[idx, 'label'] = "hold"
+            df.at[idx, "label"] = "letting drop"
         elif "slip" in annotation:
-            df.at[idx, "label"] = "slip"
-        elif "empty" in annotation:
-            df.at[idx, "label"] = "empty"
+            df.at[idx, "label"] = "letting slip"
+        elif "stable" in annotation:
+            df.at[idx, 'label'] = "keeping stable"
         else:
-            df.at[idx, "label"] = "hold"
+            df.at[idx, "label"] = "touch an object"
+        #action
+        if "grasp" in annotation:
+            df.at[idx, "action"] = "grasp"
+        elif "place" in annotation:
+            df.at[idx, "action"] = "place"
+        elif "shake" in annotation:
+            df.at[idx, "action"] = "shake"
+        elif "rotate" in annotation:
+            df.at[idx, "action"] = "rotate"
+        elif "lift" in annotation:
+            df.at[idx, "action"] = "lift"
+        elif "descend" in annotation:
+            df.at[idx, "action"] = "descend"
+        elif "hold" in annotation:
+            df.at[idx, "action"] = "hold"
+        
+        #weight
+        if "light" in annotation:
+            df.at[idx, "weight"] = "light"
+        elif "heavy" in annotation:
+            df.at[idx, "weight"] = "heavy"
+        
+        #interaction
+        if "stable" in annotation:
+            df.at[idx, "interaction"] = "stable"
+        elif "slip" in annotation:
+            df.at[idx, "interaction"] = "slip"
+        elif "drop" in annotation:
+            df.at[idx, "interaction"] = "drop"
     return df
 
 
 def main() -> int:
-    base_dir = os.path.join("data", "processed", DATA_TYPE)
-    annotation_dir = os.path.join(base_dir, "simple_annotations")
+    base_dir = os.path.join(DATA_DIR, "processed", DATA_TYPE)
+    annotation_dir = os.path.join(base_dir, "com")
     pattern = os.path.join(annotation_dir, "*.csv")
     files = sorted(glob.glob(pattern))
 

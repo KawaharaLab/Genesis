@@ -5,10 +5,10 @@ from tqdm import tqdm
 import os
 import numpy as np
 
-save_dir = "data/train_old/text_emb"
+save_dir = "data/train_old/clip_emb"
 os.makedirs(save_dir, exist_ok=True)
 
-model_name = "google/siglip-base-patch16-224"
+model_name = "openai/clip-vit-large-patch14-336"
 model = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32).cuda()
 processor = AutoProcessor.from_pretrained(model_name)
 model.eval()
@@ -42,9 +42,10 @@ for i in tqdm(range(0, len(annotations), batch_size)):
         torch.save(feature_vec, save_path)
         
         indices.append(current_index)
+    del text_features_cpu  # Free memory
 
 if len(indices) == len(train_df):
-    train_df["emb_index"] = indices
+    train_df["clip_index"] = indices
     train_df.to_csv("data/train_old/train_old_thin_15pct.csv", index=False)
 else:
     print("Error: Mismatch in number of indices and dataframe rows.")

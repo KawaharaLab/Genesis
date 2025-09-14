@@ -50,7 +50,7 @@ class RobotLabelTemplate:
         com = com[contact_range]
         pos = pos[contact_range]
         distance = np.linalg.norm((com - pos)[0]) # TODO: change to average
-        return "far from" if distance > 0.06 else "near"
+        return "far from" if distance > 0.15 else "near"
 
     def slip_detection(self, grasp_pos: np.ndarray, com: np.ndarray, contact_range: np.ndarray) -> str:
         """
@@ -91,12 +91,11 @@ class RobotLabelTemplate:
 
     
 
-    def generate_sentence(self, action: str, force_df: pd.DataFrame, lost_contact: bool) -> str:
+    def generate_sentence(self, action: str, force_df: pd.DataFrame) -> str:
         """
         Generate a sentence using selected values.
         """
-        contact_state = "init"
-        
+
         contact_left = force_df['obj_left_finger'].to_numpy()
         contact_right = force_df['obj_right_finger'].to_numpy()
         contact_either = np.logical_or(contact_left, contact_right)
@@ -111,58 +110,37 @@ class RobotLabelTemplate:
                 touched_idx = i
             if touched_both and not contact_both[i]:
                 if force_df['obj_min_z'].values[i] > 0.03:
-                    contact_state = "letting it drop"
+                    if "place" in action:
+                        action = action.replace("place", "drop")
+                    else:
+                        action = "dropping when trying to " + action
                 released_idx = i
                 break
-        if "wiggle" in action:
-            action = action.replace("wiggle", "shake")
+
         if not touched_both:
             if touched_either:
                 return "touch an object."
             else:
-                return "hand is empty."
-        if lost_contact:
-            if touched_either:
-                return "touch an object."
-            else:   
-                return "hand is empty."
-    
-        if "start" in action:
-            if "grasp" in action:
-                action = "grasp"
-            else:
-                action = action.replace("start", "grasp")
-        if "stop moving" in action or "stop" in action:
-            action = action.replace("stop moving", "hold").replace("stop", "hold")
-        
+                return "move with empty hands."
+
+        if "grasp" in action and touched_idx == 0:
+            action = action.replace("grasp", "hold")
         contact_range = np.array([False] * len(force_df))
         contact_range[touched_idx:released_idx+1] = True
         annotation = ""
 
         mass = force_df['obj_mass'].values[0]
-        mass_str = "heavy" if mass > 0.1 else "light" #TODO: Check whether 0.5 [kg] is a good threshold
+        mass_str = "heavy" if mass > 0.5 else "light" #TODO: Check whether 0.5 [kg] is a good threshold
 
-        annotation += f"{action} a {mass_str} object, " # explain the movement very simply
+        annotation += f"{action} a {mass_str} object " # explain the movement very simply
 
         com_pos = force_df[['obj_COM_x', 'obj_COM_y', 'obj_COM_z']].to_numpy()
         right_finger_pos = force_df[['right_finger_x', 'right_finger_y', 'right_finger_z']].to_numpy()
         left_finger_pos = force_df[['left_finger_x', 'left_finger_y', 'left_finger_z']].to_numpy()
         grasp_pos = (right_finger_pos + left_finger_pos)/2
-        # annotation += f"{self.dist_from_COM(com_pos, grasp_pos, contact_range)} the center of mass, "
+        annotation += f"{self.dist_from_COM(com_pos, grasp_pos, contact_range)} the center of mass, "
 
-        grasp_pos = grasp_pos[contact_range]
-        com_pos = com_pos[contact_range]
-        distances = np.linalg.norm(grasp_pos - com_pos, axis=1)
-        # Decide the slip velocity from the time series of distances
-        slip_velocities = np.diff(distances)
-        if contact_state == "init":
-            # if np.any(slip_velocities > 0.0001):
-            if np.max(distances) - np.min(distances) > 0.001:
-                contact_state = "letting it slip"
-            else:
-                contact_state = "keeping it stable"
-        annotation += contact_state
+        annotation += f"{self.slip_detection(grasp_pos, com_pos, contact_range)}"
         # annotation += f" under {self.torque_annotation(force_df, contact_range)} torque stress"
-        annotation += "."
 
         return annotation

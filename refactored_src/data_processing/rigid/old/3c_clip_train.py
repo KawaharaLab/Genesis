@@ -5,18 +5,18 @@ from tqdm import tqdm
 import os
 import numpy as np
 
-save_dir = "data/train_old/text_emb"
+save_dir = "data/train/clip_emb"
 os.makedirs(save_dir, exist_ok=True)
 
-model_name = "google/siglip-base-patch16-224"
+model_name = "openai/clip-vit-large-patch14-336"
 model = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32).cuda()
 processor = AutoProcessor.from_pretrained(model_name)
 model.eval()
 
-train_df = pd.read_csv("data/train_old/train_old_thin_15pct.csv")
-annotations = train_df["annotation"].tolist()
+train_df = pd.read_csv("data/train/train.csv")
+annotations = train_df["label"].tolist()
 
-batch_size = 128
+batch_size = 64
 indices = []
 
 for i in tqdm(range(0, len(annotations), batch_size)):
@@ -44,7 +44,7 @@ for i in tqdm(range(0, len(annotations), batch_size)):
         indices.append(current_index)
 
 if len(indices) == len(train_df):
-    train_df["emb_index"] = indices
-    train_df.to_csv("data/train_old/train_old_thin_15pct.csv", index=False)
+    train_df["clip_index"] = indices
+    train_df.to_csv("data/train/train.csv", index=False)
 else:
     print("Error: Mismatch in number of indices and dataframe rows.")

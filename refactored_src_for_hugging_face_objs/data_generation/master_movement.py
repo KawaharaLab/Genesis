@@ -332,15 +332,3 @@ def wiggle_rotation(scene, cam, franka, gso_object, df, deform_csv, photo_path, 
             base_qpos = target_q  # Update base to oscillate cleanly
     return True
 
-def keep_holding(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
-                 motors_dof, fingers_dof, grip_force, steps=100):
-    """Keeps holding the object with current gripper force for a number of steps."""
-    position = franka.get_qpos().cpu().numpy()
-    for _ in range(steps*INTERPOLATE):
-        franka.control_dofs_position(position[:-2], motors_dof)
-        franka.control_dofs_force(np.array([grip_force, grip_force]), fingers_dof)
-        make_step(
-            scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
-            photo_path=photo_path, photo_interval=photo_interval,
-            gso_object=gso_object, name=name, gripper_force=grip_force
-        )

@@ -1,0 +1,179 @@
+{
+  "generated_at": "2025-09-10T14:26:25",
+  "index_path": "/home/user/Genesis/data/train/train_thin_15pct.csv",
+  "index_overview": {
+    "rows": 33301,
+    "columns": [
+      "action",
+      "start",
+      "annotation",
+      "csv_path",
+      "label",
+      "emb_index"
+    ],
+    "missing_required": [],
+    "dtypes": {
+      "action": "object",
+      "start": "int64",
+      "annotation": "object",
+      "csv_path": "object",
+      "label": "object",
+      "emb_index": "int64"
+    },
+    "null_counts": {
+      "action": 0,
+      "start": 0,
+      "annotation": 0,
+      "csv_path": 0,
+      "label": 0,
+      "emb_index": 0
+    },
+    "memory_usage_bytes": 13585368,
+    "memory_usage_human": "12.96 MB",
+    "value_counts_top50": {
+      "action": {
+        "rotate": 6417,
+        "grasp then lift": 5411,
+        "lift": 4406,
+        "descend then place": 4218,
+        "descend": 3995,
+        "place": 1751,
+        "stop": 1684,
+        "wiggle": 1135,
+        "rotate then stop": 1017,
+        "stop then rotate": 1006,
+        "lift then rotate": 788,
+        "rotate then descend": 685,
+        "lift then wiggle": 524,
+        "wiggle then rotate": 264
+      },
+      "label": {
+        "hold": 12166,
+        "slip": 6239,
+        "grasp": 5284,
+        "empty": 4995,
+        "place": 2521,
+        "drop": 2096
+      },
+      "start": {
+        "0": 934,
+        "10": 932,
+        "20": 926,
+        "30": 917,
+        "40": 894,
+        "50": 808,
+        "60": 636,
+        "70": 536,
+        "80": 479,
+        "90": 428,
+        "100": 401,
+        "110": 377,
+        "120": 347,
+        "2140": 344,
+        "2100": 344,
+        "2120": 340,
+        "2080": 338,
+        "2110": 337,
+        "2090": 333,
+        "2130": 331,
+        "2150": 319,
+        "2070": 309,
+        "2160": 293,
+        "2060": 287,
+        "130": 285,
+        "2170": 277,
+        "2190": 272,
+        "140": 266,
+        "2180": 265,
+        "2050": 243,
+        "150": 235,
+        "2440": 225,
+        "2460": 225,
+        "2450": 225,
+        "2470": 224,
+        "2480": 221,
+        "2490": 219,
+        "2500": 216,
+        "160": 214,
+        "2040": 213,
+        "2510": 211,
+        "2430": 203,
+        "170": 202,
+        "180": 195,
+        "2520": 192,
+        "190": 190,
+        "2530": 182,
+        "2540": 178,
+        "2550": 178,
+        "200": 176
+      }
+    },
+    "annotation_stats": {
+      "blank_rate": 0.0,
+      "chars_min": 16,
+      "chars_mean": 53.148283835320264,
+      "chars_median": 62.0,
+      "chars_max": 102,
+      "tokens_min": 3,
+      "tokens_mean": 10.126392600822799,
+      "tokens_median": 12.0,
+      "tokens_max": 19
+    }
+  },
+  "files": {
+    "unique_in_index": 1023,
+    "attempted_to_read": 1023,
+    "success": 1023,
+    "read_errors": 0
+  },
+  "path_resolution_examples": {
+    "11pro_SL_TRX_FG/Rigid/none/11pro_SL_TRX_FG_Rigid_none.csv": "/home/user/Genesis/data/train/csv/11pro_SL_TRX_FG/Rigid/none/11pro_SL_TRX_FG_Rigid_none.csv",
+    "2_of_Jenga_Classic_Game/Rigid/none/2_of_Jenga_Classic_Game_Rigid_none.csv": "/home/user/Genesis/data/train/csv/2_of_Jenga_Classic_Game/Rigid/none/2_of_Jenga_Classic_Game_Rigid_none.csv",
+    "30_CONSTRUCTION_SET/Rigid/none/30_CONSTRUCTION_SET_Rigid_none.csv": "/home/user/Genesis/data/train/csv/30_CONSTRUCTION_SET/Rigid/none/30_CONSTRUCTION_SET_Rigid_none.csv",
+    "3D_Dollhouse_Happy_Brother/Rigid/none/3D_Dollhouse_Happy_Brother_Rigid_none.csv": "/home/user/Genesis/data/train/csv/3D_Dollhouse_Happy_Brother/Rigid/none/3D_Dollhouse_Happy_Brother_Rigid_none.csv",
+    "3D_Dollhouse_Lamp/Rigid/none/3D_Dollhouse_Lamp_Rigid_none.csv": "/home/user/Genesis/data/train/csv/3D_Dollhouse_Lamp/Rigid/none/3D_Dollhouse_Lamp_Rigid_none.csv",
+    "3D_Dollhouse_Refrigerator/Rigid/none/3D_Dollhouse_Refrigerator_Rigid_none.csv": "/home/user/Genesis/data/train/csv/3D_Dollhouse_Refrigerator/Rigid/none/3D_Dollhouse_Refrigerator_Rigid_none.csv",
+    "3D_Dollhouse_Sink/Rigid/none/3D_Dollhouse_Sink_Rigid_none.csv": "/home/user/Genesis/data/train/csv/3D_Dollhouse_Sink/Rigid/none/3D_Dollhouse_Sink_Rigid_none.csv",
+    "3D_Dollhouse_Sofa/Rigid/none/3D_Dollhouse_Sofa_Rigid_none.csv": "/home/user/Genesis/data/train/csv/3D_Dollhouse_Sofa/Rigid/none/3D_Dollhouse_Sofa_Rigid_none.csv",
+    "3D_Dollhouse_Swing/Rigid/none/3D_Dollhouse_Swing_Rigid_none.csv": "/home/user/Genesis/data/train/csv/3D_Dollhouse_Swing/Rigid/none/3D_Dollhouse_Swing_Rigid_none.csv",
+    "3D_Dollhouse_TablePurple/Rigid/none/3D_Dollhouse_TablePurple_Rigid_none.csv": "/home/user/Genesis/data/train/csv/3D_Dollhouse_TablePurple/Rigid/none/3D_Dollhouse_TablePurple_Rigid_none.csv"
+  },
+  "timeseries": {
+    "sequence_length_summary": {
+      "files_count": 1023,
+      "min": 252,
+      "p25": 2272.0,
+      "median": 2272.0,
+      "p75": 2632.0,
+      "max": 2632,
+      "mean": 2375.382209188661
+    },
+    "duration_summary": {
+      "files_with_duration": 1023,
+      "min": 251.0,
+      "median": 2271.0,
+      "max": 2631.0,
+      "mean": 2374.382209188661
+    },
+    "sampling_summary": {
+      "mode_delta_median": 1.0,
+      "median_delta_median": 1.0,
+      "mean_delta_median": 1.0,
+      "hz_estimate_median": 1.0
+    },
+    "train_columns": [
+      "left_fx",
+      "left_fy",
+      "left_fz",
+      "left_tx",
+      "left_ty",
+      "left_tz",
+      "right_fx",
+      "right_fy",
+      "right_fz",
+      "right_tx",
+      "right_ty",
+      "right_tz"
+    ]
+  }
+}

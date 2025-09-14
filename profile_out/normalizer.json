@@ -1,0 +1,86 @@
+{
+  "left_fx": {
+    "mean": 0.049340007110497575,
+    "std": 2.132935430802479,
+    "clip_low_p01": -163.6623634338379,
+    "clip_high_p99": 80.5305396270753,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "left_fy": {
+    "mean": -0.8847549425491047,
+    "std": 4.30823945590663,
+    "clip_low_p01": -135.8083218383789,
+    "clip_high_p99": 84.76166625976569,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "left_fz": {
+    "mean": -1.8905375817866437,
+    "std": 9.956616951169194,
+    "clip_low_p01": -293.1773931884766,
+    "clip_high_p99": 22.860733242034915,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "left_tx": {
+    "mean": 0.9343996948620699,
+    "std": 0.771356688815204,
+    "clip_low_p01": -6.076981325149536,
+    "clip_high_p99": 41.92659286499023,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "left_ty": {
+    "mean": -0.009506542377154788,
+    "std": 0.11196244484939699,
+    "clip_low_p01": -7.740074620246887,
+    "clip_high_p99": 3.936423707008363,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "left_tz": {
+    "mean": -7.70020970698893e-05,
+    "std": 0.10971878276738256,
+    "clip_low_p01": -5.9544939613342285,
+    "clip_high_p99": 8.083415517807007,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "right_fx": {
+    "mean": 0.1210120105173908,
+    "std": 1.656987144928549,
+    "clip_low_p01": -49.72197822570801,
+    "clip_high_p99": 109.4893758392334,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "right_fy": {
+    "mean": -0.8550141555773374,
+    "std": 4.224366642929322,
+    "clip_low_p01": -133.13160217285156,
+    "clip_high_p99": 55.63954345703125,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "right_fz": {
+    "mean": -0.7793130079002755,
+    "std": 5.693039212105944,
+    "clip_low_p01": -301.08220947265625,
+    "clip_high_p99": 24.274750156402604,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "right_tx": {
+    "mean": 0.9468238479168036,
+    "std": 0.7308544373224471,
+    "clip_low_p01": -2.595080270767212,
+    "clip_high_p99": 41.88714729309082,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "right_ty": {
+    "mean": 0.005749741207559682,
+    "std": 0.07872960942674481,
+    "clip_low_p01": -2.173924698829651,
+    "clip_high_p99": 4.923586721420296,
+    "suggested_strategy": "zscore_then_clip"
+  },
+  "right_tz": {
+    "mean": -8.920705592298489e-05,
+    "std": 0.1049132789750166,
+    "clip_low_p01": -8.122104024887085,
+    "clip_high_p99": 5.911967544555665,
+    "suggested_strategy": "zscore_then_clip"
+  }
+}

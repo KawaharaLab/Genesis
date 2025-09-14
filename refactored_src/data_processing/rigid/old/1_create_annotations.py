@@ -10,8 +10,9 @@ from simple_annotation_bank import RobotLabelTemplate
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
-DATA_TYPE = "eval_heavy"  # "train_old" or "eval_heavy"
-WINDOW_STRIDE = 40 if "eval" in DATA_TYPE else 10
+WINDOW_STRIDE = 10
+DATA_TYPE = "train"
+
 #------------------- Generate labels -------------------#
 
 def extract_floats_from_string(data_string: str) -> list[float]:
@@ -32,7 +33,7 @@ def action_at_step(steps_df: pd.DataFrame, step_value: int | float) -> str:
     """
     # Remove rows where step=0 and action="start"
     filtered_df = steps_df[~((steps_df['step'] == 0) & (steps_df['action'] == "start"))]
-    filtered_df = steps_df[~(steps_df['action'] == "picked up")]
+    
     # Ensure sorted by step ascending
     sdf = filtered_df.sort_values('step', kind='mergesort')  # stable
     steps = sdf['step'].to_numpy()
@@ -73,7 +74,7 @@ def split_for_model(step_df, force_df):
             action = action_label_start
 
         if not detect_bugs(force_df, start):
-            added_steps_dicts.append({'action': action, 'start': start, 'mass': force_df['obj_mass'][start]})
+            added_steps_dicts.append({'action': action, 'start': start})
         start += WINDOW_STRIDE
 
     return added_steps_dicts
@@ -89,9 +90,6 @@ def get_picked_up_objects(all_objects, material='Rigid'):
         
         # if csv_path is empty, then do not include this object
         csv_path = os.path.join(picked_up_path, f'{obj_name}_{material}_none.csv') # Hardcoded soft for now
-        if not os.path.exists(csv_path):
-            print(f'❌ {obj_name} (no csv)')
-            continue
         with open(csv_path, newline='') as f:
             reader = csv.reader(f)
             header = next(reader, None)  # Read header (if present)
@@ -107,7 +105,7 @@ def get_picked_up_objects(all_objects, material='Rigid'):
 
 
 def main(obj_name, csv_path, deformation, material='Rigid'):
-    annotations_df = pd.DataFrame(columns=['action','start', 'annotation', 'mass'])
+    annotations_df = pd.DataFrame(columns=['action','start', 'annotation'])
 
     # steps_csv: action, step, hand_coordinate, bounding_box [need to convert from np and pd]
     steps_csv = os.path.join(csv_path, f"{obj_name}_{material}_steps_{deformation}.csv")
@@ -120,28 +118,19 @@ def main(obj_name, csv_path, deformation, material='Rigid'):
     added_steps_dicts = split_for_model(steps_df, force_df)
 
     labeler = RobotLabelTemplate()
-    lost_contact = False
+
     for row in added_steps_dicts:
         if detect_bugs(force_df, row['start']):
-            lost_contact = True
-            raise RuntimeError("Fingers phased through each other, aborting...")
+            raise "Fingers phased through each other, aborting..."
         if row['start'] + SEQUENCE_LENGTH > len(force_df):
            continue
-        force_csv_segment = force_df.iloc[row['start']:row['start']+SEQUENCE_LENGTH].reset_index(drop=True)
-        if None in force_csv_segment.values:
-            print("Skipping segment with None values")
-            continue
-        annotation= labeler.generate_sentence(row['action'], force_csv_segment, lost_contact)
-        if annotation == "touch an object." and lost_contact:
-            print("touched after lost contact")
-        annotations_df.loc[len(annotations_df)] = {'action': row['action'], 'start': row['start'], 'annotation': annotation, 'mass': row['mass']}
-        if row["start"] >= 200 and annotation == "hand is empty.":
-            lost_contact = True
+        annotation= labeler.generate_sentence(row['action'], force_df.iloc[row['start']:row['start']+SEQUENCE_LENGTH].reset_index(drop=True))
+        annotations_df.loc[len(annotations_df)] = {'action': row['action'], 'start': row['start'], 'annotation': annotation}
 
 
     # ------------------- Save the annotations to a CSV file -------------------#
-    os.makedirs(os.path.join(BASE_PATH, 'data', 'processed', DATA_TYPE, f'com'), exist_ok=True)
-    output_csv_path = os.path.join(BASE_PATH, 'data', 'processed', DATA_TYPE, f'com', f"{obj_name}_{material}_{deformation}_annotations.csv")
+    os.makedirs(os.path.join(BASE_PATH, 'data', 'processed', DATA_TYPE, f'simple_annotations'), exist_ok=True)
+    output_csv_path = os.path.join(BASE_PATH, 'data', 'processed', DATA_TYPE, f'simple_annotations', f"{obj_name}_{material}_{deformation}_annotations.csv")
     annotations_df.to_csv(output_csv_path, index=False)
 
 if __name__ == "__main__":
@@ -165,7 +154,6 @@ if __name__ == "__main__":
         p = Process(target=main, args=(obj_name, picked_up_path, deformation))
         p.start()
         processes.append(p)
-        
 
     for p in processes:
         p.join()

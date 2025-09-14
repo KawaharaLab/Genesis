@@ -3,18 +3,17 @@ import torch
 from transformers import AutoProcessor, AutoModel
 from tqdm import tqdm
 import os
-import numpy as np
 
 """
-本スクリプトは行ごとではなくユニークな label ごとに 1 個だけテキスト埋め込み(.pt)を生成し、
-各行には label -> emb_index のマッピングを付与します。
-
-出力:
-  data/eval/text_emb/{emb_index}.pt  (ユニークラベル数分)
-  data/eval/eval.csv (emb_index列を追加/更新)
+label だけでなく action / weight / interaction も
+  1) NaN / 空文字は除外
+  2) ユニーク文字列ごとに1個だけテキスト埋め込みを生成
+  3) 元 DataFrame に <col>_emb_index を付与 (欠損は NaN のまま)
+埋め込みは save_dir/<col>/<index>.pt に保存
+対応表は save_dir/<col>_index_map.csv
 """
-
-save_dir = "data/eval/text_emb"
+data_dir = "data/eval_heavy"
+save_dir = "data/eval_heavy/text_emb"
 os.makedirs(save_dir, exist_ok=True)
 
 model_name = "google/siglip-base-patch16-224"
@@ -23,41 +22,70 @@ model = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32).to(devi
 processor = AutoProcessor.from_pretrained(model_name)
 model.eval()
 
-csv_path = "data/eval/eval.csv"
-train_df = pd.read_csv(csv_path)
+csv_path = "data/eval_heavy/eval_heavy_thin_15pct.csv"
+df = pd.read_csv(csv_path)
 
-unique_labels = sorted(train_df["label"].unique())
-print(f"Unique labels: {len(unique_labels)} / Rows: {len(train_df)}")
-
-# 既存の emb_index があってユニークラベル数と .pt が一致していれば再計算をスキップするロジックを入れても良いが、
-# とりあえず常に再生成（必要なら条件付きスキップを追加）。
-
+target_cols = ["label", "action", "weight", "interaction"]
 batch_size = 64
-label_to_index: dict[str, int] = {}
-embeddings: list[torch.Tensor] = []
 
-for start in tqdm(range(0, len(unique_labels), batch_size), desc="embed unique labels"):
-    batch_labels = unique_labels[start:start + batch_size]
-    inputs = processor(text=batch_labels, padding=True, return_tensors="pt").to(device)
-    with torch.no_grad():
-        feats = model.get_text_features(**inputs)
-    feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
-    feats_cpu = feats.cpu()
-    for label, vec in zip(batch_labels, feats_cpu):
-        emb_index = len(embeddings)
-        embeddings.append(vec)
-        label_to_index[label] = emb_index
+def build_unique_list(series: pd.Series) -> list[str]:
+    # NaN 除去 -> 文字列化 -> 前後空白除去 -> 空文字除去 -> ユニーク
+    s = series.dropna().astype(str).str.strip()
+    s = s[s != ""]
+    return sorted(s.unique())
 
-# 保存 (index順に {i}.pt)
-for i, vec in enumerate(embeddings):
-    torch.save(vec, os.path.join(save_dir, f"{i}.pt"))
+def embed_text_list(text_list: list[str]) -> list[torch.Tensor]:
+    embeddings: list[torch.Tensor] = []
+    for start in tqdm(range(0, len(text_list), batch_size), desc="embed", leave=False):
+        batch = text_list[start:start + batch_size]
+        inputs = processor(text=batch, padding=True, return_tensors="pt").to(device)
+        with torch.no_grad():
+            feats = model.get_text_features(**inputs)
+        feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
+        feats_cpu = feats.cpu()
+        embeddings.extend(list(feats_cpu))
+    return embeddings
 
-# DataFrame に emb_index 列を付与
-train_df["emb_index"] = train_df["label"].map(label_to_index).astype(int)
-train_df.to_csv(csv_path, index=False)
-print(f"Saved {len(embeddings)} embeddings and updated {csv_path}")
+for col in target_cols:
+    if col not in df.columns:
+        print(f"[WARN] column '{col}' not found. skip.")
+        continue
 
-# ラベル->index の対応表を別ファイルにも書き出し（解析用）
-mapping_path = os.path.join("data/eval", "label_index_map.csv")
-pd.DataFrame({"label": unique_labels, "emb_index": [label_to_index[l] for l in unique_labels]}).to_csv(mapping_path, index=False)
-print(f"Label-index map saved to {mapping_path}")
+    uniq_texts = build_unique_list(df[col])
+    print(f"[INFO] {col}: unique valid texts = {len(uniq_texts)}")
+
+    if len(uniq_texts) == 0:
+        df[f"{col}_emb_index"] = pd.NA
+        continue
+
+    col_dir = os.path.join(save_dir, col)
+    os.makedirs(col_dir, exist_ok=True)
+
+    # 埋め込み生成
+    emb_list = embed_text_list(uniq_texts)
+
+    # 保存 & マッピング
+    text_to_index = {}
+    for idx, vec in enumerate(emb_list):
+        torch.save(vec, os.path.join(col_dir, f"{idx}.pt"))
+        text_to_index[uniq_texts[idx]] = idx
+
+    # DataFrame へ index 付与（欠損/空は NaN のまま）
+    def map_func(v):
+        if pd.isna(v):
+            return pd.NA
+        v_str = str(v).strip()
+        if v_str == "":
+            return pd.NA
+        return text_to_index.get(v_str, pd.NA)
+
+    df[f"{col}_emb_index"] = df[col].map(map_func)
+
+    # 対応表保存
+    mapping_path = os.path.join(data_dir, f"{col}_index_map.csv")
+    pd.DataFrame({col: uniq_texts, "emb_index": [text_to_index[t] for t in uniq_texts]}).to_csv(mapping_path, index=False)
+    print(f"[INFO] {col}: saved {len(emb_list)} embeddings -> {col_dir}, mapping -> {mapping_path}")
+
+# CSV 更新
+df.to_csv(csv_path, index=False)
+print(f"[DONE] updated {csv_path} with *_emb_index columns")
