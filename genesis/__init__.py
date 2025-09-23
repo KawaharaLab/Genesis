@@ -50,10 +50,7 @@ def _noop(fn: Callable[_P, _R]) -> Callable[_P, _R]:
     return fn
 
 
-if os.environ.get("GS_BETA_PURE") == "1":
-    maybe_pure: Callable[[Callable[_P, _R]], Callable[_P, _R]] = ti.pure
-else:
-    maybe_pure = _noop
+use_pure = os.environ.get("GS_BETA_PURE") == "1"
 
 
 ########################## init ##########################
@@ -120,6 +117,8 @@ def init(
     # get default device and compute total device memory
     global device
     device, device_name, total_mem, backend = get_device(backend)
+    if backend != gs.cpu and os.environ.get("GS_TORCH_FORCE_CPU_DEVICE") == "1":
+        device, device_name, total_mem, _ = get_device(gs_backend.cpu)
 
     # dtype
     global ti_float
@@ -183,7 +182,7 @@ def init(
     ti_ivec4 = ti.types.vector(4, ti_int)
 
     global EPS
-    EPS = max(eps, np.finfo(np_float).eps)
+    EPS = float(max(eps, np.finfo(np_float).eps))
 
     taichi_kwargs = {}
     if gs.logger.level == _logging.CRITICAL:
@@ -226,7 +225,7 @@ def init(
 
     # It is necessary to disable Metal backend manually because it is not working at taichi-level due to a bug
     ti_arch = TI_ARCH[platform][backend]
-    if (backend == gs_backend.metal) and (os.environ.get("TI_ENABLE_METAL") == "0"):
+    if backend == gs_backend.metal and os.environ.get("TI_ENABLE_METAL") == "0":
         ti_arch = TI_ARCH[platform][gs_backend.cpu]
 
     # init gstaichi
@@ -309,8 +308,7 @@ def destroy():
     # Destroy all scenes
     global global_scene_list
     for scene in global_scene_list:
-        if scene.visualizer is not None:
-            scene.visualizer.destroy()
+        scene.destroy()
     global_scene_list.clear()
 
     # Reset gstaichi

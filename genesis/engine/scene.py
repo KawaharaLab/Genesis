@@ -2,7 +2,7 @@ import os
 import pickle
 import sys
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import torch
@@ -37,6 +37,7 @@ from genesis.options import (
 from genesis.options.morphs import Morph
 from genesis.options.surfaces import Surface
 from genesis.options.renderers import Rasterizer, RendererOptions
+from genesis.recorders import RecorderManager
 from genesis.repr_base import RBC
 from genesis.utils.tools import FPSTracker
 from genesis.utils.misc import redirect_libc_stderr, tensor_to_array
@@ -44,7 +45,8 @@ from genesis.vis import Visualizer
 from genesis.utils.warnings import warn_once
 
 if TYPE_CHECKING:
-    from genesis.sensors.base_sensor import SensorOptions
+    from genesis.recorders import Recorder, RecorderOptions
+    from genesis.sensors import SensorOptions
 
 
 @gs.assert_initialized
@@ -194,6 +196,9 @@ class Scene(RBC):
             renderer_options=renderer,
         )
 
+        # recorders
+        self._recorder_manager = RecorderManager(self._sim.dt)
+
         # emitters
         self._emitters = gs.List()
 
@@ -207,9 +212,7 @@ class Scene(RBC):
         gs.logger.info(f"Scene ~~~<{self._uid}>~~~ created.")
 
     def __del__(self):
-        if self._visualizer is not None:
-            self._visualizer.destroy()
-            self._visualizer = None
+        self.destroy()
 
     def _validate_options(
         self,
@@ -269,6 +272,16 @@ class Scene(RBC):
 
         if not isinstance(renderer_options, RendererOptions):
             gs.raise_exception("`renderer` should be an instance of `gs.renderers.Renderer`.")
+
+    def destroy(self):
+        if getattr(self, "_recorder_manager", None) is not None:
+            if self._recorder_manager.is_recording:
+                self._recorder_manager.stop()
+            self._recorder_manager = None
+
+        if getattr(self, "_visualizer", None) is not None:
+            self._visualizer.destroy()
+            self._visualizer = None
 
     @gs.assert_unbuilt
     def add_entity(
@@ -542,7 +555,39 @@ class Scene(RBC):
 
     @gs.assert_unbuilt
     def add_sensor(self, sensor_options: "SensorOptions"):
+        """
+        Add a sensor to the scene.
+
+        Sensors extract information from the scene without modifying the physics simulation.
+
+        Parameters
+        ----------
+        sensor_options : SensorOptions
+            The options for the sensor.
+        """
         return self._sim._sensor_manager.create_sensor(sensor_options)
+
+    @gs.assert_unbuilt
+    def start_recording(self, data_func: Callable, rec_options: "RecorderOptions") -> "Recorder":
+        """
+        Automatically read and process data. See RecorderOptions for more details.
+
+        Data from `data_func` is automatically read and processed using the recorder at the
+        frequency `rec_options.hz` (or every step if not specified) as the scene is stepped.
+
+        Parameters
+        ----------
+        data_func: Callable
+            A function with no arguments that returns the data to be recorded.
+        rec_options : RecorderOptions
+            The options for the recording.
+
+        Returns
+        -------
+        recorder : Recorder
+            The created recorder object.
+        """
+        return self._recorder_manager.add_recorder(data_func, rec_options)
 
     @gs.assert_unbuilt
     def add_camera(
@@ -754,6 +799,9 @@ class Scene(RBC):
         if self.profiling_options.show_FPS:
             self.FPS_tracker = FPSTracker(self.n_envs, alpha=self.profiling_options.FPS_tracker_alpha)
 
+        # recorders
+        self._recorder_manager.build()
+
         gs.global_scene_list.add(self)
 
     def _parallelize(
@@ -818,6 +866,7 @@ class Scene(RBC):
         """
         gs.logger.debug(f"Resetting Scene ~~~<{self._uid}>~~~.")
         self._reset(state, envs_idx=envs_idx)
+        self._recorder_manager.reset(envs_idx)
 
     def _reset(self, state: SimState | None = None, *, envs_idx=None):
         if self._is_built:
@@ -877,6 +926,11 @@ class Scene(RBC):
 
         if self.profiling_options.show_FPS:
             self.FPS_tracker.step()
+
+        self._recorder_manager.step(self._sim.cur_step_global)
+
+    def stop_recording(self):
+        self._recorder_manager.stop()
 
     def _step_grad(self):
         self._sim.collect_output_grads()
