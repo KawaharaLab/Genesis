@@ -1,1 +1,0 @@
-~/Genesis/refactored_src/data_processing/rigid
