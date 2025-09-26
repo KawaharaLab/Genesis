@@ -2,79 +2,65 @@ import pandas as pd
 import numpy as np
 
 DEBUG = False
-DATA_TYPE = "eval_heavy"
+DATA_TYPE = "eval_video"  # train_old / eval_heavy
 DATA_DIR = f"/home/user/Genesis/data/{DATA_TYPE}"
-N = 20  # each label should be under N% of the final dataset
+N = 15  # each label should be under N% of the final dataset
 P = N / 100.0
 fix_seed = True
 SEED = 42
-FOR_VISION = True
+FOR_VISION = False
 
 import os
 if DEBUG:
     # csv_path = f"{DATA_DIR}/{DATA_TYPE}.csv"
-    csv_path = "/home/user/Genesis/data/train_old/train_old_thin_20pct.csv"
-    # csv_path = "/home/user/Genesis/data/eval_heavy/eval_heavy_thin_5pct_an.csv"
-    if not os.path.exists(csv_path):
-        print(f"[INFO] CSV not found: {csv_path}")
-    else:
-        df = pd.read_csv(csv_path)
-        total = len(df)
-        print(f"dataset: {csv_path}")
-        print(f"total: {total}")
+    csv_path = "data/eval_heavy/eval_heavy_v.csv"
+    # csv_path = "/home/user/Genesis/data/train_old/train_old_thin_20pct.csv"
+    csv_path = "/home/user/Genesis/data/eval_heavy/eval_heavy_thin_15pct.csv"
 
+    df = pd.read_csv(csv_path)
+    print(f"dataset: {csv_path}")
+
+    targets = ["label", "action", "weight", "interaction", "annotation"]
     # label column distribution
-        if "label" in df.columns:
-            labels = df["label"].fillna("<<MISSING>>").replace("", "<<EMPTY>>")
+    for target in targets:
+        if target in df.columns:
+            labels = df[target].dropna()
+            total = len(labels)
             vc = labels.value_counts()
-            print("\nlabel distribution:")
+            print(f"\n{target} distribution:")
             for lbl, cnt in vc.items():
                 pct = cnt / total * 100 if total else 0
                 print(f"  {lbl}: {cnt} ({pct:.2f}%)")
         else:
-            print("\nlabel column が存在しません")
+            print(f"\n{target} column not found")
 
-    # annotation column distribution (if exists)
-        if "annotation" in df.columns:
-            ann = df["annotation"].fillna("<<MISSING>>").replace("", "<<EMPTY>>")
-            vc2 = ann.value_counts()
-            print("\nannotation distribution:")
-            for a, cnt in vc2.items():
-                pct = cnt / total * 100 if total else 0
-                print(f"  {a}: {cnt} ({pct:.2f}%)")
-
-        # # vision 用の start %80 フィルタに該当する行の割合
-        # if "start" in df.columns:
-        #     mod0 = (df["start"] % 80 == 0).sum()
-        #     print(f"\nstart % 80 == 0: {mod0} ({mod0 / total * 100:.2f}%)")
     exit(0)
 #####################################################
 
-
-csv_path = f"{DATA_DIR}/{DATA_TYPE}.csv"
+csv_path = "/home/user/Genesis/data/eval_video/eval_video.csv"
 df = pd.read_csv(csv_path)
 data_len = len(df)
 print(f"original size: {data_len}")
 
 # When FOR_VISION, synchronize label with annotation keywords (slip/stable) before further processing
-if FOR_VISION and "annotation" in df.columns and "label" in df.columns:
-    ann_series = df["annotation"].astype(str)
-    slip_mask_sync = ann_series.str.contains("slip", case=False, na=False)
-    stable_mask_sync = ann_series.str.contains("stable", case=False, na=False)
-    # Apply slip first so "slip" dominates if both appear (rare but deterministic)
-    updated_slip = slip_mask_sync.sum()
-    updated_stable = (~slip_mask_sync & stable_mask_sync).sum()
-    if updated_slip or updated_stable:
-        df.loc[slip_mask_sync, "label"] = "letting slip"
-        df.loc[~slip_mask_sync & stable_mask_sync, "label"] = "keeping stable"
-        print(f"[vision sync] set label=letting slip for {updated_slip} rows; label=keeping stable for {updated_stable} rows")
+# if FOR_VISION and "annotation" in df.columns and "label" in df.columns:
+#     ann_series = df["annotation"].astype(str)
+#     slip_mask_sync = ann_series.str.contains("slip", case=False, na=False)
+#     stable_mask_sync = ann_series.str.contains("stable", case=False, na=False)
+#     # Apply slip first so "slip" dominates if both appear (rare but deterministic)
+#     updated_slip = slip_mask_sync.sum()
+#     updated_stable = (~slip_mask_sync & stable_mask_sync).sum()
+#     if updated_slip or updated_stable:
+#         df.loc[slip_mask_sync, "label"] = "slip"
+#         df.loc[~slip_mask_sync & stable_mask_sync, "label"] = "stable"
+#         print(f"[vision sync] set label=slip for {updated_slip} rows; label=stable for {updated_stable} rows")
 
 if "label" not in df.columns:
     raise ValueError("CSV に 'label' 列が必要です")
 
 # Normalize label column (handle missing and empty strings)
-labels_series = df["annotation"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
-# labels_series = df["label"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
+# labels_series = df["annotation"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
+labels_series = df["label"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
 df["__normalized_label"] = labels_series  # working column
 
 # ------------------------------------------------------------------
@@ -83,7 +69,7 @@ df["__normalized_label"] = labels_series  # working column
 if FOR_VISION:
     # 1) filter rows where start % 80 == 0
     if "start" in df.columns:
-        start_mask = (df["start"] % 80 == 0)
+        start_mask = (df["start"]!= 0) & (df["start"] % 80 == 0)
         removed = (~start_mask).sum()
         print(f"filtered out (start %80 != 0): {removed}")
         df_v = df.loc[start_mask].copy()
@@ -95,8 +81,8 @@ if FOR_VISION:
         print("[WARN] Data is empty after filtering. Exiting.")
         exit(0)
 
-    labels_v = df_v["annotation"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
-    # labels_v = df_v["label"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
+    # labels_v = df_v["annotation"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
+    labels_v = df_v["label"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
     df_v["__normalized_label"] = labels_v
 
     # 3) extract slip / stable
@@ -134,7 +120,7 @@ if FOR_VISION:
 
     # 作業列削除
     df_final.drop(columns=["__normalized_label"], inplace=True)
-    out_path = f"{csv_path.replace('.csv', '')}_vision_wide.csv"
+    out_path = f"{csv_path.replace('.csv', '')}_vision.csv"
     df_final.to_csv(out_path, index=False)
     print(f"saved -> {out_path}")
     exit(0)
@@ -214,6 +200,6 @@ print(f"final size: {final_size} (was {data_len})")
 # 作業列削除
 df_final.drop(columns=["__normalized_label"], inplace=True)
 
-out_path = f"{csv_path.replace('.csv', '')}_an_thin_{N}pct.csv"
+out_path = f"{csv_path.replace('.csv', '')}_thin_{N}pct.csv"
 df_final.to_csv(out_path, index=False)
 print(f"saved -> {out_path}")

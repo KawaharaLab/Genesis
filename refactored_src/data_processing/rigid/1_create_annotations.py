@@ -10,8 +10,8 @@ from simple_annotation_bank import RobotLabelTemplate
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
-DATA_TYPE = "eval_heavy"  # "train_old" or "eval_heavy"
-WINDOW_STRIDE = 40 if "eval" in DATA_TYPE else 10
+DATA_TYPE = "eval" 
+WINDOW_STRIDE = 80 if "eval" in DATA_TYPE else 10
 #------------------- Generate labels -------------------#
 
 def extract_floats_from_string(data_string: str) -> list[float]:

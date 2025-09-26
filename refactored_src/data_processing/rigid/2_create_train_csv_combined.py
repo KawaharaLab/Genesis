@@ -4,9 +4,13 @@ import sys
 
 import pandas as pd
 
-DATA_TYPE = "eval"  # "train_old" or "eval_heavy"
 DATA_DIR = "/home/user/Genesis/data/"
-out_path = f"/home/user/Genesis/data/{DATA_TYPE}/{DATA_TYPE}.csv"
+out_path = f"/home/user/Genesis/data/train_eval_mixed.csv"
+
+# DATA_TYPE = "train_old"  # "train_old" or "eval_heavy"
+# DATA_DIR = "/home/user/Genesis/data/"
+# out_path = f"/home/user/Genesis/data/{DATA_TYPE}/{DATA_TYPE}.csv"
+
 
 def add_labels(df: pd.DataFrame) -> pd.DataFrame:
 
@@ -64,23 +68,54 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> int:
-    base_dir = os.path.join(DATA_DIR, "processed", DATA_TYPE)
-    annotation_dir = os.path.join(base_dir, "com")
-    pattern = os.path.join(annotation_dir, "*.csv")
-    files = sorted(glob.glob(pattern))
+    
+    # 1. Collect file paths for both data types
+    base_dir_train = os.path.join(DATA_DIR, "processed", "train_old")
+    annotation_dir_train = os.path.join(base_dir_train, "com")
+    pattern_train = os.path.join(annotation_dir_train, "*.csv")
+    train_old_files = sorted(glob.glob(pattern_train))
 
-    dfs = []
-    for fp in files:
+    base_dir_eval = os.path.join(DATA_DIR, "processed", "eval_heavy")
+    annotation_dir_eval = os.path.join(base_dir_eval, "com")
+    pattern_eval = os.path.join(annotation_dir_eval, "*.csv")
+    eval_heavy_files = sorted(glob.glob(pattern_eval))
+
+    print(f"Found {len(train_old_files)} train_old files and {len(eval_heavy_files)} eval_heavy files.")
+
+    # 2. Interleave the file paths with a 1-in-11 ratio
+    interleaved_files = []
+    eval_index = 0
+    for i, train_file in enumerate(train_old_files):
+        interleaved_files.append(train_file)
+        
+        # Add an eval file after every 11th train file
+        if (i + 1) % 11 == 0 and eval_index < len(eval_heavy_files):
+            interleaved_files.append(eval_heavy_files[eval_index])
+            eval_index += 1
+
+    # Add any remaining eval files to the end
+    while eval_index < len(eval_heavy_files):
+        interleaved_files.append(eval_heavy_files[eval_index])
+        eval_index += 1
+    
+    all_dfs = []
+
+    # 3. Loop through the interleaved files and process each
+    for fp in interleaved_files:
+        source_type = 1 if "eval_heavy" in fp else 0
+        
         df = pd.read_csv(fp)
         obj_name = os.path.basename(fp).replace("_Rigid_none_annotations.csv", "")
         df["csv_path"] = f"{obj_name}/Rigid/none/{obj_name}_Rigid_none.csv"
-        dfs.append(df)
+        df["source_type"] = source_type
+        all_dfs.append(df)
 
-    out = pd.concat(dfs, ignore_index=True)
+    # 4. Concatenate all dataframes and save
+    out = pd.concat(all_dfs, ignore_index=True)
     out = add_labels(out)
     out.to_csv(out_path, index=False)
 
-    print(f"Wrote {out_path} with {len(out)} rows from {len(files)} files.")
+    print(f"Wrote combined data to {out_path} with {len(out)} rows.")
     return 0
 
 

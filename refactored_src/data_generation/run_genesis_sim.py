@@ -21,7 +21,7 @@ from make_step import make_step, final_make_step
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
 
-PHOTO_INTERVAL = 80
+PHOTO_INTERVAL = 10
 MATERIAL_TYPE = "Rigid" # Rigid or Elastic
 
 if MATERIAL_TYPE == "Elastic":
@@ -31,7 +31,7 @@ else:
 
 MAX_PARALLEL_PROCESSES = 8
 # DATA_TYPE = os.environ['DATA_TYPE']
-DATA_TYPE = "train"  # Options: "train", "eval"
+DATA_TYPE = "eval_old"  # Options: "train", "eval"
 
 RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
@@ -120,7 +120,8 @@ def create_scene(obj_path: str):
     else:
         gs.init(backend=gs.cpu)
     object_scale, object_euler = set_grasp(obj_path)
-    color = random.choice([(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255),(255,0,255)])
+    # color = random.choice([(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255),(255,0,255)])
+    color = random.choice([(0,255,0)])
 
     if MATERIAL_TYPE == 'Elastic':
         scene = gs.Scene(
@@ -194,8 +195,8 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         upper_obj_bound = np.max(particle_positions_np, axis=0)
     elif MATERIAL_TYPE == 'Rigid':
         aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
-    # cam.start_recording()
-    offset = 0.07
+    cam.start_recording()
+    offset = 0.074
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + offset
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
@@ -211,7 +212,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         current_force = 3.0
     mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
     seg_df.loc[len(seg_df)] = ['hold', int(scene.t)]
-    mm.keep_holding(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, motors_dof, fingers_dof, grip_force=-current_force, steps=100)
+    # mm.keep_holding(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, motors_dof, fingers_dof, grip_force=-current_force, steps=100)
     seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]
     for i in range(200):
         step_no += 1; curr_z = z + (i * 0.00075)
@@ -235,14 +236,14 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         )
         return pickup_status
     r = random.random()
-    if r < 0.4:
+    if r < 0:
         seg_df.loc[len(seg_df)] = ['wiggle', int(scene.t)]
         print(type(gso_object))
         success = mm.wiggle_rotation(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
             end_effector, motors_dof, fingers_dof, grip_force=-current_force
         )
-    elif r < 0.4:
+    elif r < 0:
         seg_df.loc[len(seg_df)] = ['shake', int(scene.t)]
         success = mm.shake_in_place(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
@@ -250,13 +251,14 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         )
     
     actions = []
-    angle_choices, joint_indices = [-90, -60, -45, 45, 60, 90], [1, 7]
+    # angle_choices, joint_indices = [-90, -60, -45, 45, 60, 90], [1, 7]
+    angle_choices, joint_indices = [-45, -60], [1, 7]
     STEPS_PER_DEGREE = 6
     for joint_idx in joint_indices:
         chosen_angle = random.choice(angle_choices)
         num_steps = int(abs(chosen_angle) * STEPS_PER_DEGREE)
         actions.append({"name": f"Rotating Joint {joint_idx}", "angle": chosen_angle, "steps": num_steps, "joint_index": joint_idx})
-    random.shuffle(actions)
+    # random.shuffle(actions)
 
     for i, action in enumerate(actions):
         seg_df.loc[len(seg_df)] = [f'rotate', int(scene.t)]
@@ -280,15 +282,15 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     mm.descend_to_place(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + offset, motors_dof, fingers_dof, grip_force=-current_force)
     seg_df.loc[len(seg_df)] = ['place', int(scene.t)]
     mm.release_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, fingers_dof, grip_force=-current_force)
-    # seg_df.loc[len(seg_df)] = ['pause', int(scene.t)]
-    # for _ in range(100):
-    #     franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
-    #     make_step(
-    #         scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
-    #         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
-    #         gripper_force=-current_force
-    #     )
-    # cam.stop_recording(fps=10)
+    seg_df.loc[len(seg_df)] = ['pause', int(scene.t)]
+    for _ in range(100):
+        franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
+        make_step(
+            scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+            photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
+            gripper_force=-current_force
+        )
+    cam.stop_recording(save_to_filename=str(paths['images_dir'])+"/video.mp4", fps=10)
     final_make_step(
         scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
@@ -486,11 +488,12 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 
 def get_tasks_to_run():
-    # if 1:
+    if 1:
         # return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
-        # return [('001_chips_can', 'none')]
+        return [('010_potted_meat_can', 'none')]
+        # return [('010_potted_meat_can', 'none'), ('002_master_chef_can', 'none'), ('062_dice', 'none')]
         # return [('026_sponge', 'none')]
-        #return [('002_master_chef_can', 'none')]
+        # return [('002_master_chef_can', 'none')]
         # return [('bottle', 'none')]
         # return [('cube', 'none')]
     tasks = []
@@ -505,11 +508,13 @@ def get_tasks_to_run():
     print(f"🔍 Found {len(object_names)} objects in '{objects_dir}'.")
     for name in object_names:
         for target in TARGET_CHOICES:
-            if not (raw_data_dir / "csv" / name / MATERIAL_TYPE / target / f"{name}_{MATERIAL_TYPE}_{target}.csv").exists():
-                print(f"  - Queueing '{name}' with target '{target}' (no previous runs).")
-                tasks.append((name, target))
-            else:
-                print(f"  - Skipping '{name}' with target '{target}' (already processed).")
+            print(f"  - Queueing '{name}' with target '{target}' (no previous runs).")
+            tasks.append((name, target))
+            # if not (raw_data_dir / "csv" / name / MATERIAL_TYPE / target / f"{name}_{MATERIAL_TYPE}_{target}.csv").exists():
+            #     print(f"  - Queueing '{name}' with target '{target}' (no previous runs).")
+            #     tasks.append((name, target))
+            # else:
+            #     print(f"  - Skipping '{name}' with target '{target}' (already processed).")
     return tasks
 
 
