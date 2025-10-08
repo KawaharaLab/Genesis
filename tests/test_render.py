@@ -332,7 +332,7 @@ def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, render
         )
         cam_1 = scene.add_camera(
             res=CAM_RES,
-            pos=(1.5, -0.5, 1.5),
+            pos=(0.8, -0.5, 0.8),
             lookat=(0.0, 0.0, 0.5),
             fov=45,
             near=0.05,
@@ -589,6 +589,79 @@ def test_segmentation_map(segmentation_level, particle_mode, renderer_type, rend
         assert_array_equal(np.sort(np.unique(seg.flat)), np.arange(0, seg_num))
 
 
+@pytest.mark.parametrize("renderer_type", [RENDERER_TYPE.RASTERIZER])
+@pytest.mark.parametrize("n_envs", [0, 2])
+def test_camera_follow_entity(n_envs, show_viewer):
+    CAM_RES = (100, 100)
+
+    scene = gs.Scene(
+        vis_options=gs.options.VisOptions(
+            rendered_envs_idx=[1] if n_envs else None,
+            segmentation_level="entity",
+        ),
+        show_viewer=False,
+    )
+    for pos in ((1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)):
+        obj = scene.add_entity(
+            gs.morphs.Box(
+                size=(0.1, 0.1, 0.1),
+                pos=pos,
+            ),
+        )
+        cam = scene.add_camera(
+            res=CAM_RES,
+            pos=(0.0, 0.0, 0.0),
+            lookat=(1.0, 0, 0.0),
+            env_idx=1 if n_envs else None,
+            GUI=show_viewer,
+        )
+        cam.follow_entity(obj, smoothing=None)
+
+    scene.build(n_envs=n_envs)
+
+    # First render
+    seg_mask = None
+    for entity_idx, cam in enumerate(scene.visualizer.cameras, 1):
+        _, _, seg, _ = cam.render(rgb=False, segmentation=True)
+        assert (np.unique(seg) == (0, entity_idx)).all()
+        if seg_mask is None:
+            seg_mask = seg != 0
+        else:
+            assert ((seg != 0) == seg_mask).all()
+
+    # Second render - same
+    for i, obj in enumerate(scene.entities):
+        obj.set_pos((10.0, 0.0, i), envs_idx=([1] if n_envs else None))
+    force_render = True
+    for entity_idx, cam in enumerate(scene.visualizer.cameras, 1):
+        _, _, seg, _ = cam.render(rgb=False, segmentation=True, force_render=force_render)
+        assert (np.unique(seg) == (0, entity_idx)).all()
+        assert ((seg != 0) == seg_mask).all()
+        force_render = False
+
+    # Third render - All objects but all different
+    for i, obj in enumerate(scene.entities):
+        obj.set_pos((0.1 * ((i // 2) % 2 - 1), 0.1 * (i % 2), 0.1 * i), envs_idx=([1] if n_envs else None))
+    force_render = True
+    seg_masks = []
+    for cam in scene.visualizer.cameras:
+        _, _, seg, _ = cam.render(rgb=False, segmentation=True, force_render=force_render)
+        assert (np.unique(seg) == np.arange(len(scene.entities) + 1)).all()
+        seg_masks.append(seg != 0)
+        force_render = False
+    assert np.diff(seg_masks, axis=0).any(axis=(1, 2)).all()
+
+    # Track a trajectory over time
+    for i in range(3):
+        pos = 2.0 * (np.random.rand(3) - 0.5)
+        quat = gu.rotvec_to_quat(np.pi * (np.random.rand(3) - 0.5))
+        obj.set_pos(pos + np.array([10.0, 0.0, 0.0]), envs_idx=([1] if n_envs else None))
+        obj.set_quat(quat, envs_idx=([1] if n_envs else None))
+        _, _, seg, _ = cam.render(segmentation=True, force_render=True)
+        assert (np.unique(seg) == (0, entity_idx)).all()
+        assert not seg[tuple([*range(0, res // 3), *range(2 * res // 3, res)] for res in CAM_RES)].any()
+
+
 @pytest.mark.required
 @pytest.mark.parametrize(
     "renderer_type",
@@ -702,7 +775,10 @@ def test_point_cloud(renderer_type, renderer, show_viewer):
 
 @pytest.mark.required
 @pytest.mark.parametrize("renderer_type", [RENDERER_TYPE.RASTERIZER])
-def test_debug_draw(show_viewer):
+def test_draw_debug(show_viewer):
+    if "GS_DISABLE_OFFSCREEN_MARKERS" in os.environ:
+        pytest.skip("Offscreen rendering of markers is forcibly disabled. Skipping...")
+
     scene = gs.Scene(
         show_viewer=show_viewer,
     )
@@ -729,12 +805,12 @@ def test_debug_draw(show_viewer):
         radius=0.01,
         color=(1, 0, 0, 1),
     )
-    scene.draw_debug_sphere(
+    sphere_obj = scene.draw_debug_sphere(
         pos=(-0.3, 0.3, 0.0),
         radius=0.15,
         color=(0, 1, 0),
     )
-    scene.draw_debug_frame(
+    frame_obj = scene.draw_debug_frame(
         T=np.array(
             [
                 [1.0, 0.0, 0.0, -0.3],
@@ -747,14 +823,21 @@ def test_debug_draw(show_viewer):
         origin_size=0.03,
         axis_radius=0.02,
     )
-    scene.step()
-    rgb_array, *_ = cam.render(rgb=True, depth=False, segmentation=False, colorize_seg=False, normal=False)
-    if "GS_DISABLE_OFFSCREEN_MARKERS" in os.environ:
-        assert_allclose(np.std(rgb_array.reshape((-1, 3)), axis=0), 0.0, tol=gs.EPS)
-    else:
-        assert np.max(np.std(rgb_array.reshape((-1, 3)), axis=0)) > 10.0
+    scene.visualizer.update()
+    rgb_array_orig, *_ = cam.render(rgb=True, depth=False, segmentation=False, colorize_seg=False, normal=False)
+    assert np.max(np.std(rgb_array_orig.reshape((-1, 3)), axis=0)) > 10.0
+
+    for _ in range(2):
+        poses = gu.trans_quat_to_T(2.0 * (np.random.rand(3, 3) - 0.5), np.random.rand(3, 4))
+        scene.visualizer.context.update_debug_objects([frame_obj, sphere_obj], poses)
+        scene.visualizer.update()
+        rgb_array, *_ = cam.render(rgb=True, depth=False, segmentation=False, colorize_seg=False, normal=False)
+        rgb_delta = np.minimum(np.abs(rgb_array.astype(np.int32) - rgb_array_orig.astype(np.int32)), 255)
+        assert np.max(np.std(rgb_delta.reshape((-1, 3)), axis=0)) > 10.0
+        rgb_array_orig = rgb_array
+
     scene.clear_debug_objects()
-    scene.step()
+    scene.visualizer.update()
     rgb_array, *_ = cam.render(rgb=True, depth=False, segmentation=False, colorize_seg=False, normal=False)
     assert_allclose(np.std(rgb_array.reshape((-1, 3)), axis=0), 0.0, tol=gs.EPS)
 
@@ -964,6 +1047,7 @@ def test_batch_deformable_render(tmp_path, monkeypatch, png_snapshot):
             nu=0.45,
             rho=10000.0,
             model="neohooken",
+            sampler="random",
             n_groups=4,
         ),
     )
@@ -972,7 +1056,9 @@ def test_batch_deformable_render(tmp_path, monkeypatch, png_snapshot):
             pos=(0.0, 0.0, 0.65),
             size=(0.4, 0.4, 0.4),
         ),
-        material=gs.materials.SPH.Liquid(),
+        material=gs.materials.SPH.Liquid(
+            sampler="random",
+        ),
         surface=gs.surfaces.Default(
             color=(0.4, 0.8, 1.0),
             vis_mode="particle",

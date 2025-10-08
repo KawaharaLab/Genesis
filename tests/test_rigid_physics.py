@@ -6,6 +6,7 @@ from typing import cast
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import igl
 import mujoco
 import numpy as np
 import pytest
@@ -657,11 +658,7 @@ def test_urdf_rope(
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_tet_primitive_shapes(gs_sim, mj_sim, gs_integrator, gs_solver, xml_path, tol):
     # FIXME: Fix GsTaichi bug for ndarrays
-    if (
-        os.environ.get("GS_USE_NDARRAY") == "1"
-        and gs_integrator == gs.integrator.Euler
-        and gs_solver == gs.constraint_solver.CG
-    ):
+    if os.environ.get("GS_USE_NDARRAY") == "1" and gs_solver == gs.constraint_solver.CG:
         pytest.xfail("This test is broken for ndarrays, probably due to a bug in gstaichi...")
 
     # Make sure it is possible to set the configuration vector without failure
@@ -922,7 +919,6 @@ def test_many_boxes_dynamics(box_box_detection, gjk_collision, dynamics, show_vi
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(10, 10, 10),
             camera_lookat=(0.0, 0.0, 0.0),
-            camera_fov=40,
         ),
         show_viewer=show_viewer,
     )
@@ -1240,28 +1236,34 @@ def test_set_root_pose(relative, show_viewer, tol):
     )
     scene.build()
 
+    robot_aabb_init, robot_base_aabb_init = robot.get_AABB(), robot.geoms[0].get_AABB()
+    cube_aabb_init, cube_base_aabb_init = cube.get_AABB(), cube.geoms[0].get_AABB()
+
     for _ in range(2):
         scene.reset()
 
-        for entity, pos_zero, euler_zero in (
-            (robot, ROBOT_POS_ZERO, ROBOT_EULER_ZERO),
-            (cube, CUBE_POS_ZERO, CUBE_EULER_ZERO),
+        for entity, pos_zero, euler_zero, entity_aabb_init, base_aabb_init in (
+            (robot, ROBOT_POS_ZERO, ROBOT_EULER_ZERO, robot_aabb_init, robot_base_aabb_init),
+            (cube, CUBE_POS_ZERO, CUBE_EULER_ZERO, cube_aabb_init, cube_base_aabb_init),
         ):
             pos_zero = torch.tensor(pos_zero, device=gs.device, dtype=gs.tc_float)
             euler_zero = torch.deg2rad(torch.tensor(euler_zero, dtype=gs.tc_float))
-
             assert_allclose(entity.get_pos(), pos_zero, tol=tol)
             euler = gu.quat_to_xyz(entity.get_quat(), rpy=True)
             assert_allclose(euler, euler_zero, tol=5e-4)
+            assert_allclose(entity.geoms[0].get_AABB(), base_aabb_init, tol=tol)
+            assert_allclose(entity.get_AABB(), entity_aabb_init, tol=tol)
 
             pos_delta = torch.as_tensor(np.random.rand(3), dtype=gs.tc_float, device=gs.device)
             entity.set_pos(pos_delta, relative=relative)
+            pos_ref = pos_delta + pos_zero if relative else pos_delta
+            assert_allclose(entity.get_pos(), pos_ref, tol=tol)
+            assert_allclose(entity.geoms[0].get_AABB(), base_aabb_init + (pos_ref - pos_zero), tol=tol)
+            assert_allclose(entity.get_AABB(), entity_aabb_init + (pos_ref - pos_zero), tol=tol)
+
             quat_delta = torch.as_tensor(np.random.rand(4), dtype=gs.tc_float, device=gs.device)
             quat_delta /= torch.linalg.norm(quat_delta)
             entity.set_quat(quat_delta, relative=relative)
-
-            pos_ref = pos_delta + pos_zero if relative else pos_delta
-            assert_allclose(entity.get_pos(), pos_ref, tol=tol)
             euler = gu.quat_to_xyz(entity.get_quat(), rpy=True)
             quat_zero = gu.xyz_to_quat(euler_zero, rpy=True)
             if relative:
@@ -1352,7 +1354,6 @@ def test_multilink_inverse_kinematics(show_viewer):
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(2.5, 0.0, 1.5),
             camera_lookat=(0.0, 0.0, 0.5),
-            camera_fov=40,
         ),
         vis_options=gs.options.VisOptions(
             rendered_envs_idx=(1,),
@@ -1426,8 +1427,6 @@ def test_path_planning_avoidance(backend, n_envs, show_viewer, tol):
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(3, 1, 1.5),
             camera_lookat=(0.0, 0.0, 0.5),
-            camera_fov=30,
-            max_FPS=60,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -1529,8 +1528,6 @@ def test_all_fixed(show_viewer):
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(3, 1, 1.5),
             camera_lookat=(0.0, 0.0, 0.5),
-            camera_fov=30,
-            max_FPS=60,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -1562,9 +1559,6 @@ def test_contact_forces(show_viewer, tol):
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(3, -1, 1.5),
             camera_lookat=(0.0, 0.0, 0.5),
-            camera_fov=30,
-            res=(960, 640),
-            max_FPS=60,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -1633,7 +1627,6 @@ def test_apply_external_forces(xml_path, show_viewer):
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(0, -3.5, 2.5),
             camera_lookat=(0.0, 0.0, 1.0),
-            camera_fov=40,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -1978,8 +1971,6 @@ def test_collision_plane_convex(show_viewer, tol):
             viewer_options=gs.options.ViewerOptions(
                 camera_pos=(1.0, -0.5, 0.5),
                 camera_lookat=(0.5, 0.0, 0.0),
-                camera_fov=30,
-                max_FPS=60,
             ),
             show_viewer=show_viewer,
             show_FPS=False,
@@ -2031,60 +2022,73 @@ def test_nan_reset(gs_sim, mode):
     assert not torch.isnan(qvel).any()
 
 
+@pytest.mark.required
+@pytest.mark.parametrize("offset", [(0.0, 0.0, 0.0), (10.0, -10.0, -1.0)])
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
-def test_terrain_generation(show_viewer):
+def test_terrain_generation(offset, show_viewer):
+    TERRAIN_PATTERN = [
+        ["flat_terrain", "flat_terrain", "flat_terrain", "flat_terrain", "flat_terrain"],
+        ["flat_terrain", "fractal_terrain", "random_uniform_terrain", "sloped_terrain", "flat_terrain"],
+        ["flat_terrain", "pyramid_sloped_terrain", "discrete_obstacles_terrain", "wave_terrain", "flat_terrain"],
+        ["flat_terrain", "stairs_terrain", "pyramid_stairs_terrain", "stepping_stones_terrain", "flat_terrain"],
+        ["flat_terrain", "flat_terrain", "flat_terrain", "flat_terrain", "flat_terrain"],
+    ]
+    TERRAIN_SIZE = 10.0
+    SUBTERRAIN_GRID_SIZE = 15
+    OBJ_SIZE = 0.1
+    OBJ_HEIGHT_INIT = 0.3
+    NUM_OBJ_SQRT = 15
+
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
-            dt=0.01,
+            dt=0.006,
         ),
         viewer_options=gs.options.ViewerOptions(
-            camera_pos=(-5.0, -5.0, 10.0),
-            camera_lookat=(5.0, 5.0, 0.0),
-            camera_fov=40,
+            camera_pos=(-5.0 + offset[0], -5.0 + offset[1], 10.0 + offset[2]),
+            camera_lookat=(5.0 + offset[0], 5.0 + offset[1], 0.0 + offset[2]),
         ),
         show_viewer=show_viewer,
         show_FPS=False,
     )
     terrain = scene.add_entity(
         morph=gs.morphs.Terrain(
-            pos=(0.0, 0.0, 0.0),
-            n_subterrains=(2, 2),
-            subterrain_size=(6.0, 6.0),
-            horizontal_scale=0.25,
-            vertical_scale=0.005,
-            subterrain_types=[
-                ["flat_terrain", "random_uniform_terrain"],
-                ["pyramid_sloped_terrain", "discrete_obstacles_terrain"],
-            ],
+            pos=offset,
+            n_subterrains=(len(TERRAIN_PATTERN),) * 2,
+            subterrain_size=(TERRAIN_SIZE / len(TERRAIN_PATTERN),) * 2,
+            horizontal_scale=TERRAIN_SIZE / len(TERRAIN_PATTERN) / SUBTERRAIN_GRID_SIZE,
+            vertical_scale=0.05,
+            subterrain_types=TERRAIN_PATTERN,
         ),
     )
-    ball = scene.add_entity(
-        morph=gs.morphs.Sphere(
+    obj = scene.add_entity(
+        morph=gs.morphs.Box(
             pos=(1.0, 1.0, 1.0),
-            radius=0.1,
+            size=(0.1, 0.1, 0.1),
+        ),
+        surface=gs.surfaces.Default(
+            color=(1.0, 0.0, 0.0, 1.0),
         ),
     )
-    scene.build(n_envs=225)
+    scene.build(n_envs=NUM_OBJ_SQRT**2)
 
-    ball.set_pos(torch.cartesian_prod(*(torch.linspace(1.0, 10.0, 15),) * 2, torch.tensor((0.6,))))
-    for _ in range(400):
+    # Spread objects across the entire field
+    obj_pos_1d = torch.linspace(OBJ_SIZE / 2, TERRAIN_SIZE - OBJ_SIZE / 2, NUM_OBJ_SQRT)
+    obj_pos_init_rel = torch.cartesian_prod(*(obj_pos_1d,) * 2, torch.tensor((OBJ_HEIGHT_INIT,)))
+    obj.set_pos(obj_pos_init_rel + torch.tensor(offset))
+
+    # Drop the objects and simulate for a while
+    for _ in range(500):
         scene.step()
 
-    # Get the position of the balls that are still on the terrain
-    balls_pos = ball.get_pos()
-    balls_pos = balls_pos[
-        (balls_pos[:, 0] > 0.0) & (balls_pos[:, 0] < 12.0) & (balls_pos[:, 1] > 0.0) & (balls_pos[:, 1] < 12.0)
-    ]
+    # Check that objects are not moving anymore
+    assert_allclose(obj.get_vel(), 0.0, tol=0.05)
 
-    # Make sure that at least one ball is as minimum height, and some are signficantly higher
-    height_field = terrain.geoms[0].metadata["height_field"]
-    height_field_min = terrain.terrain_scale[1] * height_field.min()
-    height_field_max = terrain.terrain_scale[1] * height_field.max()
-    height_balls = balls_pos[:, 2]
-    height_balls_min = height_balls.min() - 0.1
-    height_balls_max = height_balls.max() - 0.1
-    assert_allclose(height_balls_min, height_field_min, atol=2e-3)
-    assert height_balls_max - height_balls_min > 0.5 * (height_field_max - height_field_min)
+    # Check that all objects are in contact with the terrain
+    obj_pos = tensor_to_array(obj.get_pos()) - offset
+    terrain_mesh = terrain.geoms[0].mesh
+    signed_distance, *_ = igl.signed_distance(obj_pos, terrain_mesh.verts, terrain_mesh.faces)
+    assert (signed_distance > 0.0).all()
+    assert (signed_distance < 2 * OBJ_SIZE).all()
 
 
 @pytest.mark.required
@@ -2433,8 +2437,6 @@ def test_drone_advanced(show_viewer):
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(2.5, 0.0, 1.5),
             camera_lookat=(0.0, 0.0, 0.5),
-            camera_fov=30,
-            max_FPS=60,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -3131,7 +3133,7 @@ def test_axis_aligned_bounding_boxes(n_envs):
             pos=(0, 0, 0),
         ),
     )
-    scene.add_entity(
+    box = scene.add_entity(
         gs.morphs.Box(
             size=(0.1, 0.1, 0.1),
             pos=(0.5, 0, 0.05),
@@ -3150,16 +3152,29 @@ def test_axis_aligned_bounding_boxes(n_envs):
             pos=(-0.5, 0, 0.05),
         ),
     )
+    robot = scene.add_entity(
+        gs.morphs.MJCF(
+            file="xml/franka_emika_panda/panda.xml",
+        ),
+    )
     scene.build(n_envs=n_envs)
 
+    aabb_shape = (*((n_envs,) if n_envs > 0 else ()), 2, 3)
+    robot_aabb = robot.get_AABB()
+    robot_geoms_aabb = torch.stack([geom.get_AABB().expand(aabb_shape) for geom in robot.geoms], dim=0)
+    assert_allclose(torch.min(robot_geoms_aabb[..., 0, :], dim=0).values, robot_aabb[..., 0, :], tol=gs.EPS)
+    assert_allclose(torch.max(robot_geoms_aabb[..., 1, :], dim=0).values, robot_aabb[..., 1, :], tol=gs.EPS)
+
     all_aabbs = scene.sim.rigid_solver.get_AABB()
-    aabbs = [entity.get_AABB() for entity in scene.entities]
+    aabbs = [geom.get_AABB().expand(aabb_shape) for entity in scene.entities for geom in entity.geoms]
     if n_envs > 0:
         assert all_aabbs.ndim == 4 and len(all_aabbs) == n_envs
     else:
         assert all_aabbs.ndim == 3
-    assert all_aabbs.shape[-3:] == (4, 2, 3)
-    assert_allclose(aabbs[0], all_aabbs.split(1, dim=-3)[0], atol=gs.EPS)
+    assert all_aabbs.shape[-3:] == (len(aabbs), 2, 3)
+    assert_allclose(aabbs[:4], all_aabbs.swapaxes(-3, 0)[:4], atol=gs.EPS)
+    with pytest.raises(AssertionError):
+        assert_allclose(aabbs[4:], all_aabbs.swapaxes(-3, 0)[4:], atol=gs.EPS)
 
     box_aabb_min, box_aabb_max = aabbs[1].split(1, dim=-2)
     assert_allclose(box_aabb_min, (0.45, -0.05, 0.0), atol=gs.EPS)
