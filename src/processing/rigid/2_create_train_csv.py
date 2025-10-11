@@ -4,7 +4,7 @@ import sys
 
 import pandas as pd
 
-DATA_TYPE = "eval"  # "train_old" or "eval_heavy"
+DATA_TYPE = "train"  # "train_old" or "eval_heavy"
 DATA_DIR = "/home/user/Genesis/data/"
 out_path = f"/home/user/Genesis/data/{DATA_TYPE}/{DATA_TYPE}.csv"
 

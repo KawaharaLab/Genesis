@@ -92,10 +92,10 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
     # Save photos from multiple camera angles if the condition is met
     if force_photo or (t % photo_interval == 0):
         camera_poses = [
-            {'pos': (2.1, -1.2, 0.1), 'lookat': (0.45, 0.45, 0.5)},
-            # {'pos': (1.6, -1.6, 0.2), 'lookat': (0.4, 0.4, 0.2)},
-            {'pos': (-1.5, 1.5, 0.25), 'lookat': (0.45, 0.45, 0.4)},
-            {'pos': (2, 2, 0.1), 'lookat': (0, 0, 0.1)}
+            # {'pos': (2.1, -1.2, 0.1), 'lookat': (0.45, 0.45, 0.5)},
+            {'pos': (1.6, -1.6, 0.2), 'lookat': (0.4, 0.4, 0.2)},
+            {'pos': (-1.6, 1.6, 0.2), 'lookat': (0.4, 0.4, 0.2)},
+            {'pos': (2, 2, 0.2), 'lookat': (0, 0, 0.2)}
         ]
         for i, pose in enumerate(camera_poses):
             cam.set_pose(**pose)

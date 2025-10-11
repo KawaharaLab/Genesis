@@ -2,9 +2,9 @@ import pandas as pd
 import numpy as np
 
 DEBUG = False
-DATA_TYPE = "eval_video"  # train_old / eval_heavy
+DATA_TYPE = "eval"  # train_old / eval_heavy
 DATA_DIR = f"/home/user/Genesis/data/{DATA_TYPE}"
-N = 15  # each label should be under N% of the final dataset
+N = 20  # each label should be under N% of the final dataset
 P = N / 100.0
 fix_seed = True
 SEED = 42
@@ -37,7 +37,7 @@ if DEBUG:
     exit(0)
 #####################################################
 
-csv_path = "/home/user/Genesis/data/eval_video/eval_video.csv"
+csv_path = "/home/user/Genesis/data/train/train.csv"
 df = pd.read_csv(csv_path)
 data_len = len(df)
 print(f"original size: {data_len}")

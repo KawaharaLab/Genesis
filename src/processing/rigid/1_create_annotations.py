@@ -10,7 +10,7 @@ from simple_annotation_bank import RobotLabelTemplate
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
-DATA_TYPE = "eval" 
+DATA_TYPE = "train" 
 WINDOW_STRIDE = 80 if "eval" in DATA_TYPE else 10
 #------------------- Generate labels -------------------#
 

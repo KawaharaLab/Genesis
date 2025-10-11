@@ -36,7 +36,7 @@ def descend_to_object(scene, cam, franka, gso_object, df, deform_csv, photo_path
             photo_path=photo_path, photo_interval=photo_interval, gso_object=gso_object, name=name
         )
 
-def grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
+def grasp_object_force(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
                  end_effector, x, y, z, motors_dof, fingers_dof, grasp, grip_force,
                  quat=np.array([0, 1, 0, 0]), steps=1):
     """Applies force to the gripper to grasp or release an object."""
@@ -46,10 +46,30 @@ def grasp_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, pho
 
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_force(np.array([gripper_force_step, gripper_force_step]), fingers_dof)
-        return make_step(
+        make_step(
             scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
             photo_path=photo_path, photo_interval=photo_interval, gso_object=gso_object, name=name,
             gripper_force=gripper_force_step
+        )
+
+def grasp_object_position(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
+                 end_effector, x, y, z, motors_dof, fingers_dof, grasp, grip_force,
+                 quat=np.array([0, 1, 0, 0]), steps=50):
+    """
+    Closes the gripper to grasp an object using position control.
+    The gripper closes incrementally over a number of steps to ensure a secure grasp.
+    0.04 is fully open, 0.0 is fully closed.
+    """
+    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z]), quat=quat)
+    gripper_pos = 0.04
+    for i in range(steps*INTERPOLATE):
+        gripper_pos -= 0.04 / (steps*INTERPOLATE)
+        franka.control_dofs_position(qpos[:-2], motors_dof)
+        franka.control_dofs_position(np.array([gripper_pos, gripper_pos]), fingers_dof)
+        make_step(
+            scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+            photo_path=photo_path, photo_interval=photo_interval, gso_object=gso_object, name=name,
+            gripper_force=grip_force
         )
 
 def lift_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, photo_interval, name,
@@ -58,7 +78,8 @@ def lift_object(scene, cam, franka, gso_object, df, deform_csv, photo_path, phot
     """Lifts the object vertically from its current position."""
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z]), quat=quat)
     franka.control_dofs_position(qpos[:-2], motors_dof)
-    franka.control_dofs_force(np.array([grip_force, grip_force]), fingers_dof)
+    # franka.control_dofs_force(np.array([grip_force, grip_force]), fingers_dof)
+    franka.control_dofs_position(np.array([0.0, 0.0]), fingers_dof)  # Ensure gripper is fully closed
     return make_step(
         scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
         photo_path=photo_path, photo_interval=photo_interval, gso_object=gso_object, name=name,
@@ -79,7 +100,8 @@ def rotate_single_joint_by_angle(scene, cam, df, deform_csv, photo_path, photo_i
         next_qpos = q_start + step_change
 
         franka.control_dofs_position(next_qpos[:-2], motors_dof)
-        franka.control_dofs_force(np.array([gripper_force, gripper_force]), fingers_dof)
+        # franka.control_dofs_force(np.array([gripper_force, gripper_force]), fingers_dof)
+        franka.control_dofs_position(np.array([0.0, 0.0]), fingers_dof)  # Ensure gripper is fully closed
         make_step(
             scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
             photo_path=photo_path, photo_interval=photo_interval, gso_object=gso_object, name=name,
@@ -283,7 +305,8 @@ def shake_in_place(scene, cam, franka, gso_object, df, deform_csv, photo_path, p
             next_qpos = q_curr.copy()
             next_qpos[:-2] = next_qpos[:-2] + delta
             franka.control_dofs_position(next_qpos[:-2], motors_dof)
-            franka.control_dofs_force(np.array([grip_force, grip_force]), fingers_dof)
+            # franka.control_dofs_force(np.array([grip_force, grip_force]), fingers_dof)
+            franka.control_dofs_position(np.array([0.0, 0.0]), fingers_dof)  # Ensure gripper is fully closed
             make_step(
                 scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
                 photo_path=photo_path, photo_interval=photo_interval,
@@ -323,7 +346,8 @@ def wiggle_rotation(scene, cam, franka, gso_object, df, deform_csv, photo_path, 
                 alpha = i / steps_per_half
                 interp_q = (1 - alpha) * base_qpos + alpha * target_q
                 franka.control_dofs_position(interp_q[:-2], motors_dof)
-                franka.control_dofs_force(np.array([grip_force, grip_force]), fingers_dof)
+                # franka.control_dofs_force(np.array([grip_force, grip_force]), fingers_dof)
+                franka.control_dofs_position(np.array([0.0, 0.0]), fingers_dof)  # Ensure gripper is fully closed
                 make_step(
                     scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
                     photo_path=photo_path, photo_interval=photo_interval,
@@ -338,7 +362,8 @@ def keep_holding(scene, cam, franka, gso_object, df, deform_csv, photo_path, pho
     position = franka.get_qpos().cpu().numpy()
     for _ in range(steps*INTERPOLATE):
         franka.control_dofs_position(position[:-2], motors_dof)
-        franka.control_dofs_force(np.array([grip_force, grip_force]), fingers_dof)
+        # franka.control_dofs_force(np.array([grip_force, grip_force]), fingers_dof)
+        franka.control_dofs_position(np.array([0.0, 0.0]), fingers_dof)  # Ensure gripper is fully closed
         make_step(
             scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
             photo_path=photo_path, photo_interval=photo_interval,

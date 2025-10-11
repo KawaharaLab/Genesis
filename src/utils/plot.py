@@ -2,21 +2,18 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 import pandas as pd
 
-# item = "soft_cube_strong"  # Change this to "soft_cube" for the other example
-# df = pd.read_csv(f"/home/ghoti/sim/Genesis/grasp_{item}.csv")
 
-# path = "/home/ghoti/sim/Genesis/data/csv/004_sugar_box/004_sugar_box_aluminium_150.csv"
-# path  = "/home/ghoti/sim/Genesis/grasp_bottle_world.csv"
-# path ="/home/user/Genesis/data/eval_tmp/csv/bottle_drop2/Rigid/none/bottle_drop2_Rigid_none.csv"
-path = "/home/user/Genesis/data/eval_video/csv/002_master_chef_can/Rigid/none/002_master_chef_can_Rigid_none.csv"
+path = "/home/user/Genesis/data/eval/csv/002_master_chef_can/Rigid/none/002_master_chef_can_Rigid_none.csv"
 start = 520
-df = pd.read_csv(path).iloc[start:start+80].reset_index(drop=True)
+df = pd.read_csv(path).iloc[:2500].reset_index(drop=True)
+# df = pd.read_csv(path)
 # lines =  [430, 530, 780, 880]
 lines = []
 # lines =  [330, 430, 530, 630]
 # 2行×3列のサブプロットを作成
 fig, axs = plt.subplots(2, 3, figsize=(15, 8), sharex=True)
-times = [i for i in range(80)]
+# times = [i for i in range(80)]
+times = df["step"]
 
 # 上段：left_fx, left_fy, left_fz
 f_lims = [(-0.3, 0.3), (2, 4), (0, 1)]

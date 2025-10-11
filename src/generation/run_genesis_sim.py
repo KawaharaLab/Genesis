@@ -21,7 +21,7 @@ from make_step import make_step, final_make_step
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
 
-PHOTO_INTERVAL = 10
+PHOTO_INTERVAL = 80
 MATERIAL_TYPE = "Rigid" # Rigid or Elastic
 
 if MATERIAL_TYPE == "Elastic":
@@ -31,7 +31,7 @@ else:
 
 MAX_PARALLEL_PROCESSES = 8
 # DATA_TYPE = os.environ['DATA_TYPE']
-DATA_TYPE = "eval_old"  # Options: "train", "eval"
+DATA_TYPE = "train"  # Options: "train", "eval"
 
 RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
@@ -136,9 +136,10 @@ def create_scene(obj_path: str):
             viewer_options=gs.options.ViewerOptions(camera_pos=(3,-1,1.5), camera_lookat=(0,0,0), camera_fov=30),
             show_viewer=False,
         )
-    cam = scene.add_camera(res=(1280, 720), pos=(-1.5, 1.5, 0.25), lookat=(0.45, 0.45, 0.4), fov=30)
+    cam = scene.add_camera(res=(1080, 1080), pos=(-1.5, 1.5, 0.25), lookat=(0.45, 0.45, 0.4), fov=30)
     scene.add_entity(gs.morphs.Plane(), material=gs.materials.Rigid(coup_friction=0.0))
     franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), material=gs.materials.Rigid(coup_friction=3.0, friction=1.0))
+    rho = 200.0 * random.uniform(1.0, 5.0)
     if MATERIAL_TYPE == 'Elastic':
         gso_object = scene.add_entity(
             material=gs.materials.MPM.Elastic(),
@@ -147,7 +148,7 @@ def create_scene(obj_path: str):
         )
     elif MATERIAL_TYPE == 'Rigid':
         gso_object = scene.add_entity(
-            material=gs.materials.Rigid(),
+            material=gs.materials.Rigid(rho=rho),
             #material=gs.materials.Rigid(rho=25, coup_friction=5.0),
             # morph=gs.morphs.URDF(
             #     file="urdf/3763/mobility_vhacd.urdf",
@@ -181,11 +182,11 @@ def create_scene(obj_path: str):
 def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, target_choice):
     name, step_no = paths['object_name'], 0
     motors_dof, fingers_dof = np.arange(7), np.arange(7, 9)
-    franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,10,10]))
-    franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,1,1]))
+    franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,100,100]))
+    franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,10,10]))
     franka.set_dofs_force_range(
-        np.array([-87, -87, -87, -87, -12, -12, -12, -5, -5]),
-        np.array([87, 87, 87, 87, 12, 12, 12, 5, 5]),
+        np.array([-87, -87, -87, -87, -12, -12, -12, -10, -10]),
+        np.array([87, 87, 87, 87, 12, 12, 12, 10, 10]),
     )
     end_effector = franka.get_link("hand")
     vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0012}
@@ -195,7 +196,7 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         upper_obj_bound = np.max(particle_positions_np, axis=0)
     elif MATERIAL_TYPE == 'Rigid':
         aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
-    cam.start_recording()
+    # cam.start_recording()
     offset = 0.074
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + offset
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
@@ -205,12 +206,12 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
     if DATA_TYPE == "strong" or DATA_TYPE == "eval_strong":
-        current_force = 30.0
+        current_force = 50.0
     elif DATA_TYPE == "medium" or DATA_TYPE == "eval_medium":
-        current_force = 10.0
+        current_force = 30.0
     else:
-        current_force = 3.0
-    mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
+        current_force = 10.0
+    mm.grasp_object_position(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
     seg_df.loc[len(seg_df)] = ['hold', int(scene.t)]
     # mm.keep_holding(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, motors_dof, fingers_dof, grip_force=-current_force, steps=100)
     seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]
@@ -236,14 +237,14 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         )
         return pickup_status
     r = random.random()
-    if r < 0:
+    if r < 0.4:
         seg_df.loc[len(seg_df)] = ['wiggle', int(scene.t)]
         print(type(gso_object))
         success = mm.wiggle_rotation(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
             end_effector, motors_dof, fingers_dof, grip_force=-current_force
         )
-    elif r < 0:
+    elif r < 0.8:
         seg_df.loc[len(seg_df)] = ['shake', int(scene.t)]
         success = mm.shake_in_place(
             scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
@@ -251,8 +252,8 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         )
     
     actions = []
-    # angle_choices, joint_indices = [-90, -60, -45, 45, 60, 90], [1, 7]
-    angle_choices, joint_indices = [-45, -60], [1, 7]
+    angle_choices, joint_indices = [-90, -60, -45, 45, 60, 90], [1, 7]
+    # angle_choices, joint_indices = [-45, -60], [1, 7]
     STEPS_PER_DEGREE = 6
     for joint_idx in joint_indices:
         chosen_angle = random.choice(angle_choices)
@@ -290,11 +291,11 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
             photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
             gripper_force=-current_force
         )
-    cam.stop_recording(save_to_filename=str(paths['images_dir'])+"/video.mp4", fps=10)
     final_make_step(
         scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
     )
+    # cam.stop_recording(save_to_filename=str(paths['images_dir'])+"/video.mp4", fps=10)
     return pickup_status
 
 def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, target_choice):
@@ -308,6 +309,10 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
     motors_dof, fingers_dof = np.arange(7), np.arange(7, 9)
     franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,100,100]))
     franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,10,10]))
+    franka.set_dofs_force_range(
+        np.array([-87, -87, -87, -87, -12, -12, -12, -10, -10]),
+        np.array([87, 87, 87, 87, 12, 12, 12, 10, 10]),
+    )
     end_effector = franka.get_link("hand")
 
     vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0012}
@@ -317,7 +322,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
     aabb_min, aabb_max = gso_object.get_AABB().cpu().numpy()
     upper_obj_bound = aabb_max
 
-    cam.start_recording()
+    # cam.start_recording()
 
     # === Approach ===
     x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
@@ -363,7 +368,7 @@ def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df
         final_make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
                         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL,
                         gso_object=gso_object, name=name)
-        cam.stop_recording(fps=10)
+        # cam.stop_recording(fps=10)
         return pickup_status
 
     # === NEW MOVEMENT TEST (PUT IN BOX)===
@@ -488,12 +493,12 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 
 def get_tasks_to_run():
-    if 1:
+    if 0:
         # return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
-        return [('010_potted_meat_can', 'none')]
+        # return [('010_potted_meat_can', 'none')]
         # return [('010_potted_meat_can', 'none'), ('002_master_chef_can', 'none'), ('062_dice', 'none')]
         # return [('026_sponge', 'none')]
-        # return [('002_master_chef_can', 'none')]
+        return [('002_master_chef_can', 'none')]
         # return [('bottle', 'none')]
         # return [('cube', 'none')]
     tasks = []

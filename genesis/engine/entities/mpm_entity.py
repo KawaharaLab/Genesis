@@ -363,7 +363,6 @@ class MPMEntity(ParticleEntity):
             poss = poss.squeeze(0)
         return poss
 
-<<<<<<< HEAD
     @ti.kernel
     def _kernel_get_mass(self, mass: ti.types.ndarray()):
         total_mass = 0.0
@@ -407,7 +406,6 @@ class MPMEntity(ParticleEntity):
             com += particle_mass * positions[i_p]
 
         return com / total_mass
-=======
     @gs.assert_built
     def set_particles_vel(self, vels, particles_idx_local=None, envs_idx=None, *, unsafe=False):
         envs_idx = self._scene._sanitize_envs_idx(envs_idx, unsafe=unsafe)
@@ -607,4 +605,3 @@ class MPMEntity(ParticleEntity):
         free = gs.zeros((self._n_particles,), dtype=gs.tc_bool, requires_grad=False, scene=self._scene)
         self.solver._kernel_get_particles_free(self._particle_start, self._n_particles, free)
         return free
->>>>>>> main
