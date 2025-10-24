@@ -44,7 +44,7 @@ class Viewer(RBC):
 
         # Validate viewer options
         if any(e.shape != (3,) for e in (self._camera_init_pos, self._camera_init_lookat, self._camera_up)):
-            raise gs.GenesisException("ViewerOptions.camera_(pos|lookat|up) must be sequences of length 3.")
+            gs.raise_exception("ViewerOptions.camera_(pos|lookat|up) must be sequences of length 3.")
 
         if options.enable_interaction and gs.backend != gs.cpu:
             gs.logger.warning("Interaction code is slow on GPU. Switch to CPU backend or disable interaction.")
@@ -229,7 +229,8 @@ class Viewer(RBC):
         entity_pos = tensor_to_array(self._followed_entity.get_pos())
         if entity_pos.ndim > 1:  # check for multiple envs
             entity_pos = entity_pos[0]
-        camera_transform = np.asarray(self._pyrender_viewer._trackball.pose, copy=True)
+        # numpy < 2.0 doesn't support the copy keyword argument in np.asarray()
+        camera_transform = np.array(self._pyrender_viewer._trackball.pose, copy=True)
         camera_pos = np.array(self._pyrender_viewer._trackball.pose[:3, 3])
 
         if self._follow_smoothing is not None:

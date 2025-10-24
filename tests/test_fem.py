@@ -11,11 +11,6 @@ from genesis.utils.misc import tensor_to_array
 from .utils import assert_allclose, get_hf_dataset
 
 
-pytestmark = [
-    pytest.mark.field_only,
-]
-
-
 @pytest.mark.required
 def test_interior_tetrahedralized_vertex(cube_verts_and_faces, box_obj_path, show_viewer):
     """

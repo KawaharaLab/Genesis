@@ -642,6 +642,8 @@ class Mesh(FileMorph, TetGenMixin):
         **This is only used for RigidEntity.**
     parse_glb_with_trimesh : bool, optional
         Whether to use trimesh to load glb files. Defaults to False, in which case pygltflib will be used.
+    parse_glb_with_zup : bool, optional
+        Whether to use zup to load glb files. Defaults to False.
     fixed : bool, optional
         Whether the baselink of the entity should be fixed. Defaults to False. **This is only used for RigidEntity.**
     contype : int, optional
@@ -679,6 +681,7 @@ class Mesh(FileMorph, TetGenMixin):
     """
 
     parse_glb_with_trimesh: bool = False
+    parse_glb_with_zup: bool = False
 
     # Rigid specific
     fixed: bool = False
@@ -1093,9 +1096,11 @@ class Terrain(Morph):
         The height field to generate the terrain. If specified, all other configurations will be ignored.
         Defaults to None.
     name : str, optional
-        The name of the terrain to save
+        The name of the terrain. If specified, the terrain will only be generated once for a given set of options and
+        later loaded from cache, instead of being re-generated systematically when building the scene. This holds true
+        no matter if `randomize` is True.
     from_stored : str, optional
-        The path of the stored terrain to load
+        This parameter is deprecated.
     subterrain_parameters : dictionary, optional
         Lets users pick their own subterrain parameters.
     """
@@ -1112,7 +1117,7 @@ class Terrain(Morph):
         ["random_uniform_terrain", "pyramid_stairs_terrain", "sloped_terrain"],
     ]
     height_field: Any = None
-    name: str = "default"  # name to store and reuse the terrain
+    name: str | None = None
     from_stored: Any = None
     subterrain_parameters: dict[str, dict] | None = None
 
@@ -1178,6 +1183,14 @@ class Terrain(Morph):
             self.subterrain_size[1], self.horizontal_scale
         ):
             gs.raise_exception("`subterrain_size` should be divisible by `horizontal_scale`.")
+
+        if self.from_stored is not None:
+            if self.name is None:
+                self.name = self.from_stored
+            else:
+                if self.from_stored != self.name:
+                    gs.raise_exception("Terrain option 'from_stored' is deprecated and inconsistent with 'name'.")
+            gs.logger.warning("Terrain option 'from_stored' is deprecated. Please use 'name' instead.")
 
     @property
     def default_params(self):

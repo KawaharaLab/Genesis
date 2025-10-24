@@ -44,17 +44,6 @@ class SPHSolver(Solver):
         # boundary
         self.setup_boundary()
 
-    def _batch_shape(self, shape=None, first_dim=False, B=None):
-        if B is None:
-            B = self._B
-
-        if shape is None:
-            return (B,)
-        elif isinstance(shape, (list, tuple)):
-            return (B,) + shape if first_dim else shape + (B,)
-        else:
-            return (B, shape) if first_dim else (shape, B)
-
     def setup_boundary(self):
         self.boundary = CubeBoundary(
             lower=self._lower_bound,
@@ -99,26 +88,26 @@ class SPHSolver(Solver):
 
         # construct fields
         self.particles = struct_particle_state.field(
-            shape=self._batch_shape((self._n_particles,)), needs_grad=False, layout=ti.Layout.SOA
+            shape=(self._n_particles, self._B), needs_grad=False, layout=ti.Layout.SOA
         )
         self.particles_ng = struct_particle_state_ng.field(
-            shape=self._batch_shape((self._n_particles,)), needs_grad=False, layout=ti.Layout.SOA
+            shape=(self._n_particles, self._B), needs_grad=False, layout=ti.Layout.SOA
         )
         self.particles_info = struct_particle_info.field(
             shape=(self._n_particles,), needs_grad=False, layout=ti.Layout.SOA
         )
         self.particles_reordered = struct_particle_state.field(
-            shape=self._batch_shape((self._n_particles,)), needs_grad=False, layout=ti.Layout.SOA
+            shape=(self._n_particles, self._B), needs_grad=False, layout=ti.Layout.SOA
         )
         self.particles_ng_reordered = struct_particle_state_ng.field(
-            shape=self._batch_shape((self._n_particles,)), needs_grad=False, layout=ti.Layout.SOA
+            shape=(self._n_particles, self._B), needs_grad=False, layout=ti.Layout.SOA
         )
         self.particles_info_reordered = struct_particle_info.field(
-            shape=self._batch_shape((self._n_particles,)), needs_grad=False, layout=ti.Layout.SOA
+            shape=(self._n_particles, self._B), needs_grad=False, layout=ti.Layout.SOA
         )
 
         self.particles_render = struct_particle_state_render.field(
-            shape=self._batch_shape((self._n_particles,)), needs_grad=False, layout=ti.Layout.SOA
+            shape=(self._n_particles, self._B), needs_grad=False, layout=ti.Layout.SOA
         )
 
     def init_ckpt(self):
@@ -129,6 +118,7 @@ class SPHSolver(Solver):
 
     def build(self):
         super().build()
+
         self._B = self._sim._B
 
         # particles and entities
@@ -136,7 +126,7 @@ class SPHSolver(Solver):
 
         self._coupler = self.sim._coupler
 
-        if self.is_active():
+        if self.is_active:
             self.sh.build(self._B)
             self.init_particle_fields()
             self.init_ckpt()
@@ -147,9 +137,19 @@ class SPHSolver(Solver):
             # TODO: Support per-particle density
             self._density0 = self.particles_info[0].rho
 
+        # Overwrite gravity because only field is supported for now
+        if self._gravity is not None:
+            gravity = self._gravity.to_numpy()
+            self._gravity = ti.field(dtype=gs.ti_vec3, shape=(self._B,))
+            self._gravity.from_numpy(gravity)
+
     # ------------------------------------------------------------------------------------
     # -------------------------------------- misc ----------------------------------------
     # ------------------------------------------------------------------------------------
+
+    @property
+    def is_active(self):
+        return self.n_particles > 0
 
     def add_entity(self, idx, material, morph, surface):
         entity = SPHEntity(
@@ -165,9 +165,6 @@ class SPHSolver(Solver):
 
         self.entities.append(entity)
         return entity
-
-    def is_active(self):
-        return self.n_particles > 0
 
     # ------------------------------------------------------------------------------------
     # ----------------------------------- simulation -------------------------------------
@@ -663,7 +660,7 @@ class SPHSolver(Solver):
             entity.process_input_grad()
 
     def substep_pre_coupling(self, f):
-        if self.is_active():
+        if self.is_active:
             self._kernel_reorder_particles(f)
             if self._pressure_solver == "WCSPH":
                 self._kernel_compute_rho(f)
@@ -683,7 +680,7 @@ class SPHSolver(Solver):
         pass
 
     def substep_post_coupling(self, f):
-        if self.is_active():
+        if self.is_active:
             self._kernel_advect_position(f)
             self._kernel_copy_from_reordered(f)
 
@@ -714,7 +711,7 @@ class SPHSolver(Solver):
         pass
 
     def set_state(self, f, state, envs_idx=None):
-        if self.is_active():
+        if self.is_active:
             self._kernel_set_state(f, state.pos, state.vel, state.active)
 
     @ti.kernel
@@ -732,7 +729,7 @@ class SPHSolver(Solver):
             self.particles_ng[i_p, i_b].active = active[i_b, i_p]
 
     def get_state(self, f):
-        if self.is_active():
+        if self.is_active:
             state = SPHSolverState(self.scene)
             self._kernel_get_state(f, state.pos, state.vel, state.active)
         else:
