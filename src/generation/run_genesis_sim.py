@@ -30,24 +30,22 @@ else:
     TARGET_CHOICES = ['none']
 
 MAX_PARALLEL_PROCESSES = 8
-# DATA_TYPE = os.environ['DATA_TYPE']
-DATA_TYPE = "train"  # Options: "train", "eval"
-
+DATASET = "ycb_force"
+DATASET_TYPE = "ycb"  # Options: "ycb", "gso", "hugging_face"
 RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
 
 def setup_paths(object_name: str, target_choice: str) -> dict:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     simulation_id = f"{target_choice}_{MATERIAL_TYPE.lower()}_{timestamp}"
-    if "eval" in DATA_TYPE:
-        input_obj_path = DATA_ROOT / "objects" / object_name / "model.obj"
-    else:
-        input_obj_path = DATA_ROOT / "objects/gso" / object_name / "model.obj"
+    input_obj_path = DATA_ROOT / "objects" / DATASET_TYPE / object_name / "model.obj"
+    if DATASET_TYPE == "hugging_face":
+        input_obj_path = DATA_ROOT / "objects" / DATASET_TYPE / object_name / f"{object_name}.glb"
     if not input_obj_path.exists():
         raise FileNotFoundError(f"Input file not found at: {input_obj_path}")
 
-    output_dir = DATA_ROOT / DATA_TYPE / "csv" / object_name / MATERIAL_TYPE / target_choice
-    image_root = DATA_ROOT / DATA_TYPE / "images" / object_name / MATERIAL_TYPE / target_choice
+    output_dir = DATA_ROOT / DATASET / "csv" / object_name / MATERIAL_TYPE / target_choice
+    image_root = DATA_ROOT / DATASET / "images" / object_name / MATERIAL_TYPE / target_choice
     image_dirs = [image_root / f"camera_{i}" for i in range(3)]
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -67,17 +65,68 @@ def setup_paths(object_name: str, target_choice: str) -> dict:
 
 
 def get_obj_bounding_box(obj_path):
-    min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
-    max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
-    with open(obj_path, 'r') as file:
+    """Return the axis-aligned bounding box extents for OBJ or GLB meshes."""
+    min_corner, max_corner = get_obj_bounds(obj_path)
+    return (max_corner - min_corner).tolist()
+
+
+def get_obj_bounds(obj_path):
+    """Return the axis-aligned bounding box (min, max) for OBJ or GLB meshes."""
+    obj_path = Path(obj_path)
+    suffix = obj_path.suffix.lower()
+    if suffix == ".obj":
+        return _bounds_from_obj(obj_path)
+    if suffix == ".glb":
+        return _bounds_from_glb(obj_path)
+    raise ValueError(f"Unsupported mesh format: {suffix}")
+
+
+def _bounds_from_obj(obj_path: Path):
+    min_corner = np.array([np.inf, np.inf, np.inf], dtype=float)
+    max_corner = np.array([-np.inf, -np.inf, -np.inf], dtype=float)
+    vertex_found = False
+    with open(obj_path, 'r', encoding='utf-8', errors='ignore') as file:
         for line in file:
             if line.startswith('v '):
-                _, x, y, z = line.strip().split()
-                x, y, z = float(x), float(y), float(z)
-                min_x, max_x = min(min_x, x), max(max_x, x)
-                min_y, max_y = min(min_y, y), max(max_y, y)
-                min_z, max_z = min(min_z, z), max(max_z, z)
-    return [max_x - min_x, max_y - min_y, max_z - min_z]
+                parts = line.strip().split()
+                if len(parts) < 4:
+                    continue
+                x, y, z = map(float, parts[1:4])
+                vertex = np.array([x, y, z], dtype=float)
+                min_corner = np.minimum(min_corner, vertex)
+                max_corner = np.maximum(max_corner, vertex)
+                vertex_found = True
+    if not vertex_found:
+        raise ValueError(f"No vertex data found in OBJ file: {obj_path}")
+    return min_corner, max_corner
+
+
+def _bounds_from_glb(obj_path: Path):
+    try:
+        import trimesh
+    except ImportError as exc:
+        raise RuntimeError(
+            "trimesh is required to compute bounding boxes for .glb files."
+        ) from exc
+
+    mesh = trimesh.load(obj_path, force="scene")
+    bounds = mesh.bounds
+    if bounds is None:
+        raise ValueError(f"Could not compute bounds for {obj_path}")
+    min_corner, max_corner = bounds
+    return np.asarray(min_corner, dtype=float), np.asarray(max_corner, dtype=float)
+
+
+def _scale_to_vec(scale):
+    """Return a length-3 numpy array regardless of scalar/tuple scale input."""
+    if np.isscalar(scale):
+        return np.array([float(scale), float(scale), float(scale)], dtype=float)
+    arr = np.asarray(scale, dtype=float)
+    if arr.size == 1:
+        return np.repeat(arr.item(), 3)
+    if arr.size != 3:
+        raise ValueError(f"Scale must be scalar or length 3, got shape {arr.shape}")
+    return arr
 
 
 def set_grasp(obj_path):
@@ -89,7 +138,7 @@ def set_grasp(obj_path):
     elif GRIPPER_MIN_WIDTH < bbox[1] < GRIPPER_MAX_WIDTH:
         euler = (0, 0, 0)
     else:
-        scale = (0.080 / bbox[0]) if bbox[0] < bbox[1] else (0.080 / bbox[1])
+        scale = (0.080 / (bbox[0]+0.01)) if bbox[0] < bbox[1] else (0.080 / (bbox[1]+0.01))
         euler = (0, 0, 90) if bbox[0] < bbox[1] else (0, 0, 0)
     return scale, euler
 
@@ -120,8 +169,16 @@ def create_scene(obj_path: str):
     else:
         gs.init(backend=gs.cpu)
     object_scale, object_euler = set_grasp(obj_path)
+    obj_min_corner, obj_max_corner = get_obj_bounds(obj_path)
+    scale_vec = _scale_to_vec(object_scale)
+    drop_center = np.array([0.45, 0.45], dtype=float)
+    if Path(obj_path).suffix.lower() == ".glb":
+        local_center = 0.5 * (obj_min_corner[:2] + obj_max_corner[:2])
+        drop_center -= scale_vec[:2] * local_center
+    spawn_z = 0.001 + max(0.0, -scale_vec[2] * obj_min_corner[2])
+    object_spawn_pos = (float(drop_center[0]), float(drop_center[1]), float(spawn_z))
     # color = random.choice([(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255),(255,0,255)])
-    color = random.choice([(0,255,0)])
+    color = (0,255,0)
 
     if MATERIAL_TYPE == 'Elastic':
         scene = gs.Scene(
@@ -143,27 +200,15 @@ def create_scene(obj_path: str):
     if MATERIAL_TYPE == 'Elastic':
         gso_object = scene.add_entity(
             material=gs.materials.MPM.Elastic(),
-            morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=(0.45, 0.45, 0.001), euler=object_euler),
+            morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=object_spawn_pos, euler=object_euler),
             surface=gs.surfaces.Default(color=color)
         )
     elif MATERIAL_TYPE == 'Rigid':
         gso_object = scene.add_entity(
             material=gs.materials.Rigid(rho=rho),
-            #material=gs.materials.Rigid(rho=25, coup_friction=5.0),
-            # morph=gs.morphs.URDF(
-            #     file="urdf/3763/mobility_vhacd.urdf",
-            #     scale=0.09,
-            #     pos=(0.45, 0.45, 0.036),
-            #     euler=(0, 90, 0),
-            # ),
-            # morph=gs.morphs.Box(
-            #     size=(0.04, 0.04, 0.04),
-            #     pos=(0.45, 0.45, 0.02),
-            # ),
-            morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=(0.45, 0.45, 0.001), euler=object_euler),
+            morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=object_spawn_pos, euler=object_euler),
             surface=gs.surfaces.Default(color=color)
         )
-    # material=gs.materials.MPM.Elastic(E=1.5e6, nu=0.45, rho=1100.0, sampler="pbs", model="corotation") : Self-made Elas
         # ---------- HARD-CODED FLOOR ZONE MARKER ----------
     if RUNNING_DROP_IN_BOX == True:
         drop_box_bounds, (cx, cy) = sample_drop_box_bounds()
@@ -180,7 +225,7 @@ def create_scene(obj_path: str):
     return scene, cam, franka, gso_object
 
 def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, target_choice):
-    name, step_no = paths['object_name'], 0
+    name= paths['object_name']
     motors_dof, fingers_dof = np.arange(7), np.arange(7, 9)
     franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,100,100]))
     franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,10,10]))
@@ -191,101 +236,86 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     end_effector = franka.get_link("hand")
     vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0012}
     target_vel = vel_limits.get(target_choice, 0.0002)
-    if MATERIAL_TYPE == 'Elastic':
-        particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
-        upper_obj_bound = np.max(particle_positions_np, axis=0)
-    elif MATERIAL_TYPE == 'Rigid':
-        aabb_min, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
     # cam.start_recording()
     offset = 0.074
-    x, y, z = 0.45, 0.45, upper_obj_bound[2] + offset
+    # for _ in range(100):
+    #     scene.step()
+    if MATERIAL_TYPE == 'Elastic':
+        particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
+        lower_obj_bound = np.min(particle_positions_np, axis=0)
+        upper_obj_bound = np.max(particle_positions_np, axis=0)
+    elif MATERIAL_TYPE == 'Rigid':
+        lower_obj_bound, upper_obj_bound = gso_object.get_AABB().cpu().numpy()
+    else:
+        raise ValueError(f"Unsupported MATERIAL_TYPE: {MATERIAL_TYPE}")
+    obj_center = 0.5 * (lower_obj_bound + upper_obj_bound)
+    x, y = obj_center[0], obj_center[1]
+    z = upper_obj_bound[2] + offset
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x,y,z+0.1]), quat=np.array([0,1,0,0]))
     qpos[-2:] = 0.04
 
     seg_df.loc[len(seg_df)] = ['grasp', int(scene.t)]
     mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
-    if DATA_TYPE == "strong" or DATA_TYPE == "eval_strong":
-        current_force = 50.0
-    elif DATA_TYPE == "medium" or DATA_TYPE == "eval_medium":
-        current_force = 30.0
-    else:
-        current_force = 10.0
-    mm.grasp_object_position(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
+    current_force = 10.0
+    # mm.grasp_object_position(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
+    mm.grasp_object_force(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
     seg_df.loc[len(seg_df)] = ['hold', int(scene.t)]
     # mm.keep_holding(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, motors_dof, fingers_dof, grip_force=-current_force, steps=100)
     seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]
     for i in range(200):
-        step_no += 1; curr_z = z + (i * 0.00075)
+        curr_z = z + (i * 0.00075)
         if not mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, curr_z, motors_dof, fingers_dof, grip_force=-current_force, steps=1):
             break
-        if i % 2 == 0: current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
-
-    if MATERIAL_TYPE == 'Elastic':
-        particle_positions_np = gso_object.get_state().pos.detach().cpu().numpy()[0]
-        pickup_status = 'picked up' if np.min(particle_positions_np, axis=0)[2] > 0.01 else 'not_picked_up'
-    elif MATERIAL_TYPE == 'Rigid':
-        low, hi = gso_object.get_AABB()
-        pickup_status = 'picked up' if hi[2] > 0.01 else 'not_picked_up' # TODO: it can be improved with contact info
-
-    seg_df.loc[len(seg_df)] = [pickup_status, int(scene.t)]
-
-    if pickup_status == 'not_picked_up':
-        final_make_step(
-            scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
-            photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name
-        )
-        return pickup_status
-    r = random.random()
-    if r < 0.4:
-        seg_df.loc[len(seg_df)] = ['wiggle', int(scene.t)]
-        print(type(gso_object))
-        success = mm.wiggle_rotation(
-            scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
-            end_effector, motors_dof, fingers_dof, grip_force=-current_force
-        )
-    elif r < 0.8:
-        seg_df.loc[len(seg_df)] = ['shake', int(scene.t)]
-        success = mm.shake_in_place(
-            scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
-            end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
-        )
-    
-    actions = []
-    angle_choices, joint_indices = [-90, -60, -45, 45, 60, 90], [1, 7]
-    # angle_choices, joint_indices = [-45, -60], [1, 7]
-    STEPS_PER_DEGREE = 6
-    for joint_idx in joint_indices:
-        chosen_angle = random.choice(angle_choices)
-        num_steps = int(abs(chosen_angle) * STEPS_PER_DEGREE)
-        actions.append({"name": f"Rotating Joint {joint_idx}", "angle": chosen_angle, "steps": num_steps, "joint_index": joint_idx})
-    # random.shuffle(actions)
-
-    for i, action in enumerate(actions):
-        seg_df.loc[len(seg_df)] = [f'rotate', int(scene.t)]
-        print(f"Executing action: {action['name']} by {action['angle']} degrees...")
-        mm.rotate_single_joint_by_angle(scene, cam, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, gso_object, gripper_force=-current_force, angle_degrees=action['angle'], joint_index=action['joint_index'], steps=action['steps'])
-        step_no += action['steps']
-        seg_df.loc[len(seg_df)] = [f'stop', int(scene.t)]
-
-        for _ in range(600 - action['steps']):
-            franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
-            make_step(
-                scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
-                photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
-                gripper_force=-current_force
+        # if i % 2 == 0: current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
+    if not "simple" in DATASET:
+        r = random.random()
+        if r < 0.4:
+            seg_df.loc[len(seg_df)] = ['wiggle', int(scene.t)]
+            print(type(gso_object))
+            success = mm.wiggle_rotation(
+                scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+                end_effector, motors_dof, fingers_dof, grip_force=-current_force
             )
-            step_no += 1
+        elif r < 0.8:
+            seg_df.loc[len(seg_df)] = ['shake', int(scene.t)]
+            success = mm.shake_in_place(
+                scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
+                end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
+            )
+        
+        actions = []
+        angle_choices, joint_indices = [-90, -60, -45, 45, 60, 90], [1, 7]
+        STEPS_PER_DEGREE = 6
+        for joint_idx in joint_indices:
+            chosen_angle = random.choice(angle_choices)
+            num_steps = int(abs(chosen_angle) * STEPS_PER_DEGREE)
+            actions.append({"name": f"Rotating Joint {joint_idx}", "angle": chosen_angle, "steps": num_steps, "joint_index": joint_idx})
+        random.shuffle(actions)
 
-    seg_df.loc[len(seg_df)] = ['rotate', int(scene.t)]
-    mm.move_to_place_xy(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, motors_dof, fingers_dof, grip_force=-current_force)
+        for i, action in enumerate(actions):
+            seg_df.loc[len(seg_df)] = [f'rotate', int(scene.t)]
+            print(f"Executing action: {action['name']} by {action['angle']} degrees...")
+            mm.rotate_single_joint_by_angle(scene, cam, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, franka, motors_dof, fingers_dof, gso_object, gripper_force=-current_force, angle_degrees=action['angle'], joint_index=action['joint_index'], steps=action['steps'])
+            seg_df.loc[len(seg_df)] = [f'hold', int(scene.t)]
+
+            for _ in range(600 - action['steps']):
+                # franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
+                franka.control_dofs_position(np.array([0.0, 0.0]), fingers_dof)
+                make_step(
+                    scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
+                    photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
+                    gripper_force=-current_force
+                )
+
+        seg_df.loc[len(seg_df)] = ['rotate', int(scene.t)]
+        mm.move_to_place_xy(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, motors_dof, fingers_dof, grip_force=-current_force)
     seg_df.loc[len(seg_df)] = ['descend', int(scene.t)]
-    mm.descend_to_place(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + offset, motors_dof, fingers_dof, grip_force=-current_force)
+    mm.descend_to_place_cautiously(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, upper_obj_bound[2] + offset, motors_dof, fingers_dof, grip_force=-current_force)
     seg_df.loc[len(seg_df)] = ['place', int(scene.t)]
     mm.release_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, fingers_dof, grip_force=-current_force)
-    seg_df.loc[len(seg_df)] = ['pause', int(scene.t)]
     for _ in range(100):
-        franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
+        # franka.control_dofs_force(np.array([-current_force, -current_force]), fingers_dof)
         make_step(
             scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
             photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
@@ -296,147 +326,9 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
         photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL, gso_object=gso_object, name=name,
     )
     # cam.stop_recording(save_to_filename=str(paths['images_dir'])+"/video.mp4", fps=10)
-    return pickup_status
+    return
 
-def run_new_movement_test(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, target_choice):
-    """
-    Rigid-only sequence:
-      1) Approach + descend + grasp (force)     [reuses existing mm primitives]
-      2) Lift to safe Z                         [reuses existing mm primitives]
-      3) Throw toward a planar zone             [new mm.throw_to_zone primitive]
-    """
-    name, step_no = paths['object_name'], 0
-    motors_dof, fingers_dof = np.arange(7), np.arange(7, 9)
-    franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,100,100]))
-    franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,10,10]))
-    franka.set_dofs_force_range(
-        np.array([-87, -87, -87, -87, -12, -12, -12, -10, -10]),
-        np.array([87, 87, 87, 87, 12, 12, 12, 10, 10]),
-    )
-    end_effector = franka.get_link("hand")
-
-    vel_limits = {'soft': 0.0002, 'medium': 0.0006, 'hard': 0.0012}
-    target_vel = vel_limits.get(target_choice, 0.0002)
-
-    # Rigid bounds
-    aabb_min, aabb_max = gso_object.get_AABB().cpu().numpy()
-    upper_obj_bound = aabb_max
-
-    # cam.start_recording()
-
-    # === Approach ===
-    x, y, z = 0.45, 0.45, upper_obj_bound[2] + 0.08
-    qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z + 0.1]), quat=np.array([0, 1, 0, 0]))
-    qpos[-2:] = 0.04
-    seg_df.loc[len(seg_df)] = ['start', int(scene.t)]
-
-    mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
-                   PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
-    mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
-                         PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
-
-    # === Grasp (force-controlled with PD adjustment) ===
-    current_force = 3.0
-    step_no += 50
-    seg_df.loc[len(seg_df)] = ['grasping', int(scene.t)]
-    for i in range(200):
-        step_no += 1
-        if not mm.grasp_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
-                               PHOTO_INTERVAL, name, end_effector, x, y, z,
-                               motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=1):
-            break
-        if i % 2 == 0:
-            current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
-
-    # === Lift (position + force) ===
-    seg_df.loc[len(seg_df)] = ['lifting', int(scene.t)]
-    for i in range(200):
-        step_no += 1
-        curr_z = z + (i * 0.00075)
-        if not mm.lift_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']),
-                              PHOTO_INTERVAL, name, end_effector, x, y, curr_z,
-                              motors_dof, fingers_dof, grip_force=-current_force, steps=1):
-            break
-        if i % 2 == 0:
-            current_force = adjust_force_with_pd_control(current_force, deform_csv, target_vel)
-
-    # === Pickup check (reuse your logic) ===
-    low, hi = gso_object.get_AABB()
-    pickup_status = 'picked up' if hi[2] > 0.01 else 'not_picked_up'
-    seg_df.loc[len(seg_df)] = [pickup_status, int(scene.t)]
-    if pickup_status == 'not_picked_up':
-        final_make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
-                        photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL,
-                        gso_object=gso_object, name=name)
-        # cam.stop_recording(fps=10)
-        return pickup_status
-
-    # === NEW MOVEMENT TEST (PUT IN BOX)===
-    # Choose a farther zone than placement to ensure a true ballistic test
-    #ZONE = (0.55, 0.80, 0.35, 0.60)
-    # seg_df.loc[len(seg_df)] = ['drop_in_box start', int(scene.t)]
-    # # Example zone center
-    # print(RUNNING_DROP_IN_BOX)
-    # (cx, cy) = RUNNING_DROP_IN_BOX
-
-    # print("YASSS", "x", cx, "y", cy)
-    # success = mm.drop_in_box(
-    #     scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
-    #     end_effector, cx, cy, 0.0,  # z ignored; current EEF z is used
-    #     motors_dof, fingers_dof, grip_force=(-current_force)-2, quat=np.array([0,1,0,0])
-    # )
-
-    # === NEW MOVEMENT TEST (SHAKE WHILE HOLDING Z-axiz)===
-
-    # seg_df.loc[len(seg_df)] = ['shake start', int(scene.t)]
-
-    # success = mm.shake_in_place(
-    #     scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
-    #     end_effector, motors_dof, fingers_dof, grip_force=-current_force, amplitude=0.035, steps_per_half=30
-    # )
-
-    # === NEW MOVEMENT TEST (WIGGLE WHILE HOLDING Y-axis)===
-    seg_df.loc[len(seg_df)] = ['wiggling start', int(scene.t)]
-    print(type(gso_object))
-    success = mm.wiggle_rotation(
-        scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
-        end_effector, motors_dof, fingers_dof, grip_force=-current_force
-    )
-
-    # === NEW MOVEMENT: Push to Target ===
-    '''seg_df.loc[len(seg_df)] = ['push start', int(scene.t)]
-
-    # Random target within bounds
-    target_xy = (
-        np.random.uniform(0.55, 0.75),  # X-range
-        np.random.uniform(0.35, 0.55)   # Y-range
-    )
-
-    # Random push direction (normalized 2D vector)
-    theta = np.random.uniform(-np.pi, np.pi)
-    push_vector = np.array([np.cos(theta), np.sin(theta)])
-
-    success = mm.push_object_to_xy(
-        scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name,
-        end_effector, motors_dof, fingers_dof, target_xy, push_vector
-    )
-    seg_df.loc[len(seg_df)] = ['push end', int(scene.t)]
-    # Wind-down for clean segmentation
-    for _ in range(40):
-        make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
-                  photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL,
-                  gso_object=gso_object, name=name)
-        step_no += 1
-
-    seg_df.loc[len(seg_df)] = ['drop_in_box end', int(scene.t)]
-    '''
-    cam.stop_recording(fps=10)
-    final_make_step(scene=scene, cam=cam, franka=franka, df=df, deform_csv=deform_csv,
-                    photo_path=str(paths['images_dir']), photo_interval=PHOTO_INTERVAL,
-                    gso_object=gso_object, name=name)
-    return 'movement_success' if success else 'movement_failed'
-
-# -------------------------- GENERATE PLOTS (not used) -------------------------- ##
+# -------------------------- GENERATE PLOTS -------------------------- ##
 
 def generate_plots(df, deform_csv, paths, target_choice):
     """Generates and saves the plots for the simulation results."""
@@ -467,8 +359,7 @@ def generate_plots(df, deform_csv, paths, target_choice):
     plt.tight_layout()
     plt.savefig(paths['plot'], dpi=300, bbox_inches='tight')
     print(f"Saved plot -> {paths['plot']}")
-    #plt.show()  # Show the plot for immediate feedback
-    plt.close(fig) # Close the figure to free memory
+    plt.close(fig)
 
 def main(object_name: str, target_choice: str = 'soft'):
     print(f"🚀 Starting simulation for '{object_name}' with target '{target_choice}'...")
@@ -481,14 +372,13 @@ def main(object_name: str, target_choice: str = 'soft'):
     deform_df = pd.DataFrame(columns=["step", "deformations", "grip_force"])
     segment_df = pd.DataFrame(columns=['action', 'step'])
     scene, cam, franka, gso_object = create_scene(str(paths['input_obj']))
-    pickup_status = run_rotation(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
-    # pickup_status = run_new_movement_test(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
+    run_rotation(scene, cam, franka, gso_object, force_df, deform_df, segment_df, paths, target_choice)
     print(f"💾 Saving results to {paths['output_dir']}")
     force_df.to_csv(paths['force_data'], index=False)
     deform_df.to_csv(paths['deformation_data'], index=False)
     segment_df.to_csv(paths['segmentation_data'], index=False)
     generate_plots(df=force_df, deform_csv=deform_df, paths=paths, target_choice=target_choice)
-    print(f"✅ Finished simulation for '{object_name}'. Status: {pickup_status}")
+    print(f"✅ Finished simulation for '{object_name}'.")
 
 
 
@@ -498,15 +388,12 @@ def get_tasks_to_run():
         # return [('010_potted_meat_can', 'none')]
         # return [('010_potted_meat_can', 'none'), ('002_master_chef_can', 'none'), ('062_dice', 'none')]
         # return [('026_sponge', 'none')]
-        return [('002_master_chef_can', 'none')]
+        # return [('002_master_chef_can', 'none'), ('004_sugar_box', 'none'), ('005_tomato_soup_can', 'none')]
+        return [('001_chips_can', 'none')]
         # return [('bottle', 'none')]
         # return [('cube', 'none')]
     tasks = []
-    raw_data_dir = DATA_ROOT / DATA_TYPE
-    if "eval" in DATA_TYPE:
-        objects_dir = DATA_ROOT / "objects"
-    else:
-        objects_dir = DATA_ROOT / "objects/gso"
+    objects_dir = DATA_ROOT / "objects" / DATASET_TYPE
     if not objects_dir.exists():
         print(f"❌ Error: Input directory '{objects_dir}' not found."); return []
     object_names = [d.name for d in objects_dir.iterdir() if d.is_dir()]
