@@ -1,6 +1,7 @@
 import math
 import dataclasses
 from functools import partial
+from typing_extensions import dataclass_transform  # Made it into standard lib from Python 3.12
 
 import gstaichi as ti
 import numpy as np
@@ -18,41 +19,45 @@ V_VEC = ti.Vector.ndarray if gs.use_ndarray else ti.Vector.field
 V_MAT = ti.Matrix.ndarray if gs.use_ndarray else ti.Matrix.field
 
 DATA_ORIENTED = partial(dataclasses.dataclass, frozen=True) if gs.use_ndarray else ti.data_oriented
+PLACEHOLDER = V(dtype=gs.ti_float, shape=())
 
 
 def maybe_shape(shape, is_on):
     return shape if is_on else ()
 
 
+@dataclass_transform(eq_default=True, order_default=True, kw_only_default=False, frozen_default=True)
 class AutoInitMeta(type):
     def __new__(cls, name, bases, namespace):
-        field_names = namespace["__annotations__"].keys()
+        names = tuple(namespace["__annotations__"].keys())
+        defaults = {k: namespace[k] for k in names if k in namespace}
 
         def __init__(self, *args, **kwargs):
-            assigned = {}
+            # Initialize assigned arguments from defaults
+            assigned = defaults.copy()
 
             # Assign positional arguments
-            if len(args) > len(field_names):
-                raise TypeError(f"{name}() takes {len(field_names)} positional arguments but {len(args)} were given")
-            for field, value in zip(field_names, args):
-                assigned[field] = value
+            if len(args) > len(names):
+                raise TypeError(f"{name}() takes {len(names)} positional arguments but {len(args)} were given")
+            for key, value in zip(names, args):
+                assigned[key] = value
 
             # Assign keyword arguments
             for key, value in kwargs.items():
-                if key not in field_names:
+                if key not in names:
                     raise TypeError(f"{name}() got unexpected keyword argument '{key}'")
-                if key in assigned:
+                if key in names[: len(args)]:
                     raise TypeError(f"{name}() got multiple values for argument '{key}'")
                 assigned[key] = value
 
             # Check for missing arguments
-            for field in field_names:
-                if field not in assigned:
-                    raise TypeError(f"{name}() missing required argument: '{field}'")
+            for key in names:
+                if key not in assigned:
+                    raise TypeError(f"{name}() missing required argument: '{key}'")
 
             # Set attributes
-            for field, value in assigned.items():
-                setattr(self, field, value)
+            for key, value in assigned.items():
+                setattr(self, key, value)
 
         namespace["__init__"] = __init__
 
@@ -73,6 +78,7 @@ def V_SCALAR_FROM(dtype, value):
 
 @DATA_ORIENTED
 class StructRigidGlobalInfo(metaclass=BASE_METACLASS):
+    # *_bw: Cache for backward pass
     n_awake_dofs: V_ANNOTATION
     awake_dofs: V_ANNOTATION
     n_awake_entities: V_ANNOTATION
@@ -81,11 +87,13 @@ class StructRigidGlobalInfo(metaclass=BASE_METACLASS):
     awake_links: V_ANNOTATION
     qpos0: V_ANNOTATION
     qpos: V_ANNOTATION
+    qpos_next: V_ANNOTATION
     links_T: V_ANNOTATION
     envs_offset: V_ANNOTATION
     geoms_init_AABB: V_ANNOTATION
     mass_mat: V_ANNOTATION
     mass_mat_L: V_ANNOTATION
+    mass_mat_L_bw: V_ANNOTATION
     mass_mat_D_inv: V_ANNOTATION
     mass_mat_mask: V_ANNOTATION
     meaninertia: V_ANNOTATION
@@ -100,7 +108,7 @@ class StructRigidGlobalInfo(metaclass=BASE_METACLASS):
     noslip_iterations: V_ANNOTATION
     noslip_tolerance: V_ANNOTATION
     n_equalities: V_ANNOTATION
-    n_equalities_candidate: V_ANNOTATION
+    n_candidate_equalities: V_ANNOTATION
     hibernation_thresh_acc: V_ANNOTATION
     hibernation_thresh_vel: V_ANNOTATION
     EPS: V_ANNOTATION
@@ -109,25 +117,39 @@ class StructRigidGlobalInfo(metaclass=BASE_METACLASS):
 def get_rigid_global_info(solver):
     _B = solver._B
 
+    mass_mat_shape = (solver.n_dofs_, solver.n_dofs_, _B)
+    if math.prod(mass_mat_shape) > np.iinfo(np.int32).max:
+        gs.raise_exception(
+            f"Mass matrix shape (n_dofs={solver.n_dofs_}, n_dofs={solver.n_dofs_}, n_envs={_B}) is too large."
+        )
+    requires_grad = solver._requires_grad
+    mass_mat_shape_bw = maybe_shape((2, *mass_mat_shape), requires_grad)
+    if math.prod(mass_mat_shape_bw) > np.iinfo(np.int32).max:
+        gs.raise_exception(
+            f"Mass matrix buffer shape (2, n_dofs={solver.n_dofs_}, n_dofs={solver.n_dofs_}, n_envs={_B}) is too large."
+        )
+
     return StructRigidGlobalInfo(
+        envs_offset=V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
+        gravity=V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
+        meaninertia=V(dtype=gs.ti_float, shape=(_B,)),
         n_awake_dofs=V(dtype=gs.ti_int, shape=(_B,)),
-        awake_dofs=V(dtype=gs.ti_int, shape=(solver.n_dofs_, _B)),
         n_awake_entities=V(dtype=gs.ti_int, shape=(_B,)),
-        awake_entities=V(dtype=gs.ti_int, shape=(solver.n_entities_, _B)),
         n_awake_links=V(dtype=gs.ti_int, shape=(_B,)),
+        awake_dofs=V(dtype=gs.ti_int, shape=(solver.n_dofs_, _B)),
+        awake_entities=V(dtype=gs.ti_int, shape=(solver.n_entities_, _B)),
         awake_links=V(dtype=gs.ti_int, shape=(solver.n_links_, _B)),
         qpos0=V(dtype=gs.ti_float, shape=(solver.n_qs_, _B)),
-        qpos=V(dtype=gs.ti_float, shape=(solver.n_qs_, _B)),
+        qpos=V(dtype=gs.ti_float, shape=(solver.n_qs_, _B), needs_grad=requires_grad),
+        qpos_next=V(dtype=gs.ti_float, shape=(solver.n_qs_, _B), needs_grad=requires_grad),
         links_T=V_MAT(n=4, m=4, dtype=gs.ti_float, shape=(solver.n_links_,)),
-        envs_offset=V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
         geoms_init_AABB=V_VEC(3, dtype=gs.ti_float, shape=(solver.n_geoms_, 8)),
-        mass_mat=V(dtype=gs.ti_float, shape=(solver.n_dofs_, solver.n_dofs_, _B)),
-        mass_mat_L=V(dtype=gs.ti_float, shape=(solver.n_dofs_, solver.n_dofs_, _B)),
-        mass_mat_D_inv=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        mass_mat=V(dtype=gs.ti_float, shape=mass_mat_shape, needs_grad=requires_grad),
+        mass_mat_L=V(dtype=gs.ti_float, shape=mass_mat_shape, needs_grad=requires_grad),
+        mass_mat_L_bw=V(dtype=gs.ti_float, shape=mass_mat_shape_bw, needs_grad=requires_grad),
+        mass_mat_D_inv=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B), needs_grad=requires_grad),
         mass_mat_mask=V(dtype=gs.ti_bool, shape=(solver.n_entities_, _B)),
-        meaninertia=V(dtype=gs.ti_float, shape=(_B,)),
         mass_parent_mask=V(dtype=gs.ti_float, shape=(solver.n_dofs_, solver.n_dofs_)),
-        gravity=V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
         substep_dt=V_SCALAR_FROM(dtype=gs.ti_float, value=solver._substep_dt),
         iterations=V_SCALAR_FROM(dtype=gs.ti_int, value=solver._options.iterations),
         tolerance=V_SCALAR_FROM(dtype=gs.ti_float, value=solver._options.tolerance),
@@ -136,7 +158,7 @@ def get_rigid_global_info(solver):
         noslip_iterations=V_SCALAR_FROM(dtype=gs.ti_int, value=solver._options.noslip_iterations),
         noslip_tolerance=V_SCALAR_FROM(dtype=gs.ti_float, value=solver._options.noslip_tolerance),
         n_equalities=V_SCALAR_FROM(dtype=gs.ti_int, value=solver._n_equalities),
-        n_equalities_candidate=V_SCALAR_FROM(dtype=gs.ti_int, value=solver.n_equalities_candidate),
+        n_candidate_equalities=V_SCALAR_FROM(dtype=gs.ti_int, value=solver.n_candidate_equalities_),
         hibernation_thresh_acc=V_SCALAR_FROM(dtype=gs.ti_float, value=solver._hibernation_thresh_acc),
         hibernation_thresh_vel=V_SCALAR_FROM(dtype=gs.ti_float, value=solver._hibernation_thresh_vel),
         EPS=V_SCALAR_FROM(dtype=gs.ti_float, value=gs.EPS),
@@ -217,68 +239,69 @@ def get_constraint_state(constraint_solver, solver):
     len_constraints_ = constraint_solver.len_constraints_
 
     jac_shape = (len_constraints_, solver.n_dofs_, _B)
-    if math.prod(jac_shape) > np.iinfo(np.int32).max:
-        gs.raise_exception(
-            f"Jacobian shape {jac_shape} is too large for int32. Consider reducing the number of constraints or the "
-            "number of degrees of freedom."
-        )
-
-    if solver._options.noslip_iterations > 0:
-        if len_constraints_**2 * _B > 2e9:
-            gs.logger.warning(
-                f"efc_AR shape {len_constraints_}x{len_constraints_}x{_B} is very large. Consider manually set a "
-                "smaller 'max_collision_pairs' in RigidOptions to reduce the size of reserved memory. "
-            )
-
     efc_AR_shape = maybe_shape((len_constraints_, len_constraints_, _B), solver._options.noslip_iterations > 0)
     efc_b_shape = maybe_shape((len_constraints_, _B), solver._options.noslip_iterations > 0)
+    jac_relevant_dofs_shape = maybe_shape((len_constraints_, solver.n_dofs_, _B), constraint_solver.sparse_solve)
+    jac_n_relevant_dofs_shape = maybe_shape((len_constraints_, _B), constraint_solver.sparse_solve)
 
+    if math.prod(jac_shape) > np.iinfo(np.int32).max:
+        gs.raise_exception(
+            f"Jacobian shape (n_constraints={len_constraints_}, n_dofs={solver.n_dofs_}, n_envs={_B}) is too large."
+        )
+    if math.prod(efc_AR_shape) > np.iinfo(np.int32).max:
+        gs.logger.warning(
+            f"efc_AR shape (n_constraints={len_constraints_}, n_constraints={solver.n_dofs_}, n_envs={_B}) is too "
+            "large. Consider manually setting a smaller 'max_collision_pairs' in RigidOptions to reduce the size of "
+            "reserved memory. "
+        )
+
+    # /!\ Changing allocation order of these tensors may reduce runtime speed by >10%  /!\
     return StructConstraintState(
         n_constraints=V(dtype=gs.ti_int, shape=(_B,)),
         ti_n_equalities=V(dtype=gs.ti_int, shape=(_B,)),
-        jac=V(dtype=gs.ti_float, shape=(len_constraints_, solver.n_dofs_, _B)),
-        diag=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
-        aref=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
-        jac_relevant_dofs=V(dtype=gs.ti_int, shape=(len_constraints_, solver.n_dofs_, _B)),
-        jac_n_relevant_dofs=V(dtype=gs.ti_int, shape=(len_constraints_, _B)),
         n_constraints_equality=V(dtype=gs.ti_int, shape=(_B,)),
         n_constraints_frictionloss=V(dtype=gs.ti_int, shape=(_B,)),
-        improved=V(dtype=gs.ti_int, shape=(_B,)),
-        Jaref=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
-        Ma=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        Ma_ws=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        grad=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        Mgrad=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        search=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        efc_D=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
-        efc_frictionloss=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
-        efc_force=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
-        efc_b=V(dtype=gs.ti_float, shape=efc_b_shape),
-        efc_AR=V(dtype=gs.ti_float, shape=efc_AR_shape),
-        active=V(dtype=gs.ti_bool, shape=(len_constraints_, _B)),
-        prev_active=V(dtype=gs.ti_bool, shape=(len_constraints_, _B)),
-        qfrc_constraint=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        qacc=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        qacc_ws=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        qacc_prev=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        improved=V(dtype=gs.ti_bool, shape=(_B,)),
         cost_ws=V(dtype=gs.ti_float, shape=(_B,)),
         gauss=V(dtype=gs.ti_float, shape=(_B,)),
         cost=V(dtype=gs.ti_float, shape=(_B,)),
         prev_cost=V(dtype=gs.ti_float, shape=(_B,)),
         gtol=V(dtype=gs.ti_float, shape=(_B,)),
-        mv=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        jv=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
-        quad_gauss=V(dtype=gs.ti_float, shape=(3, _B)),
-        quad=V(dtype=gs.ti_float, shape=(len_constraints_, 3, _B)),
-        candidates=V(dtype=gs.ti_float, shape=(12, _B)),
         ls_it=V(dtype=gs.ti_float, shape=(_B,)),
         ls_result=V(dtype=gs.ti_int, shape=(_B,)),
-        cg_prev_grad=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
-        cg_prev_Mgrad=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
         cg_beta=V(dtype=gs.ti_float, shape=(_B,)),
         cg_pg_dot_pMg=V(dtype=gs.ti_float, shape=(_B,)),
-        nt_H=V(dtype=gs.ti_float, shape=(solver.n_dofs_, solver.n_dofs_, _B)),
+        quad_gauss=V(dtype=gs.ti_float, shape=(3, _B)),
+        candidates=V(dtype=gs.ti_float, shape=(12, _B)),
+        Ma=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        Ma_ws=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        grad=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        Mgrad=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        search=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        qfrc_constraint=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        qacc=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        qacc_ws=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        qacc_prev=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        mv=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        cg_prev_grad=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        cg_prev_Mgrad=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
         nt_vec=V(dtype=gs.ti_float, shape=(solver.n_dofs_, _B)),
+        nt_H=V(dtype=gs.ti_float, shape=(solver.n_dofs_, solver.n_dofs_, _B)),
+        efc_b=V(dtype=gs.ti_float, shape=efc_b_shape),
+        efc_AR=V(dtype=gs.ti_float, shape=efc_AR_shape),
+        active=V(dtype=gs.ti_bool, shape=(len_constraints_, _B)),
+        prev_active=V(dtype=gs.ti_bool, shape=(len_constraints_, _B)),
+        diag=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
+        aref=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
+        Jaref=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
+        efc_frictionloss=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
+        efc_force=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
+        efc_D=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
+        jv=V(dtype=gs.ti_float, shape=(len_constraints_, _B)),
+        quad=V(dtype=gs.ti_float, shape=(len_constraints_, 3, _B)),
+        jac=V(dtype=gs.ti_float, shape=jac_shape),
+        jac_relevant_dofs=V(dtype=gs.ti_int, shape=jac_relevant_dofs_shape),
+        jac_n_relevant_dofs=V(dtype=gs.ti_int, shape=jac_n_relevant_dofs_shape),
         # Backward gradients
         dL_dqacc=V(dtype=gs.ti_float, shape=maybe_shape((solver.n_dofs_, _B), solver._requires_grad)),
         dL_dM=V(dtype=gs.ti_float, shape=maybe_shape((solver.n_dofs_, solver.n_dofs_, _B), solver._requires_grad)),
@@ -356,26 +379,23 @@ class StructDiffContactInput(metaclass=BASE_METACLASS):
     ref_penetration: V_ANNOTATION
 
 
-def get_diff_contact_input(solver, max_contacts_per_pair):
+def get_diff_contact_input(solver, max_contacts_per_pair, is_active):
     _B = solver._B
-
-    requires_grad = solver._requires_grad
+    shape = maybe_shape((_B, max_contacts_per_pair), is_active and solver._requires_grad)
     return StructDiffContactInput(
-        geom_a=V(dtype=gs.ti_int, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        geom_b=V(dtype=gs.ti_int, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        local_pos1_a=V_VEC(3, dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        local_pos1_b=V_VEC(3, dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        local_pos1_c=V_VEC(3, dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        local_pos2_a=V_VEC(3, dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        local_pos2_b=V_VEC(3, dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        local_pos2_c=V_VEC(3, dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        w_local_pos1=V_VEC(3, dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        w_local_pos2=V_VEC(3, dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        ref_id=V(dtype=gs.ti_int, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        valid=V(dtype=gs.ti_int, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
-        ref_penetration=V(
-            dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad), needs_grad=True
-        ),
+        geom_a=V(dtype=gs.ti_int, shape=shape),
+        geom_b=V(dtype=gs.ti_int, shape=shape),
+        local_pos1_a=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        local_pos1_b=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        local_pos1_c=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        local_pos2_a=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        local_pos2_b=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        local_pos2_c=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        w_local_pos1=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        w_local_pos2=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        ref_id=V(dtype=gs.ti_int, shape=shape),
+        valid=V(dtype=gs.ti_int, shape=shape),
+        ref_penetration=V(dtype=gs.ti_float, shape=shape, needs_grad=True),
     )
 
 
@@ -401,10 +421,10 @@ class StructContactCache(metaclass=BASE_METACLASS):
     normal: V_ANNOTATION
 
 
-def get_contact_cache(solver):
+def get_contact_cache(solver, n_possible_pairs):
     _B = solver._B
     return StructContactCache(
-        normal=V_VEC(3, dtype=gs.ti_float, shape=(solver.n_geoms_, solver.n_geoms_, _B)),
+        normal=V_VEC(3, dtype=gs.ti_float, shape=(n_possible_pairs, _B)),
     )
 
 
@@ -510,29 +530,42 @@ def get_collider_state(
     max_contact_pairs = max_collision_pairs * collider_static_config.n_contacts_per_pair
     requires_grad = static_rigid_sim_config.requires_grad
 
+    box_depth_shape = maybe_shape(
+        (collider_static_config.n_contacts_per_pair, _B), static_rigid_sim_config.box_box_detection
+    )
+    box_points_shape = maybe_shape(
+        (collider_static_config.n_contacts_per_pair, _B), static_rigid_sim_config.box_box_detection
+    )
+    box_pts_shape = maybe_shape((6, _B), static_rigid_sim_config.box_box_detection)
+    box_lines_shape = maybe_shape((4, _B), static_rigid_sim_config.box_box_detection)
+    box_linesu_shape = maybe_shape((4, _B), static_rigid_sim_config.box_box_detection)
+    box_axi_shape = maybe_shape((3, _B), static_rigid_sim_config.box_box_detection)
+    box_ppts2_shape = maybe_shape((4, 2, _B), static_rigid_sim_config.box_box_detection)
+    box_pu_shape = maybe_shape((4, _B), static_rigid_sim_config.box_box_detection)
+
     return StructColliderState(
         sort_buffer=get_sort_buffer(solver),
-        contact_data=get_contact_data(solver, max_contact_pairs, requires_grad),
         active_buffer=V(dtype=gs.ti_int, shape=(n_geoms, _B)),
         n_broad_pairs=V(dtype=gs.ti_int, shape=(_B,)),
-        broad_collision_pairs=V_VEC(2, dtype=gs.ti_int, shape=(max(max_collision_pairs_broad, 1), _B)),
         active_buffer_awake=V(dtype=gs.ti_int, shape=(n_geoms, _B)),
         active_buffer_hib=V(dtype=gs.ti_int, shape=(n_geoms, _B)),
-        box_depth=V(dtype=gs.ti_float, shape=(collider_info.box_MAXCONPAIR[None], _B)),
-        box_points=V_VEC(3, dtype=gs.ti_float, shape=(collider_info.box_MAXCONPAIR[None], _B)),
-        box_pts=V_VEC(3, dtype=gs.ti_float, shape=(6, _B)),
-        box_lines=V_VEC(6, dtype=gs.ti_float, shape=(4, _B)),
-        box_linesu=V_VEC(6, dtype=gs.ti_float, shape=(4, _B)),
-        box_axi=V_VEC(3, dtype=gs.ti_float, shape=(3, _B)),
-        box_ppts2=V(dtype=gs.ti_float, shape=(4, 2, _B)),
-        box_pu=V_VEC(3, dtype=gs.ti_float, shape=(4, _B)),
+        box_depth=V(dtype=gs.ti_float, shape=box_depth_shape),
+        box_points=V_VEC(3, dtype=gs.ti_float, shape=box_points_shape),
+        box_pts=V_VEC(3, dtype=gs.ti_float, shape=box_pts_shape),
+        box_lines=V_VEC(6, dtype=gs.ti_float, shape=box_lines_shape),
+        box_linesu=V_VEC(6, dtype=gs.ti_float, shape=box_linesu_shape),
+        box_axi=V_VEC(3, dtype=gs.ti_float, shape=box_axi_shape),
+        box_ppts2=V(dtype=gs.ti_float, shape=box_ppts2_shape),
+        box_pu=V_VEC(3, dtype=gs.ti_float, shape=box_pu_shape),
         xyz_max_min=V(dtype=gs.ti_float, shape=(6, _B)),
         prism=V_VEC(3, dtype=gs.ti_float, shape=(6, _B)),
         n_contacts=V(dtype=gs.ti_int, shape=(_B,)),
         n_contacts_hibernated=V(dtype=gs.ti_int, shape=(_B,)),
-        first_time=V(dtype=gs.ti_int, shape=(_B,)),
-        contact_cache=get_contact_cache(solver),
-        diff_contact_input=get_diff_contact_input(solver, max(max_contact_pairs, 1)),
+        first_time=V(dtype=gs.ti_bool, shape=(_B,)),
+        contact_cache=get_contact_cache(solver, n_possible_pairs),
+        broad_collision_pairs=V_VEC(2, dtype=gs.ti_int, shape=(max(max_collision_pairs_broad, 1), _B)),
+        contact_data=get_contact_data(solver, max_contact_pairs, requires_grad),
+        diff_contact_input=get_diff_contact_input(solver, max(max_contact_pairs, 1), is_active=True),
     )
 
 
@@ -541,7 +574,7 @@ class StructColliderInfo(metaclass=BASE_METACLASS):
     vert_neighbors: V_ANNOTATION
     vert_neighbor_start: V_ANNOTATION
     vert_n_neighbors: V_ANNOTATION
-    collision_pair_validity: V_ANNOTATION
+    collision_pair_idx: V_ANNOTATION
     max_possible_pairs: V_ANNOTATION
     max_collision_pairs: V_ANNOTATION
     max_contact_pairs: V_ANNOTATION
@@ -554,9 +587,7 @@ class StructColliderInfo(metaclass=BASE_METACLASS):
     # multi contact perturbation and tolerance
     mc_perturbation: V_ANNOTATION
     mc_tolerance: V_ANNOTATION
-    mpr_to_sdf_overlap_ratio: V_ANNOTATION
-    # maximum number of contact points for box-box collision detection
-    box_MAXCONPAIR: V_ANNOTATION
+    mpr_to_gjk_overlap_ratio: V_ANNOTATION
     # differentiable contact tolerance
     diff_pos_tolerance: V_ANNOTATION
     diff_normal_tolerance: V_ANNOTATION
@@ -574,7 +605,7 @@ def get_collider_info(solver, n_vert_neighbors, collider_static_config, **kwargs
         vert_neighbors=V(dtype=gs.ti_int, shape=(max(n_vert_neighbors, 1),)),
         vert_neighbor_start=V(dtype=gs.ti_int, shape=(solver.n_verts_,)),
         vert_n_neighbors=V(dtype=gs.ti_int, shape=(solver.n_verts_,)),
-        collision_pair_validity=V(dtype=gs.ti_int, shape=(solver.n_geoms_, solver.n_geoms_)),
+        collision_pair_idx=V(dtype=gs.ti_int, shape=(solver.n_geoms_, solver.n_geoms_)),
         max_possible_pairs=V(dtype=gs.ti_int, shape=()),
         max_collision_pairs=V(dtype=gs.ti_int, shape=()),
         max_contact_pairs=V(dtype=gs.ti_int, shape=()),
@@ -585,8 +616,7 @@ def get_collider_info(solver, n_vert_neighbors, collider_static_config, **kwargs
         terrain_xyz_maxmin=V(dtype=gs.ti_float, shape=(6,)),
         mc_perturbation=V_SCALAR_FROM(dtype=gs.ti_float, value=kwargs["mc_perturbation"]),
         mc_tolerance=V_SCALAR_FROM(dtype=gs.ti_float, value=kwargs["mc_tolerance"]),
-        mpr_to_sdf_overlap_ratio=V_SCALAR_FROM(dtype=gs.ti_float, value=kwargs["mpr_to_sdf_overlap_ratio"]),
-        box_MAXCONPAIR=V_SCALAR_FROM(dtype=gs.ti_int, value=kwargs["box_MAXCONPAIR"]),
+        mpr_to_gjk_overlap_ratio=V_SCALAR_FROM(dtype=gs.ti_float, value=kwargs["mpr_to_gjk_overlap_ratio"]),
         diff_pos_tolerance=V_SCALAR_FROM(dtype=gs.ti_float, value=kwargs["diff_pos_tolerance"]),
         diff_normal_tolerance=V_SCALAR_FROM(dtype=gs.ti_float, value=kwargs["diff_normal_tolerance"]),
     )
@@ -594,8 +624,10 @@ def get_collider_info(solver, n_vert_neighbors, collider_static_config, **kwargs
 
 @ti.data_oriented
 class StructColliderStaticConfig(metaclass=AutoInitMeta):
-    has_nonconvex_nonterrain: bool
     has_terrain: bool
+    has_convex_convex: bool
+    has_convex_specialization: bool
+    has_nonconvex_nonterrain: bool
     # maximum number of contact pairs per collision pair
     n_contacts_per_pair: int
     # ccd algorithm
@@ -663,32 +695,32 @@ class StructMDVertex(metaclass=BASE_METACLASS):
     mink: V_ANNOTATION
 
 
-def get_gjk_simplex_vertex(solver):
+def get_gjk_simplex_vertex(solver, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B, 4), is_active)
     return StructMDVertex(
-        obj1=V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
-        obj2=V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
-        local_obj1=V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
-        local_obj2=V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
-        id1=V(dtype=gs.ti_int, shape=(_B, 4)),
-        id2=V(dtype=gs.ti_int, shape=(_B, 4)),
-        mink=V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
+        obj1=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        obj2=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        local_obj1=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        local_obj2=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        id1=V(dtype=gs.ti_int, shape=shape),
+        id2=V(dtype=gs.ti_int, shape=shape),
+        mink=V_VEC(3, dtype=gs.ti_float, shape=shape),
     )
 
 
-def get_epa_polytope_vertex(solver, gjk_info):
+def get_epa_polytope_vertex(solver, gjk_info, is_active):
     _B = solver._B
     max_num_polytope_verts = 5 + gjk_info.epa_max_iterations[None]
-
+    shape = maybe_shape((_B, max_num_polytope_verts), is_active)
     return StructMDVertex(
-        obj1=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_num_polytope_verts)),
-        obj2=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_num_polytope_verts)),
-        local_obj1=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_num_polytope_verts)),
-        local_obj2=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_num_polytope_verts)),
-        id1=V(dtype=gs.ti_int, shape=(_B, max_num_polytope_verts)),
-        id2=V(dtype=gs.ti_int, shape=(_B, max_num_polytope_verts)),
-        mink=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_num_polytope_verts)),
+        obj1=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        obj2=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        local_obj1=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        local_obj2=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        id1=V(dtype=gs.ti_int, shape=shape),
+        id2=V(dtype=gs.ti_int, shape=shape),
+        mink=V_VEC(3, dtype=gs.ti_float, shape=shape),
     )
 
 
@@ -698,12 +730,12 @@ class StructGJKSimplex(metaclass=BASE_METACLASS):
     dist: V_ANNOTATION
 
 
-def get_gjk_simplex(solver):
+def get_gjk_simplex(solver, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B,), is_active)
     return StructGJKSimplex(
-        nverts=V(dtype=gs.ti_int, shape=(_B,)),
-        dist=V(dtype=gs.ti_float, shape=(_B,)),
+        nverts=V(dtype=gs.ti_int, shape=shape),
+        dist=V(dtype=gs.ti_float, shape=shape),
     )
 
 
@@ -713,12 +745,12 @@ class StructGJKSimplexBuffer(metaclass=BASE_METACLASS):
     sdist: V_ANNOTATION
 
 
-def get_gjk_simplex_buffer(solver):
+def get_gjk_simplex_buffer(solver, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B, 4), is_active)
     return StructGJKSimplexBuffer(
-        normal=V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
-        sdist=V(dtype=gs.ti_float, shape=(_B, 4)),
+        normal=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        sdist=V(dtype=gs.ti_float, shape=shape),
     )
 
 
@@ -731,15 +763,15 @@ class StructEPAPolytope(metaclass=BASE_METACLASS):
     horizon_w: V_ANNOTATION
 
 
-def get_epa_polytope(solver):
+def get_epa_polytope(solver, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B,), is_active)
     return StructEPAPolytope(
-        nverts=V(dtype=gs.ti_int, shape=(_B,)),
-        nfaces=V(dtype=gs.ti_int, shape=(_B,)),
-        nfaces_map=V(dtype=gs.ti_int, shape=(_B,)),
-        horizon_nedges=V(dtype=gs.ti_int, shape=(_B,)),
-        horizon_w=V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
+        nverts=V(dtype=gs.ti_int, shape=shape),
+        nfaces=V(dtype=gs.ti_int, shape=shape),
+        nfaces_map=V(dtype=gs.ti_int, shape=shape),
+        horizon_nedges=V(dtype=gs.ti_int, shape=shape),
+        horizon_w=V_VEC(3, dtype=gs.ti_float, shape=shape),
     )
 
 
@@ -753,16 +785,16 @@ class StructEPAPolytopeFace(metaclass=BASE_METACLASS):
     visited: V_ANNOTATION
 
 
-def get_epa_polytope_face(solver, polytope_max_faces):
+def get_epa_polytope_face(solver, polytope_max_faces, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B, polytope_max_faces), is_active)
     return StructEPAPolytopeFace(
-        verts_idx=V_VEC(3, dtype=gs.ti_int, shape=(_B, polytope_max_faces)),
-        adj_idx=V_VEC(3, dtype=gs.ti_int, shape=(_B, polytope_max_faces)),
-        normal=V_VEC(3, dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
-        dist2=V(dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
-        map_idx=V(dtype=gs.ti_int, shape=(_B, polytope_max_faces)),
-        visited=V(dtype=gs.ti_int, shape=(_B, polytope_max_faces)),
+        verts_idx=V_VEC(3, dtype=gs.ti_int, shape=shape),
+        adj_idx=V_VEC(3, dtype=gs.ti_int, shape=shape),
+        normal=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        dist2=V(dtype=gs.ti_float, shape=shape),
+        map_idx=V(dtype=gs.ti_int, shape=shape),
+        visited=V(dtype=gs.ti_int, shape=shape),
     )
 
 
@@ -772,12 +804,12 @@ class StructEPAPolytopeHorizonData(metaclass=BASE_METACLASS):
     edge_idx: V_ANNOTATION
 
 
-def get_epa_polytope_horizon_data(solver, polytope_max_horizons):
+def get_epa_polytope_horizon_data(solver, polytope_max_horizons, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B, polytope_max_horizons), is_active)
     return StructEPAPolytopeHorizonData(
-        face_idx=V(dtype=gs.ti_int, shape=(_B, polytope_max_horizons)),
-        edge_idx=V(dtype=gs.ti_int, shape=(_B, polytope_max_horizons)),
+        face_idx=V(dtype=gs.ti_int, shape=shape),
+        edge_idx=V(dtype=gs.ti_int, shape=shape),
     )
 
 
@@ -792,17 +824,17 @@ class StructContactFace(metaclass=BASE_METACLASS):
     id2: V_ANNOTATION
 
 
-def get_contact_face(solver, max_contact_polygon_verts):
+def get_contact_face(solver, max_contact_polygon_verts, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B, max_contact_polygon_verts), is_active)
     return StructContactFace(
-        vert1=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contact_polygon_verts)),
-        vert2=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contact_polygon_verts)),
-        endverts=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contact_polygon_verts)),
-        normal1=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contact_polygon_verts)),
-        normal2=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contact_polygon_verts)),
-        id1=V(dtype=gs.ti_int, shape=(_B, max_contact_polygon_verts)),
-        id2=V(dtype=gs.ti_int, shape=(_B, max_contact_polygon_verts)),
+        vert1=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        vert2=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        endverts=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        normal1=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        normal2=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        id1=V(dtype=gs.ti_int, shape=shape),
+        id2=V(dtype=gs.ti_int, shape=shape),
     )
 
 
@@ -813,13 +845,13 @@ class StructContactNormal(metaclass=BASE_METACLASS):
     id: V_ANNOTATION
 
 
-def get_contact_normal(solver, max_contact_polygon_verts):
+def get_contact_normal(solver, max_contact_polygon_verts, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B, max_contact_polygon_verts), is_active)
     return StructContactNormal(
-        endverts=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contact_polygon_verts)),
-        normal=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contact_polygon_verts)),
-        id=V(dtype=gs.ti_int, shape=(_B, max_contact_polygon_verts)),
+        endverts=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        normal=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        id=V(dtype=gs.ti_int, shape=shape),
     )
 
 
@@ -829,12 +861,12 @@ class StructContactHalfspace(metaclass=BASE_METACLASS):
     dist: V_ANNOTATION
 
 
-def get_contact_halfspace(solver, max_contact_polygon_verts):
+def get_contact_halfspace(solver, max_contact_polygon_verts, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B, max_contact_polygon_verts), is_active)
     return StructContactHalfspace(
-        normal=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contact_polygon_verts)),
-        dist=V(dtype=gs.ti_float, shape=(_B, max_contact_polygon_verts)),
+        normal=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        dist=V(dtype=gs.ti_float, shape=shape),
     )
 
 
@@ -844,12 +876,12 @@ class StructWitness(metaclass=BASE_METACLASS):
     point_obj2: V_ANNOTATION
 
 
-def get_witness(solver, max_contacts_per_pair):
+def get_witness(solver, max_contacts_per_pair, is_active):
     _B = solver._B
-
+    shape = maybe_shape((_B, max_contacts_per_pair), is_active)
     return StructWitness(
-        point_obj1=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contacts_per_pair)),
-        point_obj2=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contacts_per_pair)),
+        point_obj1=V_VEC(3, dtype=gs.ti_float, shape=shape),
+        point_obj2=V_VEC(3, dtype=gs.ti_float, shape=shape),
     )
 
 
@@ -888,7 +920,7 @@ class StructGJKState(metaclass=BASE_METACLASS):
     diff_penetration: V_ANNOTATION
 
 
-def get_gjk_state(solver, static_rigid_sim_config, gjk_info):
+def get_gjk_state(solver, static_rigid_sim_config, gjk_info, is_active):
     _B = solver._B
     enable_mujoco_compatibility = static_rigid_sim_config.enable_mujoco_compatibility
     polytope_max_faces = gjk_info.polytope_max_faces[None]
@@ -900,28 +932,28 @@ def get_gjk_state(solver, static_rigid_sim_config, gjk_info):
     return StructGJKState(
         # GJK simplex
         support_mesh_prev_vertex_id=V(dtype=gs.ti_int, shape=(_B, 2)),
-        simplex_vertex=get_gjk_simplex_vertex(solver),
-        simplex_buffer=get_gjk_simplex_buffer(solver),
-        simplex=get_gjk_simplex(solver),
+        simplex_vertex=get_gjk_simplex_vertex(solver, is_active),
+        simplex_buffer=get_gjk_simplex_buffer(solver, is_active),
+        simplex=get_gjk_simplex(solver, is_active),
         last_searched_simplex_vertex_id=V(dtype=gs.ti_int, shape=(_B,)),
-        simplex_vertex_intersect=get_gjk_simplex_vertex(solver),
-        simplex_buffer_intersect=get_gjk_simplex_buffer(solver),
+        simplex_vertex_intersect=get_gjk_simplex_vertex(solver, is_active),
+        simplex_buffer_intersect=get_gjk_simplex_buffer(solver, is_active),
         nsimplex=V(dtype=gs.ti_int, shape=(_B,)),
         # EPA polytope
-        polytope=get_epa_polytope(solver),
-        polytope_verts=get_epa_polytope_vertex(solver, gjk_info),
-        polytope_faces=get_epa_polytope_face(solver, polytope_max_faces),
+        polytope=get_epa_polytope(solver, is_active),
+        polytope_verts=get_epa_polytope_vertex(solver, gjk_info, is_active),
+        polytope_faces=get_epa_polytope_face(solver, polytope_max_faces, is_active),
         polytope_faces_map=V(dtype=gs.ti_int, shape=(_B, polytope_max_faces)),
-        polytope_horizon_data=get_epa_polytope_horizon_data(solver, 6 + gjk_info.epa_max_iterations[None]),
-        polytope_horizon_stack=get_epa_polytope_horizon_data(solver, polytope_max_faces * 3),
+        polytope_horizon_data=get_epa_polytope_horizon_data(solver, 6 + gjk_info.epa_max_iterations[None], is_active),
+        polytope_horizon_stack=get_epa_polytope_horizon_data(solver, polytope_max_faces * 3, is_active),
         # Multi-contact detection (MuJoCo compatibility)
-        contact_faces=get_contact_face(solver, max_contact_polygon_verts),
-        contact_normals=get_contact_normal(solver, max_contact_polygon_verts),
-        contact_halfspaces=get_contact_halfspace(solver, max_contact_polygon_verts),
+        contact_faces=get_contact_face(solver, max_contact_polygon_verts, is_active),
+        contact_normals=get_contact_normal(solver, max_contact_polygon_verts, is_active),
+        contact_halfspaces=get_contact_halfspace(solver, max_contact_polygon_verts, is_active),
         contact_clipped_polygons=V_VEC(3, dtype=gs.ti_float, shape=(_B, 2, max_contact_polygon_verts)),
         multi_contact_flag=V(dtype=gs.ti_bool, shape=(_B,)),
         # Final results
-        witness=get_witness(solver, max_contacts_per_pair),
+        witness=get_witness(solver, max_contacts_per_pair, is_active),
         n_witness=V(dtype=gs.ti_int, shape=(_B,)),
         n_contacts=V(dtype=gs.ti_int, shape=(_B,)),
         contact_pos=V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contacts_per_pair)),
@@ -929,7 +961,7 @@ def get_gjk_state(solver, static_rigid_sim_config, gjk_info):
         is_col=V(dtype=gs.ti_bool, shape=(_B,)),
         penetration=V(dtype=gs.ti_float, shape=(_B,)),
         distance=V(dtype=gs.ti_float, shape=(_B,)),
-        diff_contact_input=get_diff_contact_input(solver, max(max_contacts_per_pair, 1)),
+        diff_contact_input=get_diff_contact_input(solver, max(max_contacts_per_pair, 1), is_active),
         n_diff_contact_input=V(dtype=gs.ti_int, shape=(_B,)),
         diff_penetration=V(dtype=gs.ti_float, shape=maybe_shape((_B, max_contacts_per_pair), requires_grad)),
     )
@@ -1120,6 +1152,7 @@ def get_dofs_info(solver):
 
 @DATA_ORIENTED
 class StructDofsState(metaclass=BASE_METACLASS):
+    # *_bw: Cache to avoid overwriting for backward pass
     force: V_ANNOTATION
     qf_bias: V_ANNOTATION
     qf_passive: V_ANNOTATION
@@ -1129,8 +1162,11 @@ class StructDofsState(metaclass=BASE_METACLASS):
     pos: V_ANNOTATION
     vel: V_ANNOTATION
     vel_prev: V_ANNOTATION
+    vel_next: V_ANNOTATION
     acc: V_ANNOTATION
+    acc_bw: V_ANNOTATION
     acc_smooth: V_ANNOTATION
+    acc_smooth_bw: V_ANNOTATION
     qf_smooth: V_ANNOTATION
     qf_constraint: V_ANNOTATION
     cdof_ang: V_ANNOTATION
@@ -1150,32 +1186,37 @@ class StructDofsState(metaclass=BASE_METACLASS):
 
 def get_dofs_state(solver):
     shape = (solver.n_dofs_, solver._B)
+    requires_grad = solver._requires_grad
+    shape_bw = maybe_shape((2, *shape), requires_grad)
 
     return StructDofsState(
-        force=V(dtype=gs.ti_float, shape=shape),
-        qf_bias=V(dtype=gs.ti_float, shape=shape),
-        qf_passive=V(dtype=gs.ti_float, shape=shape),
-        qf_actuator=V(dtype=gs.ti_float, shape=shape),
-        qf_applied=V(dtype=gs.ti_float, shape=shape),
-        act_length=V(dtype=gs.ti_float, shape=shape),
-        pos=V(dtype=gs.ti_float, shape=shape),
-        vel=V(dtype=gs.ti_float, shape=shape),
-        vel_prev=V(dtype=gs.ti_float, shape=shape),
-        acc=V(dtype=gs.ti_float, shape=shape),
-        acc_smooth=V(dtype=gs.ti_float, shape=shape),
-        qf_smooth=V(dtype=gs.ti_float, shape=shape),
-        qf_constraint=V(dtype=gs.ti_float, shape=shape),
-        cdof_ang=V(dtype=gs.ti_vec3, shape=shape),
-        cdof_vel=V(dtype=gs.ti_vec3, shape=shape),
-        cdofvel_ang=V(dtype=gs.ti_vec3, shape=shape),
-        cdofvel_vel=V(dtype=gs.ti_vec3, shape=shape),
-        cdofd_ang=V(dtype=gs.ti_vec3, shape=shape),
-        cdofd_vel=V(dtype=gs.ti_vec3, shape=shape),
-        f_vel=V(dtype=gs.ti_vec3, shape=shape),
-        f_ang=V(dtype=gs.ti_vec3, shape=shape),
-        ctrl_force=V(dtype=gs.ti_float, shape=shape),
-        ctrl_pos=V(dtype=gs.ti_float, shape=shape),
-        ctrl_vel=V(dtype=gs.ti_float, shape=shape),
+        force=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        qf_bias=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        qf_passive=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        qf_actuator=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        qf_applied=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        act_length=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        pos=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        vel=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        vel_prev=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        vel_next=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        acc=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        acc_bw=V(dtype=gs.ti_float, shape=shape_bw, needs_grad=requires_grad),
+        acc_smooth=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        acc_smooth_bw=V(dtype=gs.ti_float, shape=shape_bw, needs_grad=requires_grad),
+        qf_smooth=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        qf_constraint=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        cdof_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cdof_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cdofvel_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cdofvel_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cdofd_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cdofd_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        f_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        f_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        ctrl_force=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        ctrl_pos=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        ctrl_vel=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
         ctrl_mode=V(dtype=gs.ti_int, shape=shape),
         hibernated=V(dtype=gs.ti_int, shape=shape),
     )
@@ -1186,6 +1227,7 @@ def get_dofs_state(solver):
 
 @DATA_ORIENTED
 class StructLinksState(metaclass=BASE_METACLASS):
+    # *_bw: Cache to avoid overwriting for backward pass
     cinr_inertial: V_ANNOTATION
     cinr_pos: V_ANNOTATION
     cinr_quat: V_ANNOTATION
@@ -1198,16 +1240,24 @@ class StructLinksState(metaclass=BASE_METACLASS):
     cdd_ang: V_ANNOTATION
     pos: V_ANNOTATION
     quat: V_ANNOTATION
+    pos_bw: V_ANNOTATION
+    quat_bw: V_ANNOTATION
     i_pos: V_ANNOTATION
+    i_pos_bw: V_ANNOTATION
     i_quat: V_ANNOTATION
     j_pos: V_ANNOTATION
     j_quat: V_ANNOTATION
+    j_pos_bw: V_ANNOTATION
+    j_quat_bw: V_ANNOTATION
     j_vel: V_ANNOTATION
     j_ang: V_ANNOTATION
     cd_ang: V_ANNOTATION
     cd_vel: V_ANNOTATION
+    cd_ang_bw: V_ANNOTATION
+    cd_vel_bw: V_ANNOTATION
     mass_sum: V_ANNOTATION
     root_COM: V_ANNOTATION  # COM of the kinematic tree
+    root_COM_bw: V_ANNOTATION
     mass_shift: V_ANNOTATION
     i_pos_shift: V_ANNOTATION
     cacc_ang: V_ANNOTATION
@@ -1224,43 +1274,54 @@ class StructLinksState(metaclass=BASE_METACLASS):
 
 
 def get_links_state(solver):
+    max_n_joints_per_link = solver._static_rigid_sim_config.max_n_joints_per_link
     shape = (solver.n_links_, solver._B)
+    requires_grad = solver._requires_grad
+    shape_bw = (solver.n_links_, max(max_n_joints_per_link + 1, 1), solver._B)
 
     return StructLinksState(
-        cinr_inertial=V(dtype=gs.ti_mat3, shape=shape),
-        cinr_pos=V(dtype=gs.ti_vec3, shape=shape),
-        cinr_quat=V(dtype=gs.ti_vec4, shape=shape),
-        cinr_mass=V(dtype=gs.ti_float, shape=shape),
-        crb_inertial=V(dtype=gs.ti_mat3, shape=shape),
-        crb_pos=V(dtype=gs.ti_vec3, shape=shape),
-        crb_quat=V(dtype=gs.ti_vec4, shape=shape),
-        crb_mass=V(dtype=gs.ti_float, shape=shape),
-        cdd_vel=V(dtype=gs.ti_vec3, shape=shape),
-        cdd_ang=V(dtype=gs.ti_vec3, shape=shape),
-        pos=V(dtype=gs.ti_vec3, shape=shape),
-        quat=V(dtype=gs.ti_vec4, shape=shape),
-        i_pos=V(dtype=gs.ti_vec3, shape=shape),
-        i_quat=V(dtype=gs.ti_vec4, shape=shape),
-        j_pos=V(dtype=gs.ti_vec3, shape=shape),
-        j_quat=V(dtype=gs.ti_vec4, shape=shape),
-        j_vel=V(dtype=gs.ti_vec3, shape=shape),
-        j_ang=V(dtype=gs.ti_vec3, shape=shape),
-        cd_ang=V(dtype=gs.ti_vec3, shape=shape),
-        cd_vel=V(dtype=gs.ti_vec3, shape=shape),
-        mass_sum=V(dtype=gs.ti_float, shape=shape),
-        root_COM=V(dtype=gs.ti_vec3, shape=shape),
-        mass_shift=V(dtype=gs.ti_float, shape=shape),
-        i_pos_shift=V(dtype=gs.ti_vec3, shape=shape),
-        cacc_ang=V(dtype=gs.ti_vec3, shape=shape),
-        cacc_lin=V(dtype=gs.ti_vec3, shape=shape),
-        cfrc_ang=V(dtype=gs.ti_vec3, shape=shape),
-        cfrc_vel=V(dtype=gs.ti_vec3, shape=shape),
-        cfrc_applied_ang=V(dtype=gs.ti_vec3, shape=shape),
-        cfrc_applied_vel=V(dtype=gs.ti_vec3, shape=shape),
-        cfrc_coupling_ang=V(dtype=gs.ti_vec3, shape=shape),
-        cfrc_coupling_vel=V(dtype=gs.ti_vec3, shape=shape),
-        contact_force=V(dtype=gs.ti_vec3, shape=shape),
-        contact_torque=V(dtype=gs.ti_vec3, shape=shape),
+        cinr_inertial=V(dtype=gs.ti_mat3, shape=shape, needs_grad=requires_grad),
+        cinr_pos=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cinr_quat=V(dtype=gs.ti_vec4, shape=shape, needs_grad=requires_grad),
+        cinr_mass=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        crb_inertial=V(dtype=gs.ti_mat3, shape=shape, needs_grad=requires_grad),
+        crb_pos=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        crb_quat=V(dtype=gs.ti_vec4, shape=shape, needs_grad=requires_grad),
+        crb_mass=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        cdd_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cdd_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        pos=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        quat=V(dtype=gs.ti_vec4, shape=shape, needs_grad=requires_grad),
+        pos_bw=V(dtype=gs.ti_vec3, shape=shape_bw, needs_grad=requires_grad),
+        quat_bw=V(dtype=gs.ti_vec4, shape=shape_bw, needs_grad=requires_grad),
+        i_pos=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        i_pos_bw=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        i_quat=V(dtype=gs.ti_vec4, shape=shape, needs_grad=requires_grad),
+        j_pos=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        j_quat=V(dtype=gs.ti_vec4, shape=shape, needs_grad=requires_grad),
+        j_pos_bw=V(dtype=gs.ti_vec3, shape=shape_bw, needs_grad=requires_grad),
+        j_quat_bw=V(dtype=gs.ti_vec4, shape=shape_bw, needs_grad=requires_grad),
+        j_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        j_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cd_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cd_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cd_ang_bw=V(dtype=gs.ti_vec3, shape=shape_bw, needs_grad=requires_grad),
+        cd_vel_bw=V(dtype=gs.ti_vec3, shape=shape_bw, needs_grad=requires_grad),
+        mass_sum=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        root_COM=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        root_COM_bw=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        mass_shift=V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        i_pos_shift=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cacc_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cacc_lin=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cfrc_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cfrc_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cfrc_applied_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cfrc_applied_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cfrc_coupling_ang=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        cfrc_coupling_vel=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        contact_force=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        contact_torque=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         hibernated=V(dtype=gs.ti_int, shape=shape),
     )
 
@@ -1350,10 +1411,11 @@ class StructJointsState(metaclass=BASE_METACLASS):
 
 def get_joints_state(solver):
     shape = (solver.n_joints_, solver._B)
+    requires_grad = solver._requires_grad
 
     return StructJointsState(
-        xanchor=V(dtype=gs.ti_vec3, shape=shape),
-        xaxis=V(dtype=gs.ti_vec3, shape=shape),
+        xanchor=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        xaxis=V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
     )
 
 
@@ -1644,7 +1706,7 @@ class StructEqualitiesInfo(metaclass=BASE_METACLASS):
 
 
 def get_equalities_info(solver):
-    shape = (solver.n_equalities_candidate, solver._B)
+    shape = (solver.n_candidate_equalities_, solver._B)
 
     return StructEqualitiesInfo(
         eq_obj1id=V(dtype=gs.ti_int, shape=shape),
@@ -1705,25 +1767,59 @@ def get_entities_state(solver):
     )
 
 
+# =========================================== RigidAdjointCache ===========================================
+@DATA_ORIENTED
+class StructRigidAdjointCache(metaclass=BASE_METACLASS):
+    # This cache stores intermediate values during rigid body simulation to use Taichi's AD. Taichi's AD requires
+    # us not to overwrite the values that have been read during the forward pass, so we need to store the intemediate
+    # values in this cache to avoid overwriting them. Specifically, after we compute next frame's qpos, dofs_vel, and
+    # dofs_acc, we need to store them in this cache because we overwrite the values in the next frame. See how
+    # [kernel_save_adjoint_cache] is used in [rigid_solver_decomp.py] to store the values in this cache.
+    qpos: V_ANNOTATION
+    dofs_vel: V_ANNOTATION
+    dofs_acc: V_ANNOTATION
+
+
+def get_rigid_adjoint_cache(solver):
+    substeps_local = solver._sim.substeps_local
+    requires_grad = solver._requires_grad
+
+    return StructRigidAdjointCache(
+        qpos=V(dtype=gs.ti_float, shape=(substeps_local + 1, solver.n_qs_, solver._B), needs_grad=requires_grad),
+        dofs_vel=V(dtype=gs.ti_float, shape=(substeps_local + 1, solver.n_dofs_, solver._B), needs_grad=requires_grad),
+        dofs_acc=V(dtype=gs.ti_float, shape=(substeps_local + 1, solver.n_dofs_, solver._B), needs_grad=requires_grad),
+    )
+
+
 # =================================== StructRigidSimStaticConfig ===================================
 
 
 @ti.data_oriented
 class StructRigidSimStaticConfig(metaclass=AutoInitMeta):
     para_level: int
-    requires_grad: bool
-    use_hibernation: bool
-    batch_links_info: bool
-    batch_dofs_info: bool
-    batch_joints_info: bool
-    enable_mujoco_compatibility: bool
-    enable_multi_contact: bool
     enable_collision: bool
-    enable_joint_limit: bool
-    box_box_detection: bool
-    sparse_solve: bool
-    integrator: int
-    solver_type: int
+    use_hibernation: bool = False
+    batch_links_info: bool = False
+    batch_dofs_info: bool = False
+    batch_joints_info: bool = False
+    enable_mujoco_compatibility: bool = False
+    enable_multi_contact: bool = False
+    enable_joint_limit: bool = False
+    box_box_detection: bool = False
+    sparse_solve: bool = False
+    integrator: int = gs.integrator.approximate_implicitfast
+    solver_type: int = gs.constraint_solver.CG
+    requires_grad: bool = False
+    is_backward: bool = False
+    max_n_links_per_entity: int = -1
+    max_n_joints_per_link: int = -1
+    max_n_dofs_per_joint: int = -1
+    max_n_qs_per_link: int = -1
+    max_n_dofs_per_entity: int = -1
+    max_n_dofs_per_link: int = -1
+    max_n_geoms_per_entity: int = -1
+    n_links: int = -1
+    n_geoms: int = -1
 
 
 # =========================================== DataManager ===========================================
@@ -1733,6 +1829,7 @@ class StructRigidSimStaticConfig(metaclass=AutoInitMeta):
 class DataManager:
     def __init__(self, solver):
         self.rigid_global_info = get_rigid_global_info(solver)
+
         self.dofs_info = get_dofs_info(solver)
         self.dofs_state = get_dofs_state(solver)
         self.links_info = get_links_info(solver)
@@ -1759,6 +1856,16 @@ class DataManager:
 
         self.entities_info = get_entities_info(solver)
         self.entities_state = get_entities_state(solver)
+
+        if solver._static_rigid_sim_config.requires_grad:
+            # Data structures required for backward pass
+            self.dofs_state_adjoint_cache = get_dofs_state(solver)
+            self.links_state_adjoint_cache = get_links_state(solver)
+            self.joints_state_adjoint_cache = get_joints_state(solver)
+            self.geoms_state_adjoint_cache = get_geoms_state(solver)
+
+        self.rigid_adjoint_cache = get_rigid_adjoint_cache(solver)
+        self.errno = V_SCALAR_FROM(dtype=gs.ti_int, value=0)
 
 
 DofsState = StructDofsState if gs.use_ndarray else ti.template()
@@ -1793,3 +1900,4 @@ GJKInfo = StructGJKInfo if gs.use_ndarray else ti.template()
 SDFInfo = StructSDFInfo if gs.use_ndarray else ti.template()
 ContactIslandState = StructContactIslandState if gs.use_ndarray else ti.template()
 DiffContactInput = StructDiffContactInput if gs.use_ndarray else ti.template()
+RigidAdjointCache = StructRigidAdjointCache if gs.use_ndarray else ti.template()

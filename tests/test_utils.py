@@ -107,6 +107,7 @@ def _ti_kernel_wrapper(ti_func, num_inputs, num_outputs, *args):
     return kernel
 
 
+@pytest.mark.slow  # ~110s
 @pytest.mark.required
 @pytest.mark.parametrize("batch_shape", [(10, 40, 25), ()])
 def test_utils_geom_taichi_vs_tensor_consistency(batch_shape):
@@ -362,7 +363,7 @@ def test_pyrender_vec3():
     # repr and tensor conversion
     t = a.as_tensor()
     assert isinstance(t, torch.Tensor)
-    assert_allclose(t.cpu().numpy(), a.v, tol=gs.EPS)
+    assert_allclose(t, a.v, tol=gs.EPS)
 
     # --- Quat tests ---
     q = Quat.from_wxyz(1.0, 0.0, 0.0, 0.0)  # identity
@@ -407,12 +408,12 @@ def test_pyrender_vec3():
     # tensor conversion
     tq = qz.as_tensor()
     assert isinstance(tq, torch.Tensor)
-    assert_allclose(tq.cpu().numpy(), qz.v, tol=gs.EPS)
+    assert_allclose(tq, qz.v, tol=gs.EPS)
 
 
 def test_fps_tracker():
     n_envs = 23
-    tracker = FPSTracker(alpha=0, n_envs=n_envs)
+    tracker = FPSTracker(alpha=0.0, minimum_interval_seconds=0.1, n_envs=n_envs)
     tracker.step(current_time=10.0)
     assert not tracker.step(current_time=10.0)
     assert not tracker.step(current_time=10.0)

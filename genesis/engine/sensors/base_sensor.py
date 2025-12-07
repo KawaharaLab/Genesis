@@ -9,11 +9,11 @@ import torch
 import genesis as gs
 from genesis.repr_base import RBC
 from genesis.utils.geom import euler_to_quat
-from genesis.utils.misc import concat_with_tensor, make_tensor_field
+from genesis.utils.misc import concat_with_tensor, make_tensor_field, broadcast_tensor
 
 if TYPE_CHECKING:
-    from genesis.engine.solvers import RigidSolver
     from genesis.engine.entities.rigid_entity.rigid_link import RigidLink
+    from genesis.engine.solvers import RigidSolver
     from genesis.recorders.base_recorder import Recorder, RecorderOptions
     from genesis.utils.ring_buffer import TensorRingBuffer
     from genesis.vis.rasterizer_context import RasterizerContext
@@ -264,7 +264,7 @@ class Sensor(RBC, Generic[SharedSensorMetadataT]):
             if interp:
                 ratio = torch.frac(cur_delay_ts)
                 data_right = buffered_data.at(cur_delay_ts_int + 1, envs_idx, tensor_slice)
-                torch.lerp(data_left, data_right, ratio.unsqueeze(1), out=sensor_cache)
+                torch.lerp(data_left, data_right, ratio[:, None], out=sensor_cache)
             else:
                 sensor_cache.copy_(data_left)
 
@@ -284,7 +284,7 @@ class Sensor(RBC, Generic[SharedSensorMetadataT]):
         for i, shape in enumerate(self._return_shapes):
             field_data = tensor_chunk[..., self._cache_slices[i]].reshape((len(envs_idx), *shape))
             if self._manager._sim.n_envs == 0:
-                field_data = field_data.squeeze(0)
+                field_data = field_data[0]
             return_values.append(field_data)
 
         if len(return_values) == 1:
@@ -293,6 +293,18 @@ class Sensor(RBC, Generic[SharedSensorMetadataT]):
 
     def _sanitize_envs_idx(self, envs_idx) -> torch.Tensor:
         return self._manager._sim._scene._sanitize_envs_idx(envs_idx)
+
+    def _set_metadata_field(self, value, field, field_size, envs_idx=None):
+        envs_idx = self._sanitize_envs_idx(envs_idx)
+        if field.ndim == 2:
+            # flat field structure
+            idx = self._idx * field_size
+            index_slice = slice(idx, idx + field_size)
+        else:
+            # per sensor field structure
+            index_slice = self._idx
+
+        field[:, index_slice] = broadcast_tensor(value, field.dtype, (len(envs_idx), field_size), ("envs_idx", ""))
 
 
 @dataclass
@@ -327,6 +339,11 @@ class RigidSensorMixin(Generic[RigidSensorMetadataMixinT]):
 
         batch_size = self._manager._sim._B
 
+        # If entity_idx is < 0, this is a static sensor (not attached to any link)
+        if self._options.entity_idx is None or self._options.entity_idx < 0:
+            self._link = None
+            return
+
         entity = self._shared_metadata.solver.entities[self._options.entity_idx]
         self._link = entity.links[self._options.link_idx_local]
         self._shared_metadata.links_idx = concat_with_tensor(
@@ -344,6 +361,14 @@ class RigidSensorMixin(Generic[RigidSensorMetadataMixinT]):
             expand=(batch_size, 1, 4),
             dim=1,
         )
+
+    @gs.assert_built
+    def set_pos_offset(self, pos_offset, envs_idx=None):
+        self._set_metadata_field(pos_offset, self._shared_metadata.offsets_pos, 3, envs_idx)
+
+    @gs.assert_built
+    def set_quat_offset(self, quat_offset, envs_idx=None):
+        self._set_metadata_field(quat_offset, self._shared_metadata.offsets_quat, 4, envs_idx)
 
 
 @dataclass
@@ -372,25 +397,6 @@ class NoisySensorMixin(Generic[NoisySensorMetadataMixinT]):
     Base sensor class for analog sensors that are attached to a RigidEntity.
     """
 
-    def _set_metadata_field(self, input, field, field_size, envs_idx):
-        envs_idx = self._sanitize_envs_idx(envs_idx)
-        idx = self._idx * field_size
-        field[envs_idx, idx : idx + field_size] = self._sanitize_for_metadata_tensor(
-            input, shape=(len(envs_idx), field_size), dtype=field.dtype
-        )
-
-    def _sanitize_for_metadata_tensor(self, input, shape, dtype) -> torch.Tensor:
-        if not isinstance(input, Sequence):
-            input = [input]
-        tensor_input = torch.tensor(input, dtype=dtype, device=gs.device)
-        if tensor_input.ndim == len(shape) - 1:
-            # Batch dimension is missing
-            tensor_input = tensor_input.unsqueeze(0).expand((shape[0], *tensor_input.shape))
-        assert (
-            tensor_input.shape == shape
-        ), f"Input shape {tensor_input.shape} for setting sensor metadata does not match shape {shape}"
-        return tensor_input
-
     @gs.assert_built
     def set_resolution(self, resolution, envs_idx=None):
         self._set_metadata_field(resolution, self._shared_metadata.resolution, self._cache_size, envs_idx)
@@ -410,11 +416,11 @@ class NoisySensorMixin(Generic[NoisySensorMetadataMixinT]):
     @gs.assert_built
     def set_jitter(self, jitter, envs_idx=None):
         jitter_ts = np.asarray(jitter, dtype=gs.np_float) / self._dt
-        self._set_metadata_field(jitter_ts, self._shared_metadata.jitter_ts, field_size=1, envs_idx=envs_idx)
+        self._set_metadata_field(jitter_ts, self._shared_metadata.jitter_ts, 1, envs_idx)
 
     @gs.assert_built
     def set_delay(self, delay, envs_idx=None):
-        self._set_metadata_field(delay, self._shared_metadata.delay_in_steps, field_size=1, envs_idx=envs_idx)
+        self._set_metadata_field(delay, self._shared_metadata.delay_in_steps, 1, envs_idx)
 
     def build(self):
         """

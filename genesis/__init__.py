@@ -21,6 +21,11 @@ except ImportError as e:
     raise ImportError(
         "'torch' module not available. Please install pytorch manually: https://pytorch.org/get-started/locally/"
     ) from e
+if tuple(map(int, torch.__version__.split(".")[:2])) < (2, 8):
+    raise ImportError(
+        "'torch<2.8.0' is not supported. Please update pytorch manually: https://pytorch.org/get-started/locally/"
+    )
+
 import numpy as np
 
 from .constants import GS_ARCH, TI_ARCH
@@ -28,7 +33,6 @@ from .constants import backend as gs_backend
 from .logging import Logger
 from .version import __version__
 from .utils import redirect_libc_stderr, set_random_seed, get_platform, get_device
-from .utils.misc import ALLOCATE_TENSOR_WARNING
 
 
 # Global state
@@ -41,6 +45,7 @@ device: torch.device | None = None
 backend: gs_backend | None = None
 use_ndarray: bool | None = None
 use_fastcache: bool | None = None
+use_zerocopy: bool | None = None
 EPS: float | None = None
 
 
@@ -103,9 +108,6 @@ def init(
     logger.info(f"~<│{wave}>~ ~~~~<Genesis>~~~~ ~<{wave}│>~")
     logger.info(f"~<╰{'─'*(bar_width)}╯>~")
 
-    # FIXME: Disable this warning for now, because it is not useful without printing the entire traceback
-    logger.addFilter(lambda record: record.msg != ALLOCATE_TENSOR_WARNING)
-
     # Get concrete device and backend
     global device
     device, device_name, total_mem, backend = get_device(backend)
@@ -117,8 +119,8 @@ def init(
         backend = gs_backend.cpu
 
     # Configure GsTaichi fast cache and array type
-    global use_ndarray, use_fastcache
-    is_ndarray_disabled = (os.environ.get("GS_ENABLE_NDARRAY") or ("0" if sys.platform == "darwin" else "1")) == "0"
+    global use_ndarray, use_fastcache, use_zerocopy
+    is_ndarray_disabled = (os.environ.get("GS_ENABLE_NDARRAY") or ("0" if backend == gs_backend.metal else "1")) == "0"
     if use_ndarray is None:
         _use_ndarray = not (is_ndarray_disabled or performance_mode)
     else:
@@ -135,6 +137,19 @@ def init(
         if use_fastcache and is_fastcache_disabled:
             raise_exception("Genesis previous initialized. GsTaichi fast cache mode cannot be disabled anymore.")
     use_ndarray, use_fastcache = _use_ndarray, _use_fastcache
+
+    # Unlike dynamic vs static array mode, and fastcache, zero-copy can be toggle on/off between init without issue.
+    # FIXME: ti.Field does not support zero-copy on Metal for now because of a bug in Torch itself.
+    # See: https://github.com/pytorch/pytorch/pull/168193
+    _use_zerocopy = int(os.environ["GS_ENABLE_ZEROCOPY"]) if "GS_ENABLE_ZEROCOPY" in os.environ else None
+    if backend in (gs_backend.cpu, gs_backend.cuda):
+        if _use_zerocopy is None:
+            _use_zerocopy = True
+    else:
+        if _use_zerocopy:
+            raise_exception(f"Zero-copy only support by GsTaichi dynamic array mode on CPU and CUDA backend.")
+        _use_zerocopy = False
+    use_zerocopy = _use_zerocopy and (_use_ndarray or backend != gs_backend.metal)
 
     # Define the right dtypes in accordance with selected backend and precision
     global ti_float, np_float, tc_float
@@ -156,9 +171,9 @@ def init(
     tc_int = torch.int32
 
     # Bool
-    # Note that `ti.u1` is broken on Apple Metal and output garbage.
+    # Note that `ti.u1` is broken on Apple Metal and Vulkan.
     global ti_bool, np_bool, tc_bool
-    if backend == gs_backend.metal:
+    if backend in (gs_backend.metal, gs_backend.vulkan):
         ti_bool = ti.i32
         np_bool = np.int32
         tc_bool = torch.int32
@@ -214,6 +229,7 @@ def init(
     if ti_num_cpu_threads is not None:
         taichi_kwargs.update(
             cpu_max_num_threads=int(ti_num_cpu_threads),
+            num_compile_threads=int(ti_num_cpu_threads),
         )
 
     if seed is not None:
@@ -229,19 +245,20 @@ def init(
     with redirect_stdout(_ti_outputs):
         ti.init(
             arch=TI_ARCH[platform][backend],
-            # Add a (hidden) mechanism to forceable disable taichi debug mode as it is still a bit experimental
-            debug=ti_debug and backend == gs.cpu,
-            check_out_of_bound=debug,
+            # Add a (hidden) mechanism to forcible disable taichi debug mode as it is still a bit experimental
+            debug=ti_debug and backend == gs_backend.cpu,
+            check_out_of_bound=debug and backend != gs_backend.metal,
             # force_scalarize_matrix=True for speeding up kernel compilation
-            # Turning off 'force_scalarize_matrix' is causing numerical instabilities ('nan') on MacOS
+            # FIXME: Turning off 'force_scalarize_matrix' is causing numerical instabilities ('nan') on MacOS
             force_scalarize_matrix=True,
-            # Turning off 'advanced_optimization' is causing issues on MacOS
+            # FIXME: Turning off 'advanced_optimization' is causing issues on MacOS
             advanced_optimization=True,
             # This improves runtime speed by around 1%-5%, while it makes compilation up to 6x slower
             cfg_optimization=False,
             fast_math=not debug,
             default_ip=ti_int,
             default_fp=ti_float,
+            unrolling_limit=100,  # This threshold needs to be increased to accommodate gradient computation
             **taichi_kwargs,
         )
 
@@ -290,7 +307,7 @@ def init(
             ("🌱 seed", seed),
             ("🐛 debug", debug),
             ("📏 precision", precision),
-            ("🏎️ performance", performance_mode),
+            ("🔥 performance", performance_mode),
             ("💬 verbose", _logging.getLevelName(gs.logger.level)),
         )
     )
@@ -305,7 +322,7 @@ def init(
 
 def destroy():
     """
-    A simple wrapper for ti.reset(). This call releases all gpu memories allocated and destroyes all runtime data, and also forces caching of compiled kernels.
+    A simple wrapper for ti.reset(). This call releases all gpu memories allocated and destroys all runtime data, and also forces caching of compiled kernels.
     gs.init() needs to be called again to reinitialize the system after destroy.
     """
     # Early return if not initialized
@@ -390,7 +407,7 @@ with open(os.devnull, "w") as stderr, redirect_libc_stderr(stderr):
         from pygel3d import graph, hmesh
     except OSError as e:
         # Import may fail because of missing system dependencies (libGLU.so.1).
-        # This is not blocking because it is only an issue for hybrig entities.
+        # This is not blocking because it is only an issue for hybrid entities.
         pass
 
     try:
