@@ -4,7 +4,6 @@ Author: Matthew Matl
 """
 
 import sys
-from time import time
 
 import PIL
 import pyglet
@@ -24,7 +23,6 @@ from .constants import (
     TextAlign,
 )
 from .font import FontCache
-from .jit_render import JITRenderer
 from .light import DirectionalLight, PointLight, SpotLight
 from .material import MetallicRoughnessMaterial, SpecularGlossinessMaterial
 from .shader_program import ShaderProgramCache
@@ -141,14 +139,18 @@ class Renderer(object):
         # Update context with meshes and textures
         if is_first_pass:
             self._update_context(scene, flags)
-            self.jit.update(scene)
+            all_ready = self.jit.update(scene)
+            if not all_ready:
+                # Shadow textures not yet initialized - skip this frame to avoid
+                # flickering. The caller should display the previous frame.
+                return ()
 
         if flags & RenderFlags.SEG or flags & RenderFlags.DEPTH_ONLY or flags & RenderFlags.FLAT:
             flags &= ~RenderFlags.REFLECTIVE_FLOOR
 
         if flags & RenderFlags.ENV_SEPARATE and flags & RenderFlags.OFFSCREEN:
             n_envs = scene.n_envs
-            use_env_idx = True
+            use_env_idx = True and scene.n_envs > 1
         else:
             n_envs = 1
             use_env_idx = False
@@ -174,7 +176,6 @@ class Renderer(object):
                             self._shadow_mapping_pass(scene, ln, flags, env_idx=env_idx)
                         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
-            # Make forward pass
             if flags & RenderFlags.REFLECTIVE_FLOOR:
                 self._floor_pass(scene, flags, env_idx=env_idx)
 
@@ -186,7 +187,8 @@ class Renderer(object):
                     for idx, val in enumerate(retval):
                         retval_list[idx].append(val)
 
-            # If necessary, make normals pass
+            # Render normal visualization on screen only if requested, ie after reading frame buffer and without
+            # cleaning first.
             if flags & (RenderFlags.VERTEX_NORMALS | RenderFlags.FACE_NORMALS):
                 self._normal_pass(scene, flags, env_idx=env_idx)
 
@@ -350,9 +352,9 @@ class Renderer(object):
         glClearColor(0.0, 0.0, 0.0, 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        V, P = self._get_camera_matrices(scene)
+        V, P = self._get_camera_matrices(scene, env_idx)
+        cam_pos = self._get_camera_pose(scene, env_idx)[:3, 3]
 
-        cam_pos = scene.get_pose(scene.main_camera_node)[:3, 3]
         screen_size = np.array([self.viewport_width, self.viewport_height], np.float32)
 
         self.jit.forward_pass(
@@ -387,8 +389,8 @@ class Renderer(object):
             glEnable(GL_MULTISAMPLE)
 
         # Set up camera matrices
-        V, P = self._get_camera_matrices(scene)
-        cam_pos = scene.get_pose(scene.main_camera_node)[:3, 3]
+        V, P = self._get_camera_matrices(scene, env_idx)
+        cam_pos = self._get_camera_pose(scene, env_idx)[:3, 3]
 
         floor_tex = self._floor_texture_color._texid if flags & RenderFlags.REFLECTIVE_FLOOR else 0
         screen_size = np.array([self.viewport_width, self.viewport_height], np.float32)
@@ -451,7 +453,7 @@ class Renderer(object):
         program = None
 
         # Set up camera matrices
-        V, P = self._get_camera_matrices(scene)
+        V, P = self._get_camera_matrices(scene, env_idx)
 
         # Now, render each object in sorted order
         for node in scene.sorted_mesh_nodes():
@@ -686,18 +688,28 @@ class Renderer(object):
     # Camera Matrix Management
     ###########################################################################
 
-    def _get_camera_matrices(self, scene):
+    def _get_camera_matrices(self, scene, env_idx):
         main_camera_node = scene.main_camera_node
         if main_camera_node is None:
             raise ValueError("Cannot render scene without a camera")
         P = main_camera_node.camera.get_projection_matrix(width=self.viewport_width, height=self.viewport_height)
-        pose = scene.get_pose(main_camera_node)
+        pose = self._get_camera_pose(scene, env_idx)
         V = np.linalg.inv(pose)  # V maps from world to camera
         return V, P
 
+    def _get_camera_pose(self, scene, env_idx):
+        cam_pos = scene.get_pose(scene.main_camera_node)
+        if len(cam_pos.shape) == 3:
+            if cam_pos.shape[0] != 1:
+                assert env_idx != -1, "We have a multiple camera pose scene, we should be rendering per env"
+                cam_pos = cam_pos[env_idx]
+            else:
+                cam_pos = cam_pos[0]
+        return cam_pos
+
     def _get_light_cam_matrices(self, scene, light_node, flags):
         light = light_node.light
-        pose = scene.get_pose(light_node).copy()
+        pose = scene.get_pose(light_node)
         camera = light._get_shadow_camera(scene.scale)
         P = camera.get_projection_matrix()
         if isinstance(light, DirectionalLight):
@@ -1031,7 +1043,8 @@ class Renderer(object):
             glBindFramebuffer(GL_READ_FRAMEBUFFER, self._main_fb_ms)
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, self._main_fb)
             glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_LINEAR)
-            glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_DEPTH_BUFFER_BIT, GL_NEAREST)
+            if flags & RenderFlags.RET_DEPTH:
+                glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_DEPTH_BUFFER_BIT, GL_NEAREST)
         glBindFramebuffer(GL_READ_FRAMEBUFFER, self._main_fb)
 
         # Read depth if requested

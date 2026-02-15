@@ -1,5 +1,4 @@
 import inspect
-import math
 import os
 import time
 from functools import cached_property
@@ -133,7 +132,7 @@ class Camera(RBC):
         self._follow_smoothing = None
         self._follow_fix_orientation = None
 
-        if self._model not in ["pinhole", "thinlens"]:
+        if self._model not in ("pinhole", "thinlens", "fisheye"):
             gs.raise_exception(f"Invalid camera model: {self._model}")
 
         if self._focus_dist is None:
@@ -156,7 +155,7 @@ class Camera(RBC):
                 self._raytracer.add_camera(self)
             else:
                 self._is_batched = False
-                if self._visualizer.scene.n_envs > 0 and self._visualizer._context.env_separate_rigid:
+                if self._visualizer.scene.n_envs > 1 and self._visualizer._context.env_separate_rigid:
                     gs.logger.warning(
                         "Batched rendering via 'VisOptions.env_separate_rigid=True' is only partially supported by "
                         "Rasterizer for now. The same camera transform will be used for all the environments."
@@ -165,7 +164,7 @@ class Camera(RBC):
                 if self._env_idx is None:
                     if not self._is_batched:
                         self._env_idx = int(self._visualizer._context.rendered_envs_idx[0])
-                        if self._visualizer.scene.n_envs > 0:
+                        if self._visualizer.scene.n_envs > 1:
                             gs.logger.info(
                                 "Raytracer and Rasterizer requires binding to the camera with a specific environment "
                                 "index. Defaulting to 'rendered_envs_idx[0]'. Please specify 'env_idx' if necessary."
@@ -661,7 +660,7 @@ class Camera(RBC):
         if self._is_batched:
             for data in (transform, pos, lookat, up):
                 if data is not None and len(data) != n_envs:
-                    gs.raise_exception(f"Input data inconsistent with 'envs_idx'.")
+                    gs.raise_exception("Input data inconsistent with 'envs_idx'.")
 
         # Compute redundant quantities
         if transform is None:
@@ -677,8 +676,8 @@ class Camera(RBC):
             self._pos[envs_idx] = pos
         if lookat is not None:
             self._lookat[envs_idx] = lookat
-        if up is not None:
-            self._up[envs_idx] = up
+        # Update up with the computed Y-axis from rotation matrix
+        self._up[envs_idx] = transform[..., :3, 1]
         self._transform[envs_idx] = transform
         self._quat[envs_idx] = gu.R_to_quat(transform[..., :3, :3])
 
@@ -732,7 +731,7 @@ class Camera(RBC):
             caller_file = inspect.stack()[-1].filename
             save_to_filename = (
                 os.path.splitext(os.path.basename(caller_file))[0]
-                + f'_cam_{self.idx}_{time.strftime("%Y%m%d_%H%M%S")}.mp4'
+                + f"_cam_{self.idx}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
             )
 
         if self._is_batched:
@@ -809,7 +808,7 @@ class Camera(RBC):
 
     @property
     def model(self):
-        """The camera model: `pinhole` or `thinlens`."""
+        """The camera model: `pinhole`, `thinlens` or `fisheye`."""
         return self._model
 
     @property
@@ -838,7 +837,7 @@ class Camera(RBC):
                 projected_pixel_size = min(0.036 / self._res[1], 0.024 / self._res[0])
             image_dist = self._res[1] * projected_pixel_size / (2 * tan_half_fov)
             return 1.0 / (1.0 / image_dist + 1.0 / self._focus_dist)
-        elif self.model == "pinhole":
+        elif self.model in ("pinhole", "fisheye"):
             return self._res[0] / (2.0 * tan_half_fov)
 
     @property

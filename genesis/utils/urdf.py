@@ -1,18 +1,52 @@
 import os
+import xml.etree.ElementTree as ET
 from itertools import chain
 from pathlib import Path
 
 import numpy as np
 import trimesh
-from trimesh.visual import ColorVisuals, TextureVisuals
-from trimesh.visual.color import VertexColor
 
 import genesis as gs
+import genesis.utils.gltf as gltf_utils
 from genesis.ext import urdfpy
 
 from . import geom as gu
-from . import mesh as mu
 from .misc import get_assets_dir
+
+
+def get_robot_name(file_path):
+    """
+    Extract the robot name from a URDF file.
+
+    The name is extracted from the ``<robot name="...">`` attribute, which is
+    required by the URDF specification.
+
+    Reference: https://wiki.ros.org/urdf/XML/robot
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to the URDF file.
+
+    Returns
+    -------
+    str
+        The robot name.
+
+    Raises
+    ------
+    ValueError
+        If the robot name attribute is missing or empty.
+    """
+    path = os.path.join(get_assets_dir(), file_path)
+    tree = ET.parse(path)
+    root = tree.getroot()
+    if root.tag == "robot":
+        name = root.attrib.get("name")
+        if name:
+            return name
+        raise ValueError(f"URDF file '{file_path}' is missing required 'name' attribute on <robot> element.")
+    raise ValueError(f"Invalid URDF file '{file_path}'. Missing <robot> root element.")
 
 
 def _order_links(l_infos, j_infos, links_g_infos=None):
@@ -59,8 +93,10 @@ def _order_links(l_infos, j_infos, links_g_infos=None):
 def parse_urdf(morph, surface):
     if isinstance(morph.file, (str, Path)):
         path = os.path.join(get_assets_dir(), morph.file)
+        parent_dir = os.path.dirname(path)
         robot = urdfpy.URDF.load(path)
     else:
+        parent_dir = os.getcwd()
         robot = morph.file
 
     # Merge links connected by fixed joints
@@ -103,95 +139,103 @@ def parse_urdf(morph, surface):
             l_info["inertial_i"] = link.inertial.inertia
             l_info["inertial_mass"] = link.inertial.mass
 
-        for geom in (*link.collisions, *link.visuals):
-            link_g_infos_ = []
-            geom_is_col = not isinstance(geom, urdfpy.Visual)
-            if isinstance(geom.geometry.geometry, urdfpy.Mesh):
+        for geom_prop in (*link.collisions, *link.visuals):
+            geometry = geom_prop.geometry.geometry
+            geom_is_col = not isinstance(geom_prop, urdfpy.Visual)
+
+            geom_meshes = []
+            if isinstance(geometry, urdfpy.Mesh):
                 geom_type = gs.GEOM_TYPE.MESH
                 geom_data = None
 
-                # One asset (.obj) can contain multiple meshes. Each mesh is one RigidGeom in genesis.
-                for tmesh in geom.geometry.meshes:
-                    scale = float(morph.scale)
-                    if geom.geometry.geometry.scale is not None:
-                        scale *= geom.geometry.geometry.scale
+                # One asset may contain multiple meshes (.obj, .glb, ...)
+                mesh_path = urdfpy.utils.get_filename(parent_dir, geometry.filename)
+                tmeshes = geometry.meshes
+                if mesh_path.lower().endswith(gs.options.morphs.GLTF_FORMATS):
+                    group_material = True
+                    meshes = gltf_utils.parse_mesh_glb(mesh_path, group_material, None, True, surface)
+                    tmeshes = [mesh.trimesh for mesh in meshes]
 
-                    mesh_path = urdfpy.utils.get_filename(os.path.dirname(path), geom.geometry.geometry.filename)
-                    mesh = gs.Mesh.from_trimesh(
-                        tmesh,
-                        scale=scale,
-                        surface=gs.surfaces.Collision() if geom_is_col else surface,
-                        metadata={"mesh_path": mesh_path},
-                    )
+                # Compute the absolute scale of the geometry
+                scale = float(morph.scale)
+                if geometry.scale is not None:
+                    scale *= geometry.scale
 
-                    if mesh_path.lower().endswith(gs.morphs.GLTF_FORMATS):
-                        if morph.parse_glb_with_zup:
-                            mesh.convert_to_zup()
-                        else:
-                            gs.logger.warning(
-                                "This file contains GLTF mesh, which is using y-up while Genesis uses z-up. Please set "
-                                "'parse_glb_with_zup=True' in morph options if you find the mesh is 90-degree rotated. "
-                            )
-
-                    visual = mesh.trimesh.visual
-                    has_color_override = (isinstance(visual, (ColorVisuals, TextureVisuals)) and visual.defined) or (
-                        isinstance(visual, VertexColor) and visual.vertex_colors.size > 0
-                    )
-                    if not geom_is_col and (morph.prioritize_urdf_material or not has_color_override):
-                        if geom.material is not None and geom.material.color is not None:
-                            mesh.set_color(geom.material.color)
-
-                    g_info = {"mesh" if geom_is_col else "vmesh": mesh}
-                    link_g_infos_.append(g_info)
+                metadata = {"mesh_path": mesh_path}
+                is_mesh_zup = morph.file_meshes_are_zup
             else:
-                # Each geometry primitive is one RigidGeom in genesis
-                if isinstance(geom.geometry.geometry, urdfpy.Box):
-                    tmesh = trimesh.creation.box(extents=geom.geometry.geometry.size)
+                if isinstance(geometry, urdfpy.Box):
+                    tmesh = trimesh.creation.box(extents=geometry.size)
                     geom_type = gs.GEOM_TYPE.BOX
-                    geom_data = np.array(geom.geometry.geometry.size)
-                elif isinstance(geom.geometry.geometry, urdfpy.Capsule):
-                    tmesh = trimesh.creation.capsule(
-                        radius=geom.geometry.geometry.radius, height=geom.geometry.geometry.length
-                    )
+                    geom_data = np.array(geometry.size)
+                elif isinstance(geometry, urdfpy.Capsule):
+                    tmesh = trimesh.creation.capsule(radius=geometry.radius, height=geometry.length)
                     geom_type = gs.GEOM_TYPE.CAPSULE
-                    geom_data = np.array([geom.geometry.geometry.radius, geom.geometry.geometry.length])
-                elif isinstance(geom.geometry.geometry, urdfpy.Cylinder):
-                    tmesh = trimesh.creation.cylinder(
-                        radius=geom.geometry.geometry.radius, height=geom.geometry.geometry.length
-                    )
+                    geom_data = np.array([geometry.radius, geometry.length])
+                elif isinstance(geometry, urdfpy.Cylinder):
+                    tmesh = trimesh.creation.cylinder(radius=geometry.radius, height=geometry.length)
                     geom_type = gs.GEOM_TYPE.CYLINDER
-                    geom_data = np.array([geom.geometry.geometry.radius, geom.geometry.geometry.length])
-                elif isinstance(geom.geometry.geometry, urdfpy.Sphere):
+                    geom_data = np.array([geometry.radius, geometry.length])
+                elif isinstance(geometry, urdfpy.Sphere):
                     if geom_is_col:
-                        tmesh = trimesh.creation.icosphere(radius=geom.geometry.geometry.radius, subdivisions=2)
+                        tmesh = trimesh.creation.icosphere(radius=geometry.radius, subdivisions=2)
                     else:
-                        tmesh = trimesh.creation.icosphere(radius=geom.geometry.geometry.radius)
+                        tmesh = trimesh.creation.icosphere(radius=geometry.radius)
                     geom_type = gs.GEOM_TYPE.SPHERE
-                    geom_data = np.array([geom.geometry.geometry.radius])
+                    geom_data = np.array([geometry.radius])
+                else:
+                    gs.raise_exception(f"Unsupported primitive geometry: {geometry}")
+
+                tmeshes = [tmesh]
+
+                scale = morph.scale
+                metadata = {}
+                is_mesh_zup = True
+
+            # Each mesh is one RigidGeom in genesis
+            for tmesh in tmeshes:
+                # Overwrite surface color by original color specified in URDF file only if necessary
+                is_urdf_material = False
+                if geom_is_col:
+                    geom_surface = gs.surfaces.Collision()
+                elif (
+                    surface.color is None
+                    and getattr(geom_prop, "material") is not None
+                    and geom_prop.material.color is not None
+                    and (morph.prioritize_urdf_material or not tmesh.visual.defined)
+                ):
+                    is_urdf_material = True
+                    geom_surface = gs.surfaces.Default(color=geom_prop.material.color)
+                else:
+                    geom_surface = surface
 
                 mesh = gs.Mesh.from_trimesh(
                     tmesh,
-                    scale=morph.scale,
-                    surface=gs.surfaces.Collision() if geom_is_col else surface,
+                    scale=scale,
+                    surface=geom_surface,
+                    is_mesh_zup=is_mesh_zup,
+                    metadata=metadata,
                 )
 
-                if not geom_is_col:
-                    if geom.material is not None and geom.material.color is not None:
-                        mesh.set_color(geom.material.color)
+                # Material color defined in URDF are not considered as visual overwrite
+                if is_urdf_material:
+                    mesh.metadata["is_visual_overwritten"] = False
 
-                g_info = {"mesh" if geom_is_col else "vmesh": mesh}
-                link_g_infos_.append(g_info)
+                geom_meshes.append(mesh)
 
-            for g_info in link_g_infos_:
-                g_info["type"] = geom_type
-                g_info["data"] = geom_data
-                g_info["pos"] = geom.origin[:3, 3].copy()
-                g_info["quat"] = gu.R_to_quat(geom.origin[:3, :3])
-                g_info["contype"] = 1 if geom_is_col else 0
-                g_info["conaffinity"] = 1 if geom_is_col else 0
-                g_info["friction"] = gu.default_friction()
-                g_info["sol_params"] = gu.default_solver_params()
-            link_g_infos += link_g_infos_
+            for mesh in geom_meshes:
+                g_info = {
+                    "mesh" if geom_is_col else "vmesh": mesh,
+                    "type": geom_type,
+                    "data": geom_data,
+                    "pos": geom_prop.origin[:3, 3].copy(),
+                    "quat": gu.R_to_quat(geom_prop.origin[:3, :3]),
+                    "contype": 1 if geom_is_col else 0,
+                    "conaffinity": 1 if geom_is_col else 0,
+                    "friction": gu.default_friction(),
+                    "sol_params": gu.default_solver_params(),
+                }
+                link_g_infos.append(g_info)
 
     #########################  non-base joints and links #########################
     for joint in robot.joints:
@@ -362,9 +406,12 @@ def merge_fixed_links(robot, links_to_keep):
                 parent_name = joint.parent
                 child_name = joint.child
 
-                if parent_name in original_to_merged:
+                # Follow the chain to find the ultimate merged parent
+                while parent_name in original_to_merged:
                     parent_name = original_to_merged[parent_name]
-                if child_name in original_to_merged:
+
+                # Follow the chain to find the ultimate merged child
+                while child_name in original_to_merged:
                     child_name = original_to_merged[child_name]
 
                 parent_idx = link_name_to_idx.get(parent_name)
@@ -376,9 +423,13 @@ def merge_fixed_links(robot, links_to_keep):
                 parent_link = links[parent_idx]
                 child_link = links[child_idx]
 
-                if parent_link.name not in original_to_merged:
-                    original_to_merged[parent_link.name] = parent_link.name
-                original_to_merged[child_link.name] = original_to_merged[parent_link.name]
+                # Update the mapping for the child to point to the ultimate parent
+                original_to_merged[joint.child] = parent_name
+
+                # Update all existing mappings that point to the child
+                for key in original_to_merged:
+                    if original_to_merged[key] == child_name:
+                        original_to_merged[key] = parent_name
 
                 update_subtree(links, joints, child_link.name, joint.origin)
                 merge_inertia(parent_link, child_link)
@@ -387,7 +438,6 @@ def merge_fixed_links(robot, links_to_keep):
 
                 links.pop(child_idx)
                 joints.remove(joint)
-
                 link_name_to_idx = {link.name: idx for idx, link in enumerate(links)}
 
                 fixed_joint_found = True
@@ -417,6 +467,33 @@ def translate_inertia(I, m, dist):
 def rotate_inertia(I, R):
     """Rotate inertia tensor I by rotation matrix R."""
     return R @ I @ R.T
+
+
+def compose_inertial_properties(mass1, com1, inertia1, mass2, com2, inertia2):
+    """
+    Compose inertial properties of two bodies.
+
+    Args:
+        mass1: Mass of first body
+        com1: Center of mass of first body (3,) array
+        inertia1: Inertia tensor of first body (3,3) array
+        mass2: Mass of second body
+        com2: Center of mass of second body (3,) array
+        inertia2: Inertia tensor of second body (3,3) array
+
+    Returns:
+        combined_mass: Combined mass
+        combined_com: Combined center of mass (3,) array
+        combined_inertia: Combined inertia tensor (3,3) array
+    """
+    combined_mass = mass1 + mass2
+    if combined_mass < gs.EPS:
+        gs.raise_exception("Combined mass is less than EPS")
+    combined_com = (mass1 * com1 + mass2 * com2) / combined_mass
+    inertia1_new = translate_inertia(inertia1, mass1, combined_com - com1)
+    inertia2_new = translate_inertia(inertia2, mass2, combined_com - com2)
+    combined_inertia = inertia1_new + inertia2_new
+    return combined_mass, combined_com, combined_inertia
 
 
 def merge_inertia(link1, link2):

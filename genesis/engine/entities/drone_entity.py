@@ -5,7 +5,7 @@ import torch
 import gstaichi as ti
 
 import genesis as gs
-from genesis.utils.misc import get_assets_dir, broadcast_tensor
+from genesis.utils.misc import get_assets_dir
 
 from .rigid_entity import RigidEntity
 
@@ -75,10 +75,9 @@ class DroneEntity(RigidEntity):
         # if (propellels_rpm < 0.0).any():
         #     gs.raise_exception("`propellels_rpm` cannot be negative.")
 
-        self._propellers_revs = (self._propellers_revs + propellels_rpm) % (60 / self.solver.dt)
+        self._propellers_revs = (self._propellers_revs + propellels_rpm.T) % (60 / self.solver.dt)
 
         self.solver.set_drone_rpm(
-            self._n_propellers,
             self._propellers_link_idx,
             propellels_rpm,
             self._propellers_spin,
@@ -95,7 +94,7 @@ class DroneEntity(RigidEntity):
         """
         if self._animate_propellers:
             self.solver.update_drone_propeller_vgeoms(
-                self._n_propellers, self._propellers_vgeom_idxs, self._propellers_revs, self._propellers_spin
+                self._propellers_vgeom_idxs, self._propellers_revs, self._propellers_spin
             )
 
     @property

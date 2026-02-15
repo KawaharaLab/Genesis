@@ -4,17 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "genesis-world"
-version = "0.3.8"
+version = "0.3.14"
 description = "A universal and generative physics engine"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "psutil",
-    "gstaichi==4.3.1",
+    "gstaichi==4.6.0",
     "pydantic>=2.11.0",
     "numpy>=1.26.4",
     "trimesh",
-    "scipy>=1.14",
     "libigl",
     # Cross-platform library to get various kind of CPU information such as model name
     "py-cpuinfo",
@@ -22,6 +21,8 @@ dependencies = [
     "moviepy>=2.0.0",
     # Used by `pyrender` to manage onscreen graphical windows
     # * 2.1.8 breaks headless windowing, which is used in unit tests of the interactive viewer.
+    # * 2.0.15 <= 2.1.8 breaks old-style option overwrite for string literal.
+    # * 2.1.10 changes default DPI scaling behavior.
     "pyglet>=1.5,!=2.1.8",
     # Used by `pyrender` to load fonts
     "freetype-py",
@@ -36,7 +37,7 @@ dependencies = [
     # Used for parsing `.glb` mesh files
     "pygltflib==1.16.0",
     # Use by `PBD3DEntity.sample` to tetrahedralize a mesh
-    "tetgen>=0.6.4,<0.7.0; platform_machine!='aarch64'",
+    "tetgen==0.8.2",
     # Used for some advanced mesh processing such as `skeletonization`
     "PyGEL3D",
     # Used to convert VTK output to numpy when converting volume to particles for PBS
@@ -54,7 +55,8 @@ dependencies = [
     "rtree",
     # Constraint Satisfaction Solver.
     # Used to compute contype and conaffinity bitmasks from complete list of excluded collision pairs.
-    "z3-solver",
+    # * >= 4.15.5.0 does not provide pre-compiled wheels on Linux
+    "z3-solver<4.15.5.0",
     # Used for loading raytracing special texture images used by LuisaRender
     "OpenEXR",
     # Native batch renderer specifically designed for Genesis
@@ -68,11 +70,6 @@ dependencies = [
     "pandas>=2.2.3",
     "openai==1.91.0",
     "huggingface-hub[cli]==0.36.0",
-    "gs-madrona==0.0.5; platform_system=='Linux' and (platform_machine=='x86_64' or platform_machine=='AMD64')",
-    # Used for mesh simplification
-    "fast_simplification>=0.1.12",
-    # Surface reconstruction library for particle data from SPH simulations
-    "pysplashsurf<=0.12.0.2", # tmp workaround. 0.13.0.0 changes api and will break our code
     "transformers>=4.56.1",
     "sentencepiece>=0.2.1",
     "protobuf>=6.32.0",
@@ -89,6 +86,11 @@ dependencies = [
     "ml-collections==1.0.0",
     "orbax-checkpoint==0.11.13",
     "lerobot>=0.3.2",
+    "gs-madrona==0.0.7.post2; platform_system=='Linux' and (platform_machine=='x86_64' or platform_machine=='AMD64')",
+    # Used for mesh simplification
+    "fast_simplification>=0.1.12",
+    # Surface reconstruction library for particle data from SPH simulations
+    "pysplashsurf==0.14.*",
 ]
 
 [project.optional-dependencies]
@@ -99,8 +101,10 @@ dev = [
     "pytest-forked",
     "pytest-random-order",
     "pytest-print",
+    # Note that 'pytest-rerunfailures' is incompatible with 'pytest-forked'
     # - 16.0 is causing pytest-xdist to crash in case of failure or skipped tests
-    "pytest-rerunfailures!=16.0",
+    # "pytest-rerunfailures!=16.0",
+    "setproctitle", # allows renaming the test processes on the cluster
     "syrupy",
     "huggingface_hub[hf_xet]",
     "wandb",
@@ -113,6 +117,8 @@ dev = [
     "matplotlib>=3.7.0",
     # Used internally by 'VideoFileWriter'
     "av",
+    # Used for validating polar decomposition in unit tests
+    "scipy",
 ]
 docs = [
     # Note that currently sphinx 7 does not work, so we must use v6.2.1. Once fixed we can use a later version.
@@ -139,7 +145,7 @@ render = [
 ]
 usd = [
     # Used for parsing `.usd` mesh files
-    "usd-core<25.11",
+    "usd-core==25.11",
 ]
 
 [project.scripts]
@@ -164,6 +170,21 @@ force-exclude = '''
     genesis/ext
 )/
 '''
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# Ignore the specific errors currently present in the codebase
+ignore = [
+    "F405", # undefined-local-with-import-star-usage
+    "F401", # unused-import
+    "F841", # unused-variable
+    "E741", # ambiguous-variable-name
+    "E402", # module-import-not-at-top-of-file
+    "F403", # undefined-local-with-import-star
+    "E712", # true-false-comparison
+]
 
 [tool.pytest.ini_options]
 addopts = [
@@ -190,3 +211,8 @@ markers = [
     "slow: tests that are slow to run (> 100s).",
 ]
 log_cli_level = "WARNING"
+
+[tool.uv]
+# uv respects the build-system and project tables
+# PyTorch must be installed separately before Genesis due to platform-specific builds
+# See README.md for installation instructions with different PyTorch backends

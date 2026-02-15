@@ -11,7 +11,7 @@ import genesis.utils.geom as gu
 from genesis.utils import array_class
 
 if TYPE_CHECKING:
-    from genesis.engine.solvers.rigid.rigid_solver_decomp import RigidSolver
+    from genesis.engine.solvers.rigid.rigid_solver import RigidSolver
 
 
 class PathPlanner(ABC):
@@ -218,7 +218,7 @@ class PathPlanner(ABC):
                 obj_geom_start=obj_geom_start,
                 obj_geom_end=obj_geom_end,
             )
-            out[i_b] = out[i_b] or ti.cast(collision_detected, gs.ti_bool)
+            out[i_b_] = out[i_b_] or ti.cast(collision_detected, gs.ti_bool)
 
     @ti.func
     def _func_check_collision(
@@ -416,7 +416,7 @@ class RRT(PathPlanner):
                     # set the steer result and collision check for i_b
                     for i_q in range(self._entity.n_qs):
                         self._solver.qpos[i_q + self._entity._q_start, i_b] = steer_result[i_q]
-                    gs.engine.solvers.rigid.rigid_solver_decomp.func_forward_kinematics_entity(
+                    gs.engine.solvers.rigid.rigid_solver.func_forward_kinematics_entity(
                         self._entity._idx_in_solver,
                         i_b,
                         links_state,
@@ -428,8 +428,9 @@ class RRT(PathPlanner):
                         entities_info,
                         rigid_global_info,
                         self._solver._static_rigid_sim_config,
+                        is_backward=False,
                     )
-                    gs.engine.solvers.rigid.rigid_solver_decomp.func_update_geoms(
+                    gs.engine.solvers.rigid.rigid_solver.func_update_geoms_batch(
                         i_b,
                         entities_info,
                         geoms_info,
@@ -438,6 +439,7 @@ class RRT(PathPlanner):
                         rigid_global_info,
                         self._solver._static_rigid_sim_config,
                         force_update_fixed_geoms=False,
+                        is_backward=False,
                     )
 
     @ti.kernel
@@ -504,7 +506,6 @@ class RRT(PathPlanner):
         assert self._solver.n_envs > 0 or envs_idx is None
 
         qpos_cur, qpos_goal, qpos_start, envs_idx = self._sanitize_qposs(qpos_goal, qpos_start, envs_idx)
-        envs_idx_local = torch.arange(len(envs_idx), device=gs.device)
         ignore_geom_pairs = self.get_exclude_geom_pairs((qpos_goal, qpos_start), envs_idx)
 
         is_plan_with_obj = False
@@ -556,14 +557,14 @@ class RRT(PathPlanner):
                 break
             if timeout is not None:
                 if time.time() - time_start > timeout:
-                    gs.logger.info(f"RRT planning timeout.")
+                    gs.logger.info("RRT planning timeout.")
                     break
 
         gs.logger.debug(f"RRT planning time: {time.time() - time_start}")
 
-        is_invalid = self._rrt_is_active.to_torch(device=gs.device).bool()
+        is_invalid = self._rrt_is_active.to_torch(device=gs.device).bool()[envs_idx]
         ts = self._rrt_tree_size.to_torch(device=gs.device)
-        g_n = self._rrt_goal_reached_node_idx.to_torch(device=gs.device)  # B
+        g_n = self._rrt_goal_reached_node_idx.to_torch(device=gs.device)[envs_idx]  # B
 
         node_info = self._rrt_node_info.to_torch(device=gs.device)
         parents_idx = node_info["parent_idx"]
@@ -571,12 +572,12 @@ class RRT(PathPlanner):
 
         res = [g_n]
         for _ in range(ts.max()):
-            g_n = parents_idx[g_n, envs_idx_local]
+            g_n = parents_idx[g_n, envs_idx]
             res.append(g_n)
             if (g_n == 0).all():
                 break
         res_idx = torch.stack(res[::-1], dim=0)
-        sol = configurations[res_idx, envs_idx_local]  # N, B, DoF
+        sol = configurations[res_idx, envs_idx]  # N, B, DoF
 
         if is_invalid.all():
             if self._solver.n_envs > 0:
@@ -784,7 +785,7 @@ class RRTConnect(PathPlanner):
                     # set the steer result and collision check for i_b
                     for i_q in range(self._entity.n_qs):
                         qpos[i_q + self._entity._q_start, i_b] = steer_result[i_q]
-                    gs.engine.solvers.rigid.rigid_solver_decomp.func_forward_kinematics_entity(
+                    gs.engine.solvers.rigid.rigid_solver.func_forward_kinematics_entity(
                         self._entity._idx_in_solver,
                         i_b,
                         links_state,
@@ -796,8 +797,9 @@ class RRTConnect(PathPlanner):
                         entities_info,
                         rigid_global_info,
                         self._solver._static_rigid_sim_config,
+                        is_backward=False,
                     )
-                    gs.engine.solvers.rigid.rigid_solver_decomp.func_update_geoms(
+                    gs.engine.solvers.rigid.rigid_solver.func_update_geoms_batch(
                         i_b,
                         entities_info,
                         geoms_info,
@@ -806,6 +808,7 @@ class RRTConnect(PathPlanner):
                         rigid_global_info,
                         self._solver._static_rigid_sim_config,
                         force_update_fixed_geoms=False,
+                        is_backward=False,
                     )
 
     @ti.kernel
@@ -889,7 +892,6 @@ class RRTConnect(PathPlanner):
         assert self._solver.n_envs > 0 or envs_idx is None
 
         qpos_cur, qpos_goal, qpos_start, envs_idx = self._sanitize_qposs(qpos_goal, qpos_start, envs_idx)
-        envs_idx_local = torch.arange(len(envs_idx), device=gs.device)
         ignore_geom_pairs = self.get_exclude_geom_pairs([qpos_goal, qpos_start], envs_idx)
 
         is_plan_with_obj = False
@@ -947,15 +949,15 @@ class RRTConnect(PathPlanner):
                 break
             if timeout is not None:
                 if time.time() - time_start > timeout:
-                    gs.logger.info(f"RRTConnect planning timeout.")
+                    gs.logger.info("RRTConnect planning timeout.")
                     break
         else:
             gs.logger.info(f"RRTConnect planning exceeded maximum number of nodes ({self._rrt_max_nodes}).")
 
         gs.logger.debug(f"RRTConnect planning time: {time.time() - time_start}")
-        is_invalid = self._rrt_is_active.to_torch(device=gs.device).bool()
+        is_invalid = self._rrt_is_active.to_torch(device=gs.device).bool()[envs_idx]
         ts = self._rrt_tree_size.to_torch(device=gs.device)
-        g_n = self._rrt_goal_reached_node_idx.to_torch(device=gs.device)  # B
+        g_n = self._rrt_goal_reached_node_idx.to_torch(device=gs.device)[envs_idx]  # B
 
         node_info = self._rrt_node_info.to_torch(device=gs.device)
         parents_idx = node_info["parent_idx"]
@@ -964,21 +966,21 @@ class RRTConnect(PathPlanner):
 
         res = [g_n]
         for _ in range(ts.max() // 2):
-            g_n = parents_idx[g_n, envs_idx_local]
+            g_n = parents_idx[g_n, envs_idx]
             res.append(g_n)
             if torch.all(g_n == 0):
                 break
         res_idx = torch.stack(res[::-1], dim=0)
 
-        c_n = self._rrt_goal_reached_node_idx.to_torch(device=gs.device)  # B
+        c_n = self._rrt_goal_reached_node_idx.to_torch(device=gs.device)[envs_idx]  # B
         res = []
         for _ in range(ts.max() // 2):
-            c_n = children_idx[c_n, envs_idx_local]
+            c_n = children_idx[c_n, envs_idx]
             res.append(c_n)
             if torch.all(c_n == 1):
                 break
         res_idx = torch.cat([res_idx, torch.stack(res, dim=0)], dim=0)
-        sol = configurations[res_idx, envs_idx_local]  # N, B, DoF
+        sol = configurations[res_idx, envs_idx]  # N, B, DoF
 
         if is_invalid.all():
             if self._solver.n_envs > 0:

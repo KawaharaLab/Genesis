@@ -294,6 +294,9 @@ class RigidOptions(Options):
         Whether to enable joint limit. Defaults to True.
     enable_self_collision : bool, optional
         Whether to enable self collision within each entity. Defaults to True.
+    enable_neutral_collision : bool, optional
+        Whether to enable self collision occurring in neutral configuration (qpos0) within each entity. Defaults to
+        False.
     enable_adjacent_collision : bool, optional
         Whether to enable collision between successive parent-child body pairs within each entity. Defaults to False.
     disable_constraint: bool, optional
@@ -317,7 +320,7 @@ class RigidOptions(Options):
     iterations : int, optional
         Number of iterations for the constraint solver. Defaults to 50.
     tolerance : float, optional
-        Tolerance for the constraint solver. Defaults to 1e-8.
+        Tolerance for the constraint solver. Defaults to 1e-6.
     ls_iterations : int, optional
         Number of line search iterations for the constraint solver. Defaults to 50.
     ls_tolerance : float, optional
@@ -362,6 +365,7 @@ class RigidOptions(Options):
     enable_collision: bool = True
     enable_joint_limit: bool = True
     enable_self_collision: bool = True
+    enable_neutral_collision: bool = False
     enable_adjacent_collision: bool = False
     disable_constraint: bool = False
     max_collision_pairs: int = 150
@@ -377,7 +381,7 @@ class RigidOptions(Options):
     # constraint solver
     constraint_solver: gs.constraint_solver = gs.constraint_solver.Newton
     iterations: int = 50
-    tolerance: float = 1e-8
+    tolerance: float = 1e-6
     ls_iterations: int = 50
     ls_tolerance: float = 1e-2
     noslip_iterations: int = 0
@@ -405,39 +409,6 @@ class RigidOptions(Options):
 
     def __init__(self, **data):
         super().__init__(**data)
-
-
-class AvatarOptions(Options):
-    """
-    Options configuring the AvatarSolver. AvatarEntity is similar to RigidEntity, but without internal physics.
-
-    Parameters
-    ----------
-    dt : float, optional
-        Time duration for each simulation step in seconds. If none, it will inherit from `SimOptions`. Defaults to None.
-    enable_collision : float, optional
-        Whether to enable collision detection. Defaults to False.
-    enable_self_collision : float, optional
-        Whether to enable self collision within each entity. Defaults to False.
-    enable_adjacent_collision : bool, optional
-        Whether to enable collision between successive parent-child body pairs within each entity. Defaults to False.
-    max_collision_pairs : int, optional
-        Maximum number of collision pairs. Defaults to 100.
-    IK_max_targets : int, optional
-        Maximum number of IK targets. Increasing this doesn't affect IK solving speed, but will increase memory usage. Defaults to 6.
-    max_dynamic_constraints : int, optional
-        Maximum number of dynamic constraints (like suction cup). Defaults to 8.
-    """
-
-    dt: Optional[float] = None
-    enable_collision: bool = False
-    enable_self_collision: bool = False
-    enable_adjacent_collision: bool = False
-    max_collision_pairs: int = 300
-    IK_max_targets: int = 6  # Increasing this doesn't affect IK solving speed, but will increase memory usage
-
-    # for dynamic properties
-    max_dynamic_constraints: int = 8
 
 
 class MPMOptions(Options):

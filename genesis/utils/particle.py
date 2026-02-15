@@ -1,3 +1,4 @@
+import ctypes
 import os
 import pickle as pkl
 import platform
@@ -5,9 +6,9 @@ import subprocess
 import sys
 import shutil
 import tempfile
+from multiprocessing import Process, Queue
 
 import igl
-import pysplashsurf
 import numpy as np
 import trimesh
 
@@ -21,6 +22,11 @@ from . import misc as miu
 LD_LIBRARY_PATH = os.path.join(miu.get_src_dir(), "ext/ParticleMesher/ParticleMesherPy")
 sys.path.append(LD_LIBRARY_PATH)
 os.environ["LD_LIBRARY_PATH"] = ":".join(filter(None, (os.environ.get("LD_LIBRARY_PATH"), LD_LIBRARY_PATH)))
+
+try:
+    malloc_trim = ctypes.CDLL(ctypes.util.find_library("c")).malloc_trim
+except (AttributeError, TypeError):
+    malloc_trim = None
 
 
 def n_particles_vol(p_size=0.01, volume=1.0):
@@ -56,7 +62,7 @@ def trimesh_to_particles_simple(mesh, p_size, sampler):
             with open(ptc_file_path, "rb") as file:
                 positions = pkl.load(file)
             is_cached_loaded = True
-        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError):
+        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError, TypeError, MemoryError):
             gs.logger.info("Ignoring corrupted cache.")
 
     if not is_cached_loaded:
@@ -84,7 +90,7 @@ def trimesh_to_particles_pbs(mesh, p_size, sampler, pos=(0, 0, 0)):
     """
     assert "pbs" in sampler
 
-    if not (gs.platform == "Linux" and platform.machine() == "x86_64"):
+    if not (sys.platform == "linux" and platform.machine() == "x86_64"):
         gs.raise_exception(f"Physics-based particle sampler '{sampler}' is only supported on Linux x86.")
 
     # compute file name via hashing for caching
@@ -98,7 +104,7 @@ def trimesh_to_particles_pbs(mesh, p_size, sampler, pos=(0, 0, 0)):
             with open(ptc_file_path, "rb") as file:
                 positions = pkl.load(file)
             is_cached_loaded = True
-        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError):
+        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError, TypeError, MemoryError):
             gs.logger.info("Ignoring corrupted cache.")
 
     if not is_cached_loaded:
@@ -298,6 +304,32 @@ def shell_to_particles(p_size=0.01, pos=(0, 0, 0), inner_radius=0.5, outer_radiu
     return positions
 
 
+def _splashsurf_worker(positions, radius, args_dict, result_queue):
+    try:
+        import pysplashsurf
+
+        mesh_with_data, _ = pysplashsurf.reconstruction_pipeline(
+            positions,
+            particle_radius=radius * args_dict.get("rscale", 1.0),
+            smoothing_length=2.0,
+            cube_size=0.8,
+            iso_surface_threshold=0.6,
+            mesh_smoothing_weights=True,
+            mesh_smoothing_iters=int(args_dict.get("smooth", 25)),
+            normals_smoothing_iters=10,
+            mesh_cleanup=True,
+            compute_normals=True,
+            multi_threading=True,
+        )
+        normals = mesh_with_data.point_attributes["normals"]
+        vertices = mesh_with_data.mesh.vertices
+        triangles = mesh_with_data.mesh.triangles
+        result_queue.put_nowait((vertices, triangles, normals))
+    except Exception as e:
+        result_queue.put_nowait(e)
+        raise
+
+
 def particles_to_mesh(positions, radius, backend):
     def parse_args(backend):
         args_dict = dict()
@@ -327,8 +359,8 @@ def particles_to_mesh(positions, radius, backend):
     args_dict = parse_args(backend)
 
     if "openvdb" in backend:
-        if gs.platform != "Linux" or sys.version_info[:2] == (3, 9):
-            gs.raise_exception("Backend 'openvdb' is only supported on Linux and Python 3.9 specfically.")
+        if sys.platform != "linux" or sys.version_info[:2] == (3, 9):
+            gs.raise_exception("Backend 'openvdb' is only supported on Linux and Python 3.9 specifically.")
 
         import ParticleMesherPy
 
@@ -347,28 +379,24 @@ def particles_to_mesh(positions, radius, backend):
         faces = mesh.triangles.reshape([-1, 3])
 
         return trimesh.Trimesh(vertices, faces, process=False)
-
     elif "splashsurf" in backend:
-        # Suggested value is 1.4-1.6, but 1.0 seems more detailed
-        mesh_with_data, _ = pysplashsurf.reconstruction_pipeline(
-            positions,
-            particle_radius=radius * args_dict.get("rscale", 1.0),
-            smoothing_length=2.0,
-            cube_size=0.8,
-            iso_surface_threshold=0.6,
-            mesh_smoothing_weights=True,
-            mesh_smoothing_iters=int(args_dict.get("smooth", 25)),
-            normals_smoothing_iters=10,
-            mesh_cleanup=True,
-            compute_normals=True,
-            enable_multi_threading=True,
-        )
-        normals = mesh_with_data.get_point_attribute("normals")
-        vertices, triangles = mesh_with_data.take_mesh().take_vertices_and_triangles()
-        mesh = trimesh.Trimesh(vertices=vertices, faces=triangles, face_normals=normals)
+        # FIXME: Running in subprocess or manually reclaiming free-ed head memory is necessary to avoid unbounded growth
+        result_queue = Queue()
+        if malloc_trim is not None:
+            _splashsurf_worker(positions, radius, args_dict, result_queue)
+            result = result_queue.get()
+            malloc_trim(0)
+        else:
+            proc = Process(target=_splashsurf_worker, args=(positions, radius, args_dict, result_queue))
+            proc.start()
+            result = result_queue.get()
+            proc.join()
+            if proc.exitcode != 0:
+                gs.raise_exception_from(f"splashsurf subprocess failed with exit code {proc.exitcode}", result)
+        vertices, triangles, normals = result
+        mesh = trimesh.Trimesh(vertices=vertices, faces=triangles, face_normals=normals, process=False)
         gs.logger.debug(f"[splashsurf]: reconstruct vertices: {mesh.vertices.shape}, {mesh.faces.shape}")
         return mesh
-
     else:
         gs.raise_exception(f"Unsupported backend: {backend}.")
 
@@ -386,7 +414,7 @@ def init_foam_generator(
     k_foam,
     foam_density,
 ):
-    if gs.platform != "Linux" or sys.version_info[:2] == (3, 9):
+    if sys.platform != "linux" or sys.version_info[:2] == (3, 9):
         gs.raise_exception("This method is only supported on Linux and Python 3.9 specfically.")
 
     import ParticleMesherPy
@@ -425,7 +453,7 @@ def generate_foam_particles(generator, positions, velocities):
 
 
 def filter_surface(positions, radii, particle_radius, half_width=8.0, radius_scale=1.0):
-    if gs.platform != "Linux" or sys.version_info[:2] == (3, 9):
+    if sys.platform != "linux" or sys.version_info[:2] == (3, 9):
         gs.raise_exception("This method is only supported on Linux and Python 3.9 specfically.")
 
     import ParticleMesherPy

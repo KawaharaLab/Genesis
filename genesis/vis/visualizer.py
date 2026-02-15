@@ -1,3 +1,5 @@
+import sys
+
 import genesis as gs
 from genesis.repr_base import RBC
 
@@ -62,13 +64,13 @@ class Visualizer(RBC):
                 viewer_width = viewer_height / VIEWER_DEFAULT_ASPECT_RATIO
                 viewer_options.res = (int(viewer_width), int(viewer_height))
             if viewer_options.run_in_thread is None:
-                if gs.platform == "Linux":
+                if sys.platform == "linux":
                     viewer_options.run_in_thread = True
-                elif gs.platform == "macOS":
+                elif sys.platform == "darwin":
                     viewer_options.run_in_thread = False
-                elif gs.platform == "Windows":
+                elif sys.platform == "win32":
                     viewer_options.run_in_thread = True
-            if gs.platform == "macOS" and viewer_options.run_in_thread:
+            if sys.platform == "darwin" and viewer_options.run_in_thread:
                 gs.raise_exception("Running viewer in background thread is not supported on MacOS.")
 
             self._viewer = Viewer(viewer_options, self._context)
@@ -227,16 +229,6 @@ class Visualizer(RBC):
                     entity.update_propeller_vgeoms()
 
             self._scene.rigid_solver.update_vgeoms_render_T()
-
-        if self._scene.avatar_solver.is_active:
-            self._scene.avatar_solver.update_geoms_render_T()
-            self._scene.avatar_solver._kernel_update_vgeoms(
-                vgeoms_info=self._scene.avatar_solver.vgeoms_info,
-                vgeoms_state=self._scene.avatar_solver.vgeoms_state,
-                links_state=self._scene.avatar_solver.links_state,
-                static_rigid_sim_config=self._scene.avatar_solver._static_rigid_sim_config,
-            )
-            self._scene.avatar_solver.update_vgeoms_render_T()
 
         if self._scene.mpm_solver.is_active:
             self._scene.mpm_solver.update_render_fields()

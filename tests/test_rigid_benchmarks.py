@@ -1,8 +1,6 @@
 import hashlib
-import numbers
 import os
 import time
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +13,11 @@ import genesis as gs
 
 from .utils import (
     get_hardware_fingerprint,
+    get_hf_dataset,
     get_platform_fingerprint,
     get_git_commit_timestamp,
     get_git_commit_info,
+    pprint_oneline,
 )
 
 
@@ -32,18 +32,6 @@ pytestmark = [
     pytest.mark.benchmarks,
     pytest.mark.taichi_offline_cache(False),
 ]
-
-
-def pprint_oneline(data, delimiter, digits=None):
-    msg_items = []
-    for key, value in data.items():
-        if isinstance(value, Enum):
-            value = value.name
-        if digits is not None and isinstance(value, (numbers.Real, np.floating)):
-            value = f"{value:.{digits}f}"
-        msg_item = "=".join((key, str(value)))
-        msg_items.append(msg_item)
-    return delimiter.join(msg_items)
 
 
 def get_rigid_solver_options(**kwargs):
@@ -387,7 +375,7 @@ def go2(solver, n_envs, gjk):
 
 
 @pytest.fixture
-def anymal_c(solver, n_envs, gjk):
+def anymal(solver, n_envs, gjk):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             **get_rigid_solver_options(
@@ -436,11 +424,12 @@ def anymal_c(solver, n_envs, gjk):
     return {"compile_time": compile_time, "runtime_fps": runtime_fps, "realtime_factor": realtime_factor}
 
 
-def _batched_franka(solver, n_envs, gjk, is_collision_free, accessors):
+def _franka(solver, n_envs, gjk, is_collision_free, is_randomized, accessors):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             **get_rigid_solver_options(
                 dt=STEP_DT,
+                enable_neutral_collision=True,
                 **(dict(constraint_solver=solver) if solver is not None else {}),
                 **(dict(use_gjk_collision=gjk) if gjk is not None else {}),
             )
@@ -461,22 +450,26 @@ def _batched_franka(solver, n_envs, gjk, is_collision_free, accessors):
     scene.build(n_envs=n_envs)
     compile_time = time.time() - time_start
 
-    ctrl = torch.tensor([0, 0, 0, -1.0, 0, 1.0, 0, 0.02, 0.02], dtype=gs.tc_float, device=gs.device)
+    qpos0 = torch.tensor([0, 0, 0, -1.0, 0, 1.0, 0, 0.02, 0.02], dtype=gs.tc_float, device=gs.device)
     if n_envs > 0:
-        ctrl = torch.tile(ctrl, (n_envs, 1))
+        qpos0 = torch.tile(qpos0, (n_envs, 1))
     if is_collision_free:
-        franka.set_qpos(ctrl)
-        franka.control_dofs_position(ctrl)
+        franka.set_qpos(qpos0)
+        franka.control_dofs_position(qpos0)
 
-    vel0 = torch.zeros((franka.n_qs,), dtype=gs.tc_float, device=gs.device)
-    if n_envs > 0:
-        n_reset_envs = int(0.02 * n_envs)
-        reset_envs_idx = torch.randperm(n_envs)[:n_reset_envs]
-        vel0 = torch.tile(vel0, (n_reset_envs, 1))
-        qpos0 = ctrl[reset_envs_idx]
+    if n_envs > 0 and is_randomized:
+        vel0 = 0.2 * torch.clip(torch.randn((n_envs, franka.n_dofs), dtype=gs.tc_float, device=gs.device), -1.0, 1.0)
+        vel0[:, [link.dof_start for link in franka.links if not link.name.startswith("link") and link.n_dofs]] = 0.0
     else:
-        reset_envs_idx = None
-        qpos0 = ctrl
+        vel0 = torch.zeros((*((n_envs,) if n_envs > 0 else ()), franka.n_dofs), dtype=gs.tc_float, device=gs.device)
+    franka.set_dofs_velocity(vel0)
+
+    if n_envs > 0:
+        n_reset_envs = max(int(0.02 * n_envs), 1)
+        reset_envs_idx = torch.randperm(n_envs, dtype=gs.tc_int, device=gs.device)[:n_reset_envs]
+        reset_envs_mask = torch.isin(scene._envs_idx, reset_envs_idx)
+    else:
+        reset_envs_mask = None
 
     dofs_stiffness = franka.get_dofs_stiffness()
     dofs_damping = franka.get_dofs_damping()
@@ -487,10 +480,6 @@ def _batched_franka(solver, n_envs, gjk, is_collision_free, accessors):
     while True:
         scene.step()
         if accessors:
-            franka.set_qpos(qpos0, envs_idx=reset_envs_idx, zero_velocity=False, skip_forward=True)
-            franka.set_dofs_velocity(vel0, envs_idx=reset_envs_idx, skip_forward=True)
-            franka.set_dofs_stiffness(dofs_stiffness)
-            franka.set_dofs_damping(dofs_damping)
             franka.get_ang()
             franka.get_vel()
             franka.get_dofs_position()
@@ -499,7 +488,11 @@ def _batched_franka(solver, n_envs, gjk, is_collision_free, accessors):
             franka.get_links_quat()
             franka.get_links_vel()
             franka.get_contacts()
-            franka.control_dofs_position(ctrl)
+            franka.control_dofs_position(qpos0)
+            franka.set_dofs_stiffness(dofs_stiffness)
+            franka.set_dofs_damping(dofs_damping)
+            franka.set_dofs_velocity(vel0, envs_idx=reset_envs_mask, skip_forward=True)
+            franka.set_qpos(qpos0, envs_idx=reset_envs_mask, zero_velocity=False, skip_forward=True)
 
         time_elapsed = time.time() - time_start
         if is_recording:
@@ -516,18 +509,23 @@ def _batched_franka(solver, n_envs, gjk, is_collision_free, accessors):
 
 
 @pytest.fixture
-def batched_franka(solver, n_envs, gjk):
-    return _batched_franka(solver, n_envs, gjk, is_collision_free=False, accessors=False)
+def franka(solver, n_envs, gjk):
+    return _franka(solver, n_envs, gjk, is_collision_free=False, is_randomized=False, accessors=False)
 
 
 @pytest.fixture
-def batched_franka_free(solver, n_envs, gjk):
-    return _batched_franka(solver, n_envs, gjk, is_collision_free=True, accessors=False)
+def franka_random(solver, n_envs, gjk):
+    return _franka(solver, n_envs, gjk, is_collision_free=False, is_randomized=True, accessors=False)
 
 
 @pytest.fixture
-def batched_franka_accessors(solver, n_envs, gjk):
-    return _batched_franka(solver, n_envs, gjk, is_collision_free=True, accessors=True)
+def franka_free(solver, n_envs, gjk):
+    return _franka(solver, n_envs, gjk, is_collision_free=True, is_randomized=False, accessors=False)
+
+
+@pytest.fixture
+def franka_accessors(solver, n_envs, gjk):
+    return _franka(solver, n_envs, gjk, is_collision_free=True, is_randomized=False, accessors=True)
 
 
 def _duck_in_box(solver, n_envs, gjk, hard):
@@ -604,7 +602,7 @@ def duck_in_box_hard(solver, n_envs, gjk):
 
 
 @pytest.fixture
-def random(solver, n_envs, gjk):
+def anymal_random(solver, n_envs, gjk):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             **get_rigid_solver_options(
@@ -657,13 +655,12 @@ def random(solver, n_envs, gjk):
     return {"compile_time": compile_time, "runtime_fps": runtime_fps, "realtime_factor": realtime_factor}
 
 
-@pytest.fixture
-def box_pyramid(n_envs, n_cubes, enable_island, gjk):
+def _box_pyramid(solver, n_envs, gjk, n_cubes):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             **get_rigid_solver_options(
                 dt=STEP_DT,
-                use_contact_island=enable_island,
+                **(dict(constraint_solver=solver) if solver is not None else {}),
                 **(dict(use_gjk_collision=gjk) if gjk is not None else {}),
             )
         ),
@@ -717,6 +714,103 @@ def box_pyramid(n_envs, n_cubes, enable_island, gjk):
     return {"compile_time": compile_time, "runtime_fps": runtime_fps, "realtime_factor": realtime_factor}
 
 
+@pytest.fixture
+def box_pyramid_3(solver, n_envs, gjk):
+    return _box_pyramid(solver, n_envs, gjk, n_cubes=3)
+
+
+@pytest.fixture
+def box_pyramid_4(solver, n_envs, gjk):
+    return _box_pyramid(solver, n_envs, gjk, n_cubes=4)
+
+
+@pytest.fixture
+def box_pyramid_5(solver, n_envs, gjk):
+    return _box_pyramid(solver, n_envs, gjk, n_cubes=5)
+
+
+@pytest.fixture
+def box_pyramid_6(solver, n_envs, gjk):
+    return _box_pyramid(solver, n_envs, gjk, n_cubes=6)
+
+
+@pytest.fixture
+def g1_fall(solver, n_envs, gjk):
+    """G1 humanoid robot falling from above a plane."""
+    import gstaichi as ti
+
+    # This is sufficient, as long as we use sync
+    duration_warmup = 20.0
+    duration_record = 5.0
+
+    # Needed in order to reproduce the benefits for parallelizing Hessian that
+    # we see on Eden Beyond Mimic
+    step_dt = 0.005
+
+    scene = gs.Scene(
+        rigid_options=gs.options.RigidOptions(
+            dt=step_dt,
+            iterations=10,
+            tolerance=1e-5,
+            ls_iterations=20,
+            **(dict(constraint_solver=solver) if solver is not None else {}),
+            **(dict(use_gjk_collision=gjk) if gjk is not None else {}),
+        ),
+        show_viewer=False,
+        show_FPS=False,
+    )
+
+    scene.add_entity(
+        gs.morphs.Plane(),
+    )
+    asset_path = get_hf_dataset(pattern="unitree_g1/*")
+    robot = scene.add_entity(
+        gs.morphs.MJCF(
+            **get_file_morph_options(
+                file=f"{asset_path}/unitree_g1/g1_29dof_rev_1_0.xml",
+                pos=(0, 0, 1.0),
+            )
+        ),
+        vis_mode="collision",
+    )
+    time_start = time.time()
+    scene.build(n_envs=n_envs)
+    compile_time = time.time() - time_start
+
+    # Set initial position with robot elevated above ground
+    init_qpos = torch.zeros((robot.n_qs,), dtype=gs.tc_float, device=gs.device)
+    init_qpos[2] = 1.0  # z position
+    init_qpos[3] = 1.0  # quaternion w component
+    robot.set_qpos(init_qpos)
+
+    random_forces = torch.zeros((n_envs, robot.n_dofs), dtype=gs.tc_float, device=gs.device)
+    max_force = 50.0
+
+    num_steps = 0
+    is_recording = False
+    ti.sync()
+    time_start = time.time()
+    while True:
+        random_forces.uniform_(-max_force, max_force)
+        robot.control_dofs_force(random_forces)
+        scene.step()
+        time_elapsed = time.time() - time_start
+        if is_recording:
+            num_steps += 1
+            if time_elapsed > duration_record:
+                ti.sync()
+                time_elapsed = time.time() - time_start
+                break
+        elif time_elapsed > duration_warmup:
+            ti.sync()
+            time_start = time.time()
+            is_recording = True
+    runtime_fps = int(num_steps * max(n_envs, 1) / time_elapsed)
+    realtime_factor = runtime_fps * step_dt
+
+    return {"compile_time": compile_time, "runtime_fps": runtime_fps, "realtime_factor": realtime_factor}
+
+
 @pytest.mark.parametrize(
     "runnable, solver, gjk, n_envs, backend",
     [
@@ -724,24 +818,28 @@ def box_pyramid(n_envs, n_cubes, enable_island, gjk):
         ("duck_in_box_easy", None, False, 30000, gs.gpu),
         ("duck_in_box_hard", None, True, 30000, gs.gpu),
         ("duck_in_box_hard", None, False, 30000, gs.gpu),
-        ("duck_in_box_hard", None, None, 0, gs.gpu),
         ("duck_in_box_hard", None, None, 0, gs.cpu),
-        ("anymal_c", None, None, 30000, gs.gpu),
-        ("anymal_c", None, None, 0, gs.gpu),
-        ("anymal_c", None, None, 0, gs.cpu),
+        ("anymal_random", None, None, 30000, gs.gpu),
+        ("anymal", None, None, 30000, gs.gpu),
+        ("anymal", None, None, 0, gs.cpu),
         ("go2", None, True, 4096, gs.gpu),
         ("go2", gs.constraint_solver.CG, False, 4096, gs.gpu),
         ("go2", gs.constraint_solver.Newton, False, 4096, gs.gpu),
-        ("batched_franka_accessors", None, None, 0, gs.cpu),
-        ("batched_franka_accessors", None, None, 30000, gs.gpu),
-        ("batched_franka_free", None, False, 30000, gs.gpu),
-        ("batched_franka_free", None, True, 30000, gs.gpu),
-        ("batched_franka", None, True, 30000, gs.gpu),
-        ("batched_franka", gs.constraint_solver.CG, None, 30000, gs.gpu),
-        ("batched_franka", gs.constraint_solver.Newton, None, 30000, gs.gpu),
-        ("batched_franka", None, None, 0, gs.gpu),
-        ("batched_franka", None, None, 0, gs.cpu),
-        ("random", None, None, 30000, gs.gpu),
+        ("franka_accessors", None, None, 0, gs.cpu),
+        ("franka_accessors", None, None, 30000, gs.gpu),
+        ("franka_free", None, None, 30000, gs.gpu),
+        ("franka", None, None, 30000, gs.gpu),
+        ("franka_random", None, False, 30000, gs.gpu),
+        ("franka_random", None, True, 30000, gs.gpu),
+        ("franka_random", gs.constraint_solver.CG, None, 30000, gs.gpu),
+        ("franka_random", gs.constraint_solver.Newton, None, 30000, gs.gpu),
+        ("franka_random", None, None, 0, gs.cpu),
+        ("box_pyramid_3", None, None, 4096, gs.gpu),
+        ("box_pyramid_4", None, None, 4096, gs.gpu),
+        ("box_pyramid_5", None, None, 4096, gs.gpu),
+        ("box_pyramid_6", None, True, 4096, gs.gpu),
+        ("box_pyramid_6", None, False, 4096, gs.gpu),
+        ("g1_fall", gs.constraint_solver.Newton, None, 4096, gs.gpu),
     ],
 )
 def test_speed(factory_logger, request, runnable, solver, gjk, n_envs):
@@ -755,20 +853,3 @@ def test_speed(factory_logger, request, runnable, solver, gjk, n_envs):
         }
     ) as logger:
         logger.write(request.getfixturevalue(runnable))
-
-
-@pytest.mark.parametrize("backend", [gs.gpu])
-@pytest.mark.parametrize("n_cubes", [5])
-@pytest.mark.parametrize("enable_island", [False])
-@pytest.mark.parametrize("n_envs", [2048])
-@pytest.mark.parametrize("gjk", [False, True])
-def test_box_pyramid(factory_logger, request, n_cubes, enable_island, gjk, n_envs):
-    with factory_logger(
-        {
-            "env": f"box_pyramid#{n_cubes}",
-            "batch_size": n_envs,
-            "use_contact_island": enable_island,
-            "gjk_collision": gjk,
-        }
-    ) as logger:
-        logger.write(request.getfixturevalue("box_pyramid"))

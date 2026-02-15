@@ -1,10 +1,10 @@
 import functools
+from pathlib import Path
 
 import numpy as np
 import gstaichi as ti
 import torch
 import trimesh
-from scipy.spatial import KDTree
 
 import genesis as gs
 import genesis.utils.geom as gu
@@ -70,8 +70,9 @@ class ParticleEntity(Entity):
         vvert_start=None,
         vface_start=None,
         need_skinning=True,
+        name: str | None = None,
     ):
-        super().__init__(idx, scene, morph, solver, material, surface)
+        super().__init__(idx, scene, morph, solver, material, surface, name=name)
 
         self._particle_size = particle_size
         self._particle_start = particle_start
@@ -191,10 +192,15 @@ class ParticleEntity(Entity):
 
     def _add_vverts_to_solver(self):
         # Compute supports for rendering vverts using neighboring particles
-        kdtree = KDTree(self._particles)
-        _, support_idxs = kdtree.query(self._vverts, k=self.solver._n_vvert_supports)
-        support_idxs = support_idxs.astype(gs.np_int)
+        dist2 = np.sum(np.square(self._vverts[:, None, :] - self._particles[None, :, :]), axis=2)
+        support_idxs = np.argpartition(dist2, self.solver._n_vvert_supports - 1, axis=1)[
+            :, : self.solver._n_vvert_supports
+        ]
+        row_indices = np.arange(dist2.shape[0])[:, None]
+        sorted_order = np.lexsort((support_idxs, dist2[row_indices, support_idxs]))
+        support_idxs = support_idxs[row_indices, sorted_order].astype(gs.np_int)
         support_idxs = np.clip(support_idxs, 0, len(self._particles) - 1)
+
         all_ps = self._particles[support_idxs]
         Ps = all_ps[:, :-1].swapaxes(-2, -1) - np.expand_dims(all_ps[:, -1], axis=-1)
         P_invs = np.linalg.pinv(Ps)
@@ -275,7 +281,7 @@ class ParticleEntity(Entity):
 
         if isinstance(self._morph, gs.options.morphs.Nowhere):
             self._vverts = np.zeros((0, 3), dtype=gs.np_float)
-            self._vfaces = np.zeros((0, 3), dtype=gs.np_float)
+            self._vfaces = np.zeros((0, 3), dtype=gs.np_int)
             origin = gu.nowhere()
         elif isinstance(self._morph, gs.options.morphs.MeshSet):
             for i in range(len(self._morph.files)):
@@ -310,10 +316,10 @@ class ParticleEntity(Entity):
 
             if self._need_skinning:
                 self._vverts = np.asarray(self._vmesh.verts, dtype=gs.np_float)
-                self._vfaces = np.asarray(self._vmesh.faces, dtype=gs.np_float)
+                self._vfaces = np.asarray(self._vmesh.faces, dtype=gs.np_int)
             else:
                 self._vverts = np.zeros((0, 3), dtype=gs.np_float)
-                self._vfaces = np.zeros((0, 3), dtype=gs.np_float)
+                self._vfaces = np.zeros((0, 3), dtype=gs.np_int)
             origin = np.mean(self._morph.poss, dtype=gs.np_float)
         else:
             # transform vmesh
@@ -337,10 +343,10 @@ class ParticleEntity(Entity):
 
             if self._need_skinning:
                 self._vverts = np.asarray(self._vmesh.verts, dtype=gs.np_float)
-                self._vfaces = np.asarray(self._vmesh.faces, dtype=gs.np_float)
+                self._vfaces = np.asarray(self._vmesh.faces, dtype=gs.np_int)
             else:
                 self._vverts = np.zeros((0, 3), dtype=gs.np_float)
-                self._vfaces = np.zeros((0, 3), dtype=gs.np_float)
+                self._vfaces = np.zeros((0, 3), dtype=gs.np_int)
             origin = np.asarray(self._morph.pos, dtype=gs.np_float)
 
         self._particles = np.asarray(particles, dtype=gs.np_float, order="C")
@@ -734,6 +740,25 @@ class ParticleEntity(Entity):
         if self._scene.n_envs == 0:
             closest_idx = closest_idx[0]
         return closest_idx
+
+    # ------------------------------------------------------------------------------------
+    # --------------------------------- naming methods -----------------------------------
+    # ------------------------------------------------------------------------------------
+
+    def _get_morph_identifier(self) -> str:
+        morph = self._morph
+
+        if isinstance(morph, gs.morphs.Box):
+            return "box"
+        if isinstance(morph, gs.morphs.Sphere):
+            return "sphere"
+        if isinstance(morph, gs.morphs.Cylinder):
+            return "cylinder"
+        if isinstance(morph, gs.morphs.Mesh):
+            return Path(morph.file).stem
+        if isinstance(morph, gs.morphs.Nowhere):
+            return "emitter"
+        return "particle"
 
     # ------------------------------------------------------------------------------------
     # ----------------------------------- properties -------------------------------------

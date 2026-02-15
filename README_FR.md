@@ -25,7 +25,7 @@
   - [2025-01-08] Sortie de la v0.2.1 🎊 🎉
   - [2025-01-08] Création des groupes [Discord](https://discord.gg/nukCuhB47p) et [Wechat](https://drive.google.com/uc?export=view&id=1ZS9nnbQ-t1IwkzJlENBYqYIIOOZhXuBZ).
   - [2024-12-25] Ajout d’un [docker](https://www.google.com/search?q=%23docker) incluant la prise en charge du moteur de rendu par lancer de rayon (ray-tracing).
-  - [2024-12-24] Ajout de directives pour [contribuer à Genesis](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/CONTRIBUTING.md).
+  - [2024-12-24] Ajout de directives pour [contribuer à Genesis](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/contributing/PULL_REQUESTS.md).
 
 ## Table des Matières
 
@@ -140,7 +140,7 @@ docker run -it --network=host \
  genesis-amd
 ```
 
-Les exemples seront accessibles depuis `/workspace/examples`. Note : Les utilisateurs AMD doivent utiliser le backend Vulkan. Cela signifie que vous devrez appeler `gs.init(vulkan)` pour initialiser Genesis.
+Les exemples seront accessibles depuis `/workspace/examples`. Note : Les utilisateurs AMD doivent utiliser le backend ROCm (HIP). Cela signifie que vous devrez appeler `gs.init(backend=gs.amdgpu)` pour initialiser Genesis.
 
 ## Documentation
 
@@ -154,7 +154,7 @@ Le projet Genesis est un effort ouvert et collaboratif. Nous accueillons toutes 
 - **Rapports de bugs** via GitHub Issues.
 - **Suggestions** pour améliorer la convivialité de Genesis.
 
-Consultez notre [guide de contribution](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/CONTRIBUTING.md) pour plus de détails.
+Consultez notre [guide de contribution](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/contributing/PULL_REQUESTS.md) pour plus de détails.
 
 ## Support
 

@@ -1,11 +1,11 @@
 from typing import TYPE_CHECKING
+
 import numpy as np
 import gstaichi as ti
 
 import genesis as gs
 from genesis.options.morphs import Morph
 from genesis.options.solvers import (
-    AvatarOptions,
     BaseCouplerOptions,
     IPCCouplerOptions,
     LegacyCouplerOptions,
@@ -23,7 +23,6 @@ from genesis.repr_base import RBC
 
 from .entities import HybridEntity
 from .solvers import (
-    AvatarSolver,
     FEMSolver,
     MPMSolver,
     PBDSolver,
@@ -64,8 +63,6 @@ class Simulator(RBC):
         A ToolOptions object that contains all the options for the ToolSolver.
     rigid_options : gs.RigidOptions
         A RigidOptions object that contains all the options for the RigidSolver.
-    avatar_options : gs.AvatarOptions
-        An AvatarOptions object that contains all the options for the AvatarSolver.
     mpm_options : gs.MPMOptions
         An MPMOptions object that contains all the options for the MPMSolver.
     sph_options : gs.SPHOptions
@@ -85,7 +82,6 @@ class Simulator(RBC):
         coupler_options: BaseCouplerOptions,
         tool_options: ToolOptions,
         rigid_options: RigidOptions,
-        avatar_options: AvatarOptions,
         mpm_options: MPMOptions,
         sph_options: SPHOptions,
         fem_options: FEMOptions,
@@ -99,7 +95,6 @@ class Simulator(RBC):
         self.coupler_options = coupler_options
         self.tool_options = tool_options
         self.rigid_options = rigid_options
-        self.avatar_options = avatar_options
         self.mpm_options = mpm_options
         self.sph_options = sph_options
         self.fem_options = fem_options
@@ -119,7 +114,6 @@ class Simulator(RBC):
         # solvers
         self.tool_solver = ToolSolver(self.scene, self, self.tool_options)
         self.rigid_solver = RigidSolver(self.scene, self, self.rigid_options)
-        self.avatar_solver = AvatarSolver(self.scene, self, self.avatar_options)
         self.mpm_solver = MPMSolver(self.scene, self, self.mpm_options)
         self.sph_solver = SPHSolver(self.scene, self, self.sph_options)
         self.pbd_solver = PBDSolver(self.scene, self, self.pbd_options)
@@ -130,7 +124,6 @@ class Simulator(RBC):
             [
                 self.tool_solver,
                 self.rigid_solver,
-                self.avatar_solver,
                 self.mpm_solver,
                 self.sph_solver,
                 self.pbd_solver,
@@ -162,24 +155,24 @@ class Simulator(RBC):
         # sensors
         self._sensor_manager = SensorManager(self)
 
-    def _add_entity(self, morph: Morph, material, surface, visualize_contact=False):
+    def _add_entity(self, morph: Morph, material, surface, visualize_contact=False, name: str | None = None):
         if isinstance(material, gs.materials.Tool):
-            entity = self.tool_solver.add_entity(self.n_entities, material, morph, surface)
-        elif isinstance(material, gs.materials.Avatar):
-            entity = self.avatar_solver.add_entity(self.n_entities, material, morph, surface, visualize_contact)
+            entity = self.tool_solver.add_entity(self.n_entities, material, morph, surface, name=name)
         elif isinstance(material, gs.materials.Rigid):
-            entity = self.rigid_solver.add_entity(self.n_entities, material, morph, surface, visualize_contact)
+            entity = self.rigid_solver.add_entity(
+                self.n_entities, material, morph, surface, visualize_contact, name=name
+            )
         elif isinstance(material, gs.materials.MPM.Base):
-            entity = self.mpm_solver.add_entity(self.n_entities, material, morph, surface)
+            entity = self.mpm_solver.add_entity(self.n_entities, material, morph, surface, name=name)
         elif isinstance(material, gs.materials.SPH.Base):
-            entity = self.sph_solver.add_entity(self.n_entities, material, morph, surface)
+            entity = self.sph_solver.add_entity(self.n_entities, material, morph, surface, name=name)
         elif isinstance(material, gs.materials.PBD.Base):
-            entity = self.pbd_solver.add_entity(self.n_entities, material, morph, surface)
+            entity = self.pbd_solver.add_entity(self.n_entities, material, morph, surface, name=name)
         elif isinstance(material, gs.materials.FEM.Base):
-            entity = self.fem_solver.add_entity(self.n_entities, material, morph, surface)
+            entity = self.fem_solver.add_entity(self.n_entities, material, morph, surface, name=name)
         elif isinstance(material, gs.materials.Hybrid):
             # Note that adding to solver is handled in the hybrid entity
-            entity = HybridEntity(self.n_entities, self.scene, material, morph, surface)
+            entity = HybridEntity(self.n_entities, self.scene, material, morph, surface, name=name)
         else:
             gs.raise_exception(f"Material not supported.: {material}")
 
@@ -215,6 +208,9 @@ class Simulator(RBC):
                 entity.build()
 
         self._sensor_manager.build()
+
+    def destroy(self):
+        self._sensor_manager.destroy()
 
     def reset(self, state: SimState, envs_idx=None):
         for solver, solver_state in zip(self._solvers, state):
@@ -266,6 +262,13 @@ class Simulator(RBC):
     # ------------------------------------------------------------------------------------
 
     def step(self, in_backward=False):
+        # Check errno at the very beginning of the step.
+        # This will trigger GPU sync, but it is not a big deal at the point, since we are going to enqueue very large
+        # kernel right away. Moreover, if computations are still not done at this point, then the queue will just
+        # continue growing endlessly, which will not make the simulation faster either.
+        if self.rigid_solver.is_active and self._cur_substep_global % RATE_CHECK_ERRNO == 0:
+            self.rigid_solver.check_errno()
+
         if self._rigid_only and not self._requires_grad:  # "Only Advance!" --Thomas Wade :P
             for _ in range(self._substeps):
                 self.rigid_solver.substep(self.cur_substep_local)
@@ -281,14 +284,11 @@ class Simulator(RBC):
 
         if self.rigid_solver.is_active:
             self.rigid_solver.clear_external_force()
-            if self._cur_substep_global % RATE_CHECK_ERRNO == 0:
-                self.rigid_solver.check_errno()
 
         self._sensor_manager.step()
 
     def _step_grad(self):
         for _ in range(self._substeps - 1, -1, -1):
-
             if self.cur_substep_local == 0:
                 self.load_ckpt()
             self._cur_substep_global -= 1

@@ -33,7 +33,6 @@ class Light(metaclass=ABCMeta):
     """
 
     def __init__(self, color=None, intensity=None, name=None):
-
         if color is None:
             color = np.ones(3)
         if intensity is None:
@@ -162,6 +161,8 @@ class DirectionalLight(Light):
         camera : :class:`.Camera`
             The camera used to render shadowmaps for this light.
         """
+        if scene_scale < 1e-6:
+            scene_scale = 1.0
         return OrthographicCamera(znear=0.01 * scene_scale, zfar=10 * scene_scale, xmag=scene_scale, ymag=scene_scale)
 
 

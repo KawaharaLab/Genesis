@@ -226,21 +226,22 @@ def parse_glb_material(glb, material_index, surface):
     # TODO: Parse them!
     for extension_name, extension_material in material.extensions.items():
         if extension_name == "KHR_materials_specular":
+            # https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_specular/README.md
             specular_weight = extension_material.get("specularFactor", 1.0)
             specular_color = np.array(extension_material.get("specularColorFactor", [1.0, 1.0, 1.0]), dtype=np.float32)
-
         elif extension_name == "KHR_materials_clearcoat":
+            # https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_clearcoat/README.md
             clearcoat_weight = extension_material.get("clearcoatFactor", 0.0)
-            clearcoat_roughness_factor = extension_material["clearcoatRoughnessFactor"]
-
+            clearcoat_roughness_factor = extension_material.get("clearcoatRoughnessFactor", 0.0)
         elif extension_name == "KHR_materials_volume":
-            attenuation_distance = extension_material["attenuationDistance"]
-
+            # https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_volume/README.md
+            attenuation_distance = extension_material.get("attenuationDistance", float("inf"))
         elif extension_name == "KHR_materials_transmission":
-            specular_trans_factor = extension_material.get("transmissionFactor", 0.0)  # e.g. 1
-
+            # https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_transmission/README.md
+            specular_trans_factor = extension_material.get("transmissionFactor", 0.0)
         elif extension_name == "KHR_materials_ior":
-            ior = extension_material["ior"]  # e.g. 1.4500000476837158
+            # https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_ior/README.md
+            ior = extension_material.get("ior", 1.5)
 
     material_surface = surface.copy()
     material_surface.update_texture(
@@ -290,7 +291,7 @@ def parse_glb_tree(glb, node_index):
     return mesh_list
 
 
-def parse_mesh_glb(path, group_by_material, scale, surface):
+def parse_mesh_glb(path, group_by_material, scale, is_mesh_zup, surface):
     glb = pygltflib.GLTF2().load(path)
     assert glb is not None
     glb.convert_images(pygltflib.ImageFormat.DATAURI)
@@ -391,8 +392,9 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
             mesh_info, first_created = mesh_infos.get(group_idx)
             if first_created:
                 mesh_info.set_property(
-                    surface=material, metadata={"path": path, "name": material_name if group_by_material else mesh_name}
+                    surface=material,
+                    metadata={"mesh_path": path, "name": material_name if group_by_material else mesh_name},
                 )
             mesh_info.append(points, triangles, normals, uvs)
 
-    return mesh_infos.export_meshes(scale=scale)
+    return mesh_infos.export_meshes(scale=scale, is_mesh_zup=is_mesh_zup)

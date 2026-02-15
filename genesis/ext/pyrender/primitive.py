@@ -22,6 +22,7 @@ def _compute_bounds(positions):
             bounds[1, i] = np.max(positions[:, i])
     return bounds
 
+
 class Primitive(object):
     """A primitive object which can be rendered.
 
@@ -272,7 +273,7 @@ class Primitive(object):
             if value.ndim == 2:
                 value = value[np.newaxis, :, :]
             if value.shape[1] != 4 or value.shape[2] != 4:
-                raise ValueError("Pose matrices must be of shape (n,4,4), " "got {}".format(value.shape))
+                raise ValueError("Pose matrices must be of shape (n,4,4), got {}".format(value.shape))
         self._poses = value
         self._bounds = None
 
@@ -369,7 +370,7 @@ class Primitive(object):
             self._buffers["pos"] = posbuffer
             glBindBuffer(GL_ARRAY_BUFFER, posbuffer)
 
-            vertex_data = self.positions.astype(np.float32, order="C", copy=False).reshape((-1,))
+            vertex_data = np.ascontiguousarray(self.positions, dtype=np.float32).reshape((-1,))
             glBufferData(GL_ARRAY_BUFFER, FLOAT_SZ * len(vertex_data), vertex_data, GL_STREAM_DRAW)
 
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, FLOAT_SZ * 3, ctypes.c_void_p(0))
@@ -381,7 +382,7 @@ class Primitive(object):
                 glBindBuffer(GL_ARRAY_BUFFER, normal_buffer)
 
                 normal_data = self.calc_vertex_normal()
-                normal_data = normal_data.astype(np.float32, order="C", copy=False).reshape((-1,))
+                normal_data = np.ascontiguousarray(normal_data, dtype=np.float32).reshape((-1,))
                 glBufferData(GL_ARRAY_BUFFER, FLOAT_SZ * len(normal_data), normal_data, GL_STREAM_DRAW)
 
                 glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, FLOAT_SZ * 3, ctypes.c_void_p(0))
@@ -430,7 +431,7 @@ class Primitive(object):
             glBindBuffer(GL_ARRAY_BUFFER, vertexbuffer)
 
             # Copy data to buffer
-            vertex_data = vertex_data.astype(np.float32, order="C", copy=False).reshape((-1,))
+            vertex_data = np.ascontiguousarray(vertex_data, dtype=np.float32).reshape((-1,))
             glBufferData(GL_ARRAY_BUFFER, FLOAT_SZ * len(vertex_data), vertex_data, GL_STATIC_DRAW)
             total_sz = sum(attr_sizes)
             offset = 0
@@ -447,7 +448,7 @@ class Primitive(object):
         #######################################################################
 
         if self.poses is not None:
-            pose_data = np.transpose(self.poses, (0, 2, 1)).astype(np.float32, order="C", copy=False).reshape((-1,))
+            pose_data = np.ascontiguousarray(np.transpose(self.poses, (0, 2, 1)), dtype=np.float32).reshape((-1,))
         else:
             pose_data = np.eye(4, dtype=np.float32).reshape((-1,))
 
@@ -477,7 +478,7 @@ class Primitive(object):
             glBufferData(
                 GL_ELEMENT_ARRAY_BUFFER,
                 UINT_SZ * self.indices.size,
-                self.indices.astype(np.uint32, order="C", copy=False).reshape((-1,)),
+                np.ascontiguousarray(self.indices, dtype=np.uint32).reshape((-1,)),
                 GL_STATIC_DRAW,
             )
 
@@ -498,7 +499,7 @@ class Primitive(object):
 
     def _bind(self):
         if self._vaid is None:
-            raise ValueError("Cannot bind a Mesh that has not been added " "to a context")
+            raise ValueError("Cannot bind a Mesh that has not been added to a context")
         glBindVertexArray(self._vaid)
 
     def _unbind(self):

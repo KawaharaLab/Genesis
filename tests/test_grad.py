@@ -1,6 +1,3 @@
-import platform
-import sys
-
 import numpy as np
 import pytest
 import torch
@@ -20,7 +17,6 @@ pytestmark = [
 
 
 @pytest.mark.required
-@pytest.mark.skipif(platform.machine() == "aarch64", reason="Physics-based particle sampler not supported on ARM.")
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
 def test_differentiable_push(show_viewer):
     HORIZON = 10
@@ -88,7 +84,7 @@ def test_differentiable_push(show_viewer):
         scene.step()
 
         if i == HORIZON // 2:
-            mpm_particles = scene.get_state().solvers_state[3]
+            mpm_particles = scene.get_state().solvers_state[scene.solvers.index(scene.mpm_solver)]
             loss += torch.pow(mpm_particles.pos[mpm_particles.active == 1] - goal, 2).sum()
 
         if i == HORIZON - 2:
@@ -225,8 +221,8 @@ def test_diff_contact():
 @pytest.mark.required
 @pytest.mark.precision("64")
 def test_diff_solver(monkeypatch):
-    from genesis.engine.solvers.rigid.constraint_solver_decomp import func_init_solver, func_solve
-    from genesis.engine.solvers.rigid.rigid_solver_decomp import kernel_step_1
+    from genesis.engine.solvers.rigid.constraint.solver import func_solve_init, func_solve_body
+    from genesis.engine.solvers.rigid.rigid_solver import kernel_step_1
 
     RTOL = 1e-4
 
@@ -257,14 +253,15 @@ def test_diff_solver(monkeypatch):
 
     # Monkeypatch the constraint resolve function to avoid overwriting the necessary information for computing gradients.
     def constraint_solver_resolve():
-        func_init_solver(
+        func_solve_init(
+            dofs_info=rigid_solver.dofs_info,
             dofs_state=rigid_solver.dofs_state,
             entities_info=rigid_solver.entities_info,
             constraint_state=constraint_solver.constraint_state,
             rigid_global_info=rigid_solver._rigid_global_info,
             static_rigid_sim_config=rigid_solver._static_rigid_sim_config,
         )
-        func_solve(
+        func_solve_body(
             entities_info=rigid_solver.entities_info,
             dofs_state=rigid_solver.dofs_state,
             constraint_state=constraint_solver.constraint_state,
@@ -290,6 +287,9 @@ def test_diff_solver(monkeypatch):
         rigid_global_info=rigid_solver._rigid_global_info,
         static_rigid_sim_config=rigid_solver._static_rigid_sim_config,
         contact_island_state=constraint_solver.contact_island.contact_island_state,
+        is_forward_pos_updated=True,
+        is_forward_vel_updated=True,
+        is_backward=False,
     )
     constraint_solver.add_equality_constraints()
     rigid_solver.collider.detection()

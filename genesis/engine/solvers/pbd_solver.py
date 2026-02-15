@@ -1,7 +1,6 @@
 import math
 
 import numpy as np
-from numpy.typing import NDArray
 import gstaichi as ti
 
 import genesis as gs
@@ -102,6 +101,12 @@ class PBDSolver(Solver):
         self.vverts_render = struct_vvert_state_render.field(
             shape=(max(self._n_vverts, 1), self._B), layout=ti.Layout.SOA
         )
+
+        # UV coordinates for visual vertices (static, same across all batch envs)
+        self.vverts_uvs = ti.field(dtype=gs.ti_vec2, shape=(max(self._n_vverts, 1),))
+
+        # Triangle face indices for visual mesh (static)
+        self.vfaces_indices = ti.field(dtype=gs.ti_ivec3, shape=(max(self._n_vfaces, 1),))
 
     def init_particle_fields(self):
         # particles information (static)
@@ -234,7 +239,7 @@ class PBDSolver(Solver):
     def is_active(self):
         return self.n_particles > 0
 
-    def add_entity(self, idx, material, morph, surface):
+    def add_entity(self, idx, material, morph, surface, name: str | None = None):
         if isinstance(material, gs.materials.PBD.Cloth):
             entity = PBD2DEntity(
                 scene=self.scene,
@@ -249,6 +254,7 @@ class PBDSolver(Solver):
                 inner_edge_start=self.n_inner_edges,
                 vvert_start=self.n_vverts,
                 vface_start=self.n_vfaces,
+                name=name,
             )
 
         elif isinstance(material, gs.materials.PBD.Elastic):
@@ -265,6 +271,7 @@ class PBDSolver(Solver):
                 elem_start=self.n_elems,
                 vvert_start=self.n_vverts,
                 vface_start=self.n_vfaces,
+                name=name,
             )
 
         elif isinstance(material, gs.materials.PBD.Liquid):
@@ -277,6 +284,7 @@ class PBDSolver(Solver):
                 particle_size=self._particle_size,
                 idx=idx,
                 particle_start=self.n_particles,
+                name=name,
             )
 
         elif isinstance(material, gs.materials.PBD.Particle):
@@ -289,6 +297,7 @@ class PBDSolver(Solver):
                 particle_size=self._particle_size,
                 idx=idx,
                 particle_start=self.n_particles,
+                name=name,
             )
 
         else:
@@ -830,6 +839,24 @@ class PBDSolver(Solver):
             state = None
         return state
 
+    def get_state_render(self):
+        """
+        Get visual vertex positions, UVs, and face indices for rendering.
+
+        Returns
+        -------
+        tuple
+            (vverts_pos, vverts_uvs, vfaces_indices) - vertex positions, UV coords, and triangle indices
+        """
+        if not self.is_active or self._n_vverts == 0:
+            return None, None, None
+
+        # Make sure render fields are up to date
+        self.update_render_fields()
+
+        # Return the Taichi fields directly for GPU access
+        return self.vverts_render.pos, self.vverts_uvs, self.vfaces_indices
+
     @ti.kernel
     def _kernel_get_state(
         self,
@@ -913,10 +940,10 @@ class PBDSolver(Solver):
     @gs.assert_built
     def set_animate_particles_by_link(
         self,
-        particles_idx: NDArray[np.int32],
+        particles_idx,
         link_idx: int,
         links_state: LinksState,
-        envs_idx: NDArray[np.int32] | None = None,
+        envs_idx=None,
     ) -> None:
         envs_idx = self._scene._sanitize_envs_idx(envs_idx)
         self._sim._coupler.kernel_attach_pbd_to_rigid_link(particles_idx, envs_idx, link_idx, links_state)
