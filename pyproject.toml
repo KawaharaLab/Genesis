@@ -62,12 +62,12 @@ dependencies = [
     # * 1.7.0: First version distributed on PyPI (no pre-compiled binaries for Windows OS).
     #          Fix OMPL DLL search directory.
     "ompl>=1.7.0; platform_system != 'Windows'",
-    "torch>=2.7.0",
+    "torch>=2.8.0",
     "torchvision>=0.22.0",
     "torchaudio>=2.7.0",
     "pandas>=2.2.3",
     "openai==1.91.0",
-    "huggingface-hub[cli]>=0.33.4",
+    "huggingface-hub[cli]==0.36.0",
     "gs-madrona==0.0.5; platform_system=='Linux' and (platform_machine=='x86_64' or platform_machine=='AMD64')",
     # Used for mesh simplification
     "fast_simplification>=0.1.12",
@@ -77,6 +77,18 @@ dependencies = [
     "sentencepiece>=0.2.1",
     "protobuf>=6.32.0",
     "sentence-transformers>=5.1.0",
+    "augmax>=0.4.1",
+    "jax[cuda12]==0.5.3",
+    "flax==0.10.2",
+    "beartype==0.19.0",
+    "jaxtyping==0.2.36",
+    "pytest>=8.3.4",
+    "tqdm-loggable>=0.2",
+    "numpydantic>=1.6.6",
+    "tyro>0.9.5",
+    "ml-collections==1.0.0",
+    "orbax-checkpoint==0.11.13",
+    "lerobot>=0.3.2",
 ]
 
 [project.optional-dependencies]

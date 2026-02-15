@@ -7,3 +7,7 @@
 [submodule "genesis/ext/ParticleMesher"]
 	path = genesis/ext/ParticleMesher
 	url = https://github.com/ACMLCZH/ParticleMesher
+[submodule "genesis/ext/openpi"]
+	path = genesis/ext/openpi
+	url = git@github.com:KawaharaLab/openpi.git
+	branch = tk_grad_baseline
