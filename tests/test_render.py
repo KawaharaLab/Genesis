@@ -18,7 +18,7 @@ from genesis.utils.misc import tensor_to_array
 from genesis.vis.keybindings import Key
 
 from .conftest import IS_INTERACTIVE_VIEWER_AVAILABLE
-from .utils import assert_allclose, assert_array_equal, get_hf_dataset, rgb_array_to_png_bytes
+from .utils import assert_allclose, assert_equal, get_hf_dataset, rgb_array_to_png_bytes
 
 IMG_STD_ERR_THR = 1.0
 
@@ -759,7 +759,7 @@ def test_segmentation_map(segmentation_level, particle_mode, renderer_type, rend
         scene.step()
         _, _, seg, _ = camera.render(rgb=False, depth=False, segmentation=True, colorize_seg=False, normal=False)
         seg = tensor_to_array(seg)
-        assert_array_equal(np.sort(np.unique(seg.flat)), np.arange(0, seg_num))
+        assert_equal(np.sort(np.unique(seg.flat)), np.arange(0, seg_num))
 
 
 @pytest.mark.required
@@ -1375,7 +1375,7 @@ def test_batch_deformable_render(monkeypatch, png_snapshot):
             res=(640, 480),
             run_in_thread=False,
             # Disable text rendering as it is messing up with pixel matching when using old CPU-based Mesa driver
-            disable_help_text=False,
+            enable_help_text=False,
         ),
         vis_options=gs.options.VisOptions(
             visualize_mpm_boundary=True,

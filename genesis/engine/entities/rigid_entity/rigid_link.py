@@ -9,7 +9,7 @@ from genesis.repr_base import RBC
 from genesis.utils import geom as gu
 from genesis.utils.urdf import compose_inertial_properties, rotate_inertia
 
-from genesis.utils.misc import tensor_to_array, ti_to_torch, DeprecationError
+from genesis.utils.misc import tensor_to_array, qd_to_torch, DeprecationError
 
 from .rigid_geom import RigidGeom, RigidVisGeom
 
@@ -67,7 +67,6 @@ class RigidLink(RBC):
         self._uid = gs.UID()
         self._idx: int = idx
         self._parent_idx: int = parent_idx  # -1 if no parent
-        self._child_idxs: list[int] = list()
 
         # 'is_fixed' attribute specifies whether the link is free to move.
         # In practice, this attributes determines whether the geometry vertices associated with the entity are stored
@@ -253,6 +252,7 @@ class RigidLink(RBC):
                         f"from geometry {hint_mass:0.3f} given material density {rho:0.0f}."
                     )
                 hint_inertia *= self._inertial_mass / hint_mass
+                hint_mass = self._inertial_mass
 
             if self._inertial_i is not None:
                 inertia_diag = np.diag(self._inertial_i)
@@ -272,23 +272,23 @@ class RigidLink(RBC):
 
         if self._inertial_mass is None or self._inertial_pos is None or self._inertial_i is None:
             if not self._is_fixed:
-                if (
-                    not self._geoms
-                    and not self._vgeoms
-                    and any(joint.type is not gs.JOINT_TYPE.FIXED for joint in self.joints)
-                ):
-                    gs.logger.info(
-                        f"Link mass not specified and no geoms found for link '{self.name}'. Setting mass to 'gs.EPS'."
-                    )
+                if not self._geoms and not self._vgeoms:
+                    if any(joint.type is not gs.JOINT_TYPE.FIXED for joint in self.joints):
+                        gs.logger.info(
+                            f"Mass not specified and no geoms found for link '{self.name}'. Setting to 'gs.EPS'."
+                        )
                 elif not self._geoms:
                     gs.logger.info(
-                        f"Link mass is not specified and collision geoms can not be found for link '{self.name}'. "
+                        f"Mass is not specified and collision geoms can not be found for link '{self.name}'. "
                         f"Using visual geoms to compute inertial properties."
                     )
-            self._inertial_mass = hint_mass
-            self._inertial_pos = hint_com
+            if self._inertial_mass is None:
+                self._inertial_mass = hint_mass
+            if self._inertial_pos is None:
+                self._inertial_pos = hint_com
             self._inertial_quat = gu.identity_quat()
-            self._inertial_i = hint_inertia
+            if self._inertial_i is None:
+                self._inertial_i = hint_inertia
 
         # FIXME: Setting zero mass even for fixed links breaks physics for some reason...
         # For non-fixed links, it must be non-zero in case for coupling with deformable body solvers.
@@ -415,9 +415,9 @@ class RigidLink(RBC):
 
         verts_idx = slice(self._verts_state_start, self._verts_state_start + self.n_verts)
         if self.is_fixed and not self._entity._batch_fixed_verts:
-            tensor = ti_to_torch(self._solver.fixed_verts_state.pos, verts_idx, copy=True)
+            tensor = qd_to_torch(self._solver.fixed_verts_state.pos, verts_idx, copy=True)
         else:
-            tensor = ti_to_torch(self._solver.free_verts_state.pos, None, verts_idx, transpose=True, copy=True)
+            tensor = qd_to_torch(self._solver.free_verts_state.pos, None, verts_idx, transpose=True, copy=True)
             if self._solver.n_envs == 0:
                 tensor = tensor[0]
         return tensor
@@ -485,7 +485,7 @@ class RigidLink(RBC):
         if mass < gs.EPS:
             gs.raise_exception(f"Attempt to set mass of link '{self.name}' to {mass}. Mass must be strictly positive.")
 
-        ratio = float(mass) / self._inertial_mass
+        ratio = float(mass / self._inertial_mass)
         self._inertial_mass *= ratio
         if self._invweight is not None:
             self._invweight /= ratio

@@ -12,21 +12,19 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pytest
 
+try:
+    from pxr import Usd
+except ImportError as e:
+    pytest.skip("USD is not supported because 'pxr' module is not available.", allow_module_level=True)
+
+from pxr import Gf, Sdf, UsdGeom, UsdPhysics
+from genesis.utils.usd import UsdContext, HAS_OMNIVERSE_KIT_SUPPORT
+
 import genesis as gs
 import genesis.utils.geom as gu
 
 from .utils import assert_allclose, get_hf_dataset
 from .test_mesh import check_gs_meshes, check_gs_surfaces
-
-# Check for USD support
-try:
-    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
-    from genesis.utils.usd import UsdContext, HAS_OMNIVERSE_KIT_SUPPORT
-
-    HAS_USD_SUPPORT = True
-except ImportError as e:
-    HAS_USD_SUPPORT = False
-    HAS_OMNIVERSE_KIT_SUPPORT = False
 
 
 # Conversion from .usd to .glb significantly affects precision
@@ -433,6 +431,13 @@ def all_primitives_usd(asset_tmp_path, all_primitives_mjcf: ET.ElementTree):
     box_rigid = UsdPhysics.RigidBodyAPI.Apply(box.GetPrim())
     box_rigid.GetKinematicEnabledAttr().Set(False)
 
+    # Create free joint for box
+    free_joint_prim = UsdPhysics.Joint.Define(stage, "/worldbody/box_joint")
+    free_joint_prim.CreateBody0Rel().SetTargets([root_prim.GetPath()])
+    free_joint_prim.CreateBody1Rel().SetTargets([box.GetPrim().GetPath()])
+    free_joint_prim.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    free_joint_prim.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+
     # Create cylinder (free rigid body)
     # In MJCF: cylinder size is (radius, half-height)
     # In USD: cylinder has radius and height (full height)
@@ -443,6 +448,13 @@ def all_primitives_usd(asset_tmp_path, all_primitives_mjcf: ET.ElementTree):
     cylinder.GetAxisAttr().Set("Z")
     cylinder_rigid = UsdPhysics.RigidBodyAPI.Apply(cylinder.GetPrim())
     cylinder_rigid.GetKinematicEnabledAttr().Set(False)
+
+    # Create free joint for cylinder
+    cylinder_joint_prim = UsdPhysics.Joint.Define(stage, "/worldbody/cylinder_joint")
+    cylinder_joint_prim.CreateBody0Rel().SetTargets([root_prim.GetPath()])
+    cylinder_joint_prim.CreateBody1Rel().SetTargets([cylinder.GetPrim().GetPath()])
+    cylinder_joint_prim.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    cylinder_joint_prim.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
 
     # Create capsule (free rigid body)
     # In MJCF: capsule size is (radius, half-height)
@@ -455,6 +467,13 @@ def all_primitives_usd(asset_tmp_path, all_primitives_mjcf: ET.ElementTree):
     capsule_rigid = UsdPhysics.RigidBodyAPI.Apply(capsule.GetPrim())
     capsule_rigid.GetKinematicEnabledAttr().Set(False)
 
+    # Create free joint for capsule
+    capsule_joint_prim = UsdPhysics.Joint.Define(stage, "/worldbody/capsule_joint")
+    capsule_joint_prim.CreateBody0Rel().SetTargets([root_prim.GetPath()])
+    capsule_joint_prim.CreateBody1Rel().SetTargets([capsule.GetPrim().GetPath()])
+    capsule_joint_prim.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    capsule_joint_prim.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+
     # Create sphere (free rigid body)
     # In MJCF: sphere size is radius
     # In USD: sphere has radius
@@ -464,6 +483,13 @@ def all_primitives_usd(asset_tmp_path, all_primitives_mjcf: ET.ElementTree):
     sphere_rigid = UsdPhysics.RigidBodyAPI.Apply(sphere.GetPrim())
     sphere_rigid.GetKinematicEnabledAttr().Set(False)
 
+    # Create free joint for sphere
+    sphere_joint_prim = UsdPhysics.Joint.Define(stage, "/worldbody/sphere_joint")
+    sphere_joint_prim.CreateBody0Rel().SetTargets([root_prim.GetPath()])
+    sphere_joint_prim.CreateBody1Rel().SetTargets([sphere.GetPrim().GetPath()])
+    sphere_joint_prim.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    sphere_joint_prim.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+
     stage.Save()
 
     return usd_file
@@ -472,7 +498,6 @@ def all_primitives_usd(asset_tmp_path, all_primitives_mjcf: ET.ElementTree):
 @pytest.mark.required
 @pytest.mark.parametrize("model_name", ["all_primitives_mjcf"])
 @pytest.mark.parametrize("scale", [1.0, 2.0])
-@pytest.mark.skipif(not HAS_USD_SUPPORT, reason="USD support not available")
 def test_primitives_mjcf_vs_usd(xml_path, all_primitives_usd, scale, tol):
     """Test that MJCF and USD scenes produce equivalent Genesis entities."""
     mjcf_scene = build_mjcf_scene(xml_path, scale=scale)
@@ -569,8 +594,14 @@ def all_joints_mjcf():
 
 
 @pytest.fixture(scope="session")
-def all_joints_usd(asset_tmp_path, all_joints_mjcf: ET.ElementTree):
-    """Generate a USD file equivalent to the all joints MJCF fixture."""
+def all_joints_usd(asset_tmp_path, all_joints_mjcf: ET.ElementTree, request):
+    """Generate a USD file equivalent to the all joints MJCF fixture.
+
+    Supports both with and without ArticulationRootAPI based on request.param.
+    """
+    # Get the use_articulation_root parameter from request.param if available
+    use_articulation_root = getattr(request, "param", True)
+
     worldbody = all_joints_mjcf.find("worldbody")
 
     # Floor
@@ -627,8 +658,9 @@ def all_joints_usd(asset_tmp_path, all_joints_mjcf: ET.ElementTree):
     free_box_geom = free_box_body.find("geom[@type='box']")
     free_box_size = to_array(free_box_geom.get("size"))
 
-    # Create temporary USD file
-    usd_file = str(asset_tmp_path / "all_joints.usda")
+    # Create temporary USD file with suffix based on ArticulationRootAPI usage
+    suffix = "with_articulation_root" if use_articulation_root else "without_articulation_root"
+    usd_file = str(asset_tmp_path / f"all_joints_{suffix}.usda")
 
     # Create USD stage
     stage = Usd.Stage.CreateNew(usd_file)
@@ -649,7 +681,8 @@ def all_joints_usd(asset_tmp_path, all_joints_mjcf: ET.ElementTree):
 
     # Create base (fixed, collision-only)
     base = UsdGeom.Cube.Define(stage, "/worldbody/base")
-    UsdPhysics.ArticulationRootAPI.Apply(base.GetPrim())
+    if use_articulation_root:
+        UsdPhysics.ArticulationRootAPI.Apply(base.GetPrim())
     base.AddTranslateOp().Set(Gf.Vec3d(base_pos[0], base_pos[1], base_pos[2]))
     base.GetSizeAttr().Set(base_size[0] * 2.0)
     UsdPhysics.CollisionAPI.Apply(base.GetPrim())
@@ -733,7 +766,6 @@ def all_joints_usd(asset_tmp_path, all_joints_mjcf: ET.ElementTree):
     free_box_rigid = UsdPhysics.RigidBodyAPI.Apply(free_box.GetPrim())
     free_box_rigid.GetKinematicEnabledAttr().Set(False)
 
-    # Create free joint (PhysicsJoint type) - connects to worldbody root, not base
     free_joint_prim = UsdPhysics.Joint.Define(stage, "/worldbody/free_box_joint")
     free_joint_prim.CreateBody0Rel().SetTargets([root_prim.GetPath()])
     free_joint_prim.CreateBody1Rel().SetTargets([free_box.GetPrim().GetPath()])
@@ -748,14 +780,16 @@ def all_joints_usd(asset_tmp_path, all_joints_mjcf: ET.ElementTree):
 @pytest.mark.required
 @pytest.mark.parametrize("model_name", ["all_joints_mjcf"])
 @pytest.mark.parametrize("scale", [1.0, 2.0])
-@pytest.mark.skipif(not HAS_USD_SUPPORT, reason="USD support not available")
+@pytest.mark.parametrize(
+    "all_joints_usd", [True, False], indirect=True, ids=["with_articulation_root", "without_articulation_root"]
+)
 def test_joints_mjcf_vs_usd(xml_path, all_joints_usd, scale, tol):
     """
     Test that MJCF and USD scenes with all joint types (prismatic, revolute, spherical, fixed, free)
     produce equivalent Genesis entities.
 
     This test verifies that all five joint types are correctly parsed from both
-    MJCF and USD formats and produce equivalent results.
+    MJCF and USD formats and produce equivalent results, with and without ArticulationRootAPI.
     """
     mjcf_scene = build_mjcf_scene(xml_path, scale=scale)
     usd_scene = build_usd_scene(all_joints_usd, scale=scale)
@@ -766,7 +800,6 @@ def test_joints_mjcf_vs_usd(xml_path, all_joints_usd, scale, tol):
 
 @pytest.mark.required
 @pytest.mark.parametrize("model_name", ["usd/sneaker_airforce", "usd/RoughnessTest"])
-@pytest.mark.skipif(not HAS_USD_SUPPORT, reason="USD support not available")
 def test_usd_visual_parse(model_name, tol):
     glb_asset_path = get_hf_dataset(pattern=f"{model_name}.glb")
     glb_file = os.path.join(glb_asset_path, f"{model_name}.glb")
@@ -781,7 +814,6 @@ def test_usd_visual_parse(model_name, tol):
 
 @pytest.mark.required
 @pytest.mark.parametrize("usd_file", ["usd/nodegraph.usda"])
-@pytest.mark.skipif(not HAS_USD_SUPPORT, reason="USD support not available")
 def test_usd_parse_nodegraph(usd_file):
     asset_path = get_hf_dataset(pattern=usd_file)
     usd_file = os.path.join(asset_path, usd_file)
@@ -801,27 +833,32 @@ def test_usd_parse_nodegraph(usd_file):
     "usd_file", ["usd/WoodenCrate/WoodenCrate_D1_1002.usda", "usd/franka_mocap_teleop/table_scene.usd"]
 )
 @pytest.mark.parametrize("backend", [gs.cuda])
-@pytest.mark.skipif(not HAS_USD_SUPPORT, reason="USD support not available")
 @pytest.mark.skipif(not HAS_OMNIVERSE_KIT_SUPPORT, reason="omniverse-kit support not available")
 def test_usd_bake(usd_file, tmp_path):
     RETRY_NUM = 3 if "PYTEST_XDIST_WORKER" in os.environ else 0
     RETRY_DELAY = 30.0
 
     asset_path = get_hf_dataset(pattern=os.path.join(os.path.dirname(usd_file), "*"), local_dir=tmp_path)
-    usd_file = os.path.join(asset_path, usd_file)
+    usd_fullpath = os.path.join(asset_path, usd_file)
 
     # Note that bootstrapping omni-kit by multiple workers concurrently is causing failure.
     # There is no easy way to get around this limitation except retrying after some delay...
     retry_idx = 0
     while True:
-        usd_scene = build_usd_scene(usd_file, scale=1.0, vis_mode="visual", is_stage=False, fixed=True)
+        is_stage = usd_file == "usd/franka_mocap_teleop/table_scene.usd"
+        usd_scene = build_usd_scene(
+            usd_fullpath,
+            scale=1.0,
+            vis_mode="visual",
+            is_stage=is_stage,
+            fixed=True,
+        )
 
         is_any_baked = False
         for vgeom in usd_scene.entities[0].vgeoms:
-            vmesh = vgeom.vmesh
-            bake_success = vmesh.metadata["bake_success"]
+            bake_success = vgeom.vmesh.metadata["bake_success"]
             try:
-                assert bake_success is None or bake_success
+                assert bake_success
             except AssertionError:
                 if retry_idx < RETRY_NUM:
                     usd_scene.destroy()
@@ -837,7 +874,6 @@ def test_usd_bake(usd_file, tmp_path):
 
 @pytest.mark.required
 @pytest.mark.parametrize("scale", [1.0, 2.0])
-@pytest.mark.skipif(not HAS_USD_SUPPORT, reason="USD support not available")
 def test_massapi_invalid_defaults_mjcf_vs_usd(asset_tmp_path, scale, tol):
     """
     Test that USD MassAPI with invalid default values produces equivalent results to MJCF.
@@ -889,6 +925,12 @@ def test_massapi_invalid_defaults_mjcf_vs_usd(asset_tmp_path, scale, tol):
     box.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.3))
     box.GetSizeAttr().Set(0.4)  # 0.2 half-extent * 2
 
+    box_joint = UsdPhysics.Joint.Define(stage, "/worldbody/test_box_joint")
+    box_joint.CreateBody0Rel().SetTargets([root_prim.GetPath()])
+    box_joint.CreateBody1Rel().SetTargets([box.GetPrim().GetPath()])
+    box_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    box_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+
     box_rigid = UsdPhysics.RigidBodyAPI.Apply(box.GetPrim())
     box_rigid.GetKinematicEnabledAttr().Set(False)
 
@@ -900,3 +942,38 @@ def test_massapi_invalid_defaults_mjcf_vs_usd(asset_tmp_path, scale, tol):
     usd_scene = build_usd_scene(usd_file, scale=scale)
 
     compare_scene(mjcf_scene, usd_scene, tol=tol)
+
+
+@pytest.mark.required
+def test_uv_size_mismatch_no_crash(asset_tmp_path):
+    """
+    Test that a USD mesh with mismatched UV size does not crash the parser for consistency with Nvidia omniverse.
+    """
+    usd_file = str(asset_tmp_path / "uv_mismatch.usda")
+
+    stage = Usd.Stage.CreateNew(usd_file)
+    UsdGeom.SetStageUpAxis(stage, "Z")
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+
+    root_prim = stage.DefinePrim("/root", "Xform")
+    stage.SetDefaultPrim(root_prim)
+
+    # Create a simple triangle mesh with intentionally mismatched UVs
+    mesh = UsdGeom.Mesh.Define(stage, "/root/mesh")
+    mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0), Gf.Vec3f(1, 1, 0)])
+    mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, 1, 3, 2])
+    mesh.GetFaceVertexCountsAttr().Set([3, 3])
+
+    # Add UVs with intentionally wrong count (5 UVs for 4 vertices / 6 face-vertex indices)
+    primvar_api = UsdGeom.PrimvarsAPI(mesh.GetPrim())
+    uv_primvar = primvar_api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+    uv_primvar.Set([Gf.Vec2f(0, 0), Gf.Vec2f(1, 0), Gf.Vec2f(0, 1), Gf.Vec2f(1, 1), Gf.Vec2f(0.5, 0.5)])
+
+    UsdPhysics.RigidBodyAPI.Apply(mesh.GetPrim())
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+
+    stage.Save()
+
+    # This should NOT raise an exception — it should warn and discard UVs
+    usd_scene = build_usd_scene(usd_file, scale=1.0, vis_mode="collision")
+    assert len(usd_scene.entities) > 0

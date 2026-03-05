@@ -4,15 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "genesis-world"
-version = "0.3.14"
+version = "0.4.0"
 description = "A universal and generative physics engine"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "psutil",
-    "gstaichi==4.6.0",
+    "quadrants==0.4.2",
     "pydantic>=2.11.0",
     "numpy>=1.26.4",
+    "frozendict",
     "trimesh",
     "libigl",
     # Cross-platform library to get various kind of CPU information such as model name
@@ -99,7 +100,6 @@ dev = [
     "pytest",
     "pytest-xdist",
     "pytest-forked",
-    "pytest-random-order",
     "pytest-print",
     # Note that 'pytest-rerunfailures' is incompatible with 'pytest-forked'
     # - 16.0 is causing pytest-xdist to crash in case of failure or skipped tests
@@ -119,6 +119,8 @@ dev = [
     "av",
     # Used for validating polar decomposition in unit tests
     "scipy",
+    # Used for code formatting during commits
+    "pre_commit",
 ]
 docs = [
     # Note that currently sphinx 7 does not work, so we must use v6.2.1. Once fixed we can use a later version.

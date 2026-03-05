@@ -20,6 +20,8 @@ from _pytest.mark import Expression, MarkMatcher
 from PIL import Image
 from syrupy.extensions.image import PNGImageSnapshotExtension
 
+from . import profiling
+
 # Mock tkinter module for backward compatibility because it is a hard dependency for old Genesis versions
 has_tkinter = False
 try:
@@ -155,13 +157,13 @@ def pytest_cmdline_main(config: pytest.Config) -> None:
         if config.option.numprocesses > max_workers:
             raise ValueError(f"The number of workers cannot exceed '{max_workers}' on this machine.")
 
-    # Properly configure Taichi std out stream right away to avoid significant performance penalty (~10%)
+    # Properly configure Quadrants std out stream right away to avoid significant performance penalty (~10%)
     # Note that this variable must be set in the main thread BEFORE spawning the distributed workers, otherwise
     # the variable will be set incorrectly. Although, Genesis is already setting this env variable properly at import,
     # relying on this mechanism is fragile.
-    os.environ.setdefault("TI_ENABLE_PYBUF", "0" if sys.stdout is sys.__stdout__ else "1")
+    os.environ.setdefault("QD_ENABLE_PYBUF", "0" if sys.stdout is sys.__stdout__ else "1")
 
-    # Disable GsTaichi dynamic array mode by default on MacOS because it is not supported by Metal
+    # Disable Quadrants dynamic array mode by default on MacOS because it is not supported by Metal
     if sys.platform == "darwin":
         os.environ.setdefault("GS_ENABLE_NDARRAY", "0")
 
@@ -175,7 +177,7 @@ def pytest_cmdline_main(config: pytest.Config) -> None:
             gpu_index = gpu_indices[worker_num % len(gpu_indices)]
             os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
-            os.environ["TI_VISIBLE_DEVICE"] = str(gpu_index)
+            os.environ["QD_VISIBLE_DEVICE"] = str(gpu_index)
 
         # Limit CPU threading
         if is_benchmarks:
@@ -185,7 +187,7 @@ def pytest_cmdline_main(config: pytest.Config) -> None:
             physical_core_count = psutil.cpu_count(logical=config.option.logical)
             num_workers = int(os.environ["PYTEST_XDIST_WORKER_COUNT"])
             num_cpu_per_worker = str(max(int(physical_core_count / num_workers), 1))
-        os.environ["TI_NUM_THREADS"] = num_cpu_per_worker
+        os.environ["QD_NUM_THREADS"] = num_cpu_per_worker
         os.environ["OMP_NUM_THREADS"] = num_cpu_per_worker
         os.environ["OPENBLAS_NUM_THREADS"] = num_cpu_per_worker
         os.environ["MKL_NUM_THREADS"] = num_cpu_per_worker
@@ -306,11 +308,11 @@ def pytest_xdist_auto_num_workers(config):
             except (FileNotFoundError, subprocess.CalledProcessError):
                 pass
         if devices_vram_memory is not None:
-            assert len(set(devices_vram_memory)) == 1, "Heterogeonous Nvidia GPU devices not supported."
+            assert len(set(devices_vram_memory)) == 1, "Heterogeneous Nvidia GPU devices not supported."
             num_gpus = len(devices_vram_memory)
             vram_memory = sum(devices_vram_memory) / 1024
         else:
-            # FIXME: There is easy way for Intel ARC device. Ignore device visibilty issue for now...
+            # FIXME: There is no easy way for Intel ARC device. Ignore device visibility issue for now...
             import torch
 
             if torch.xpu.is_available():
@@ -326,7 +328,7 @@ def pytest_xdist_auto_num_workers(config):
                 vram_memory = float("inf")
 
     # Compute the default number of workers based on available RAM, VRAM, and number of physical cores.
-    # Note that if `forked` is not enabled, up to 7.5Gb per worker is necessary on Linux because Taichi
+    # Note that if `forked` is not enabled, up to 7.5Gb per worker is necessary on Linux because Quadrants
     # does not completely release memory between each test.
     if sys.platform == "darwin":
         ram_memory_per_worker = vram_memory_per_worker = 3.0
@@ -401,7 +403,7 @@ def pytest_runtest_setup(item):
                     pass
 
 
-def pytest_addoption(parser):
+def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--backend", action="store", default=None, help="Default simulation backend.")
     parser.addoption(
         "--logical", action="store_true", default=False, help="Consider logical cores in default number of workers."
@@ -416,6 +418,19 @@ def pytest_addoption(parser):
         else SUPPRESS
     )
     parser.addoption("--mem-monitoring-filepath", type=str, help=help_text)
+    if os.environ.get("GS_PROFILING", "0") == "1":
+        profiling.parser_add_options(parser)
+
+
+# Note: moving this out of conftest.py, e.g. into profiling.py, does not appear to work.
+@pytest.fixture(scope="session")
+def pytorch_profiler_step(pytestconfig):
+    if os.environ.get("GS_PROFILING", "0") == "1":
+        for res in profiling.pytorch_profiler(pytestconfig):
+            yield res
+    else:
+        noop = lambda: None  # noqa: E731
+        yield noop
 
 
 @pytest.fixture(scope="session")
@@ -535,16 +550,16 @@ def dof_damping(request):
 
 
 @pytest.fixture
-def taichi_offline_cache(request):
-    taichi_offline_cache = None
-    for mark in request.node.iter_markers("taichi_offline_cache"):
+def disable_cache(request):
+    disable_cache = None
+    for mark in request.node.iter_markers("disable_cache"):
         if mark.args:
-            if taichi_offline_cache is not None:
-                pytest.fail("'taichi_offline_cache' can only be specified once.")
-            (taichi_offline_cache,) = mark.args
-    if taichi_offline_cache is None:
-        taichi_offline_cache = True
-    return taichi_offline_cache
+            if disable_cache is not None:
+                pytest.fail("'disable_cache' can only be specified once.")
+            (disable_cache,) = mark.args
+    if disable_cache is None:
+        disable_cache = True
+    return disable_cache
 
 
 @pytest.fixture
@@ -572,9 +587,7 @@ def debug(request):
 
 
 @pytest.fixture(scope="function", autouse=True)
-def initialize_genesis(
-    request, monkeypatch, tmp_path, backend, precision, performance_mode, debug, taichi_offline_cache
-):
+def initialize_genesis(request, monkeypatch, tmp_path, backend, precision, performance_mode, debug, disable_cache):
     import genesis as gs
 
     # Early return if backend is None
@@ -590,10 +603,10 @@ def initialize_genesis(
     if debug is None:
         debug = request.config.getoption("--dev")
 
-    if not taichi_offline_cache:
-        monkeypatch.setenv("TI_OFFLINE_CACHE", "0")
+    if not disable_cache:
+        monkeypatch.setenv("QD_OFFLINE_CACHE", "0")
         # FIXME: Must set temporary cache even if caching is forcibly disabled because this flag is not always honored
-        monkeypatch.setenv("TI_OFFLINE_CACHE_FILE_PATH", str(tmp_path / ".cache" / "taichi"))
+        monkeypatch.setenv("QD_OFFLINE_CACHE_FILE_PATH", str(tmp_path / ".cache" / "quadrants"))
         monkeypatch.setenv("GS_CACHE_FILE_PATH", str(tmp_path / ".cache" / "genesis"))
         monkeypatch.setenv("GS_ENABLE_FASTCACHE", "0")
 
@@ -609,11 +622,11 @@ def initialize_genesis(
 
         # Skip test if not supported by this machine
         if sys.platform == "darwin" and backend != gs.cpu:
-            if os.environ.get("TI_ENABLE_METAL", "1") != "0" and precision == "64":
+            if os.environ.get("QD_ENABLE_METAL", "1") != "0" and precision == "64":
                 pytest.skip("Apple Metal GPU does not support 64bits precision.")
             if os.environ.get("GS_ENABLE_NDARRAY") == "1":
                 pytest.skip(
-                    "Using GsTaichi dynamic array type is not supported on Apple Metal GPU because this backend only "
+                    "Using Quadrants dynamic array type is not supported on Apple Metal GPU because this backend only "
                     "supports up to 31 kernel parameters, which is not enough for most solvers."
                 )
 

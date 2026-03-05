@@ -36,7 +36,7 @@ from genesis.utils.misc import tensor_to_array
 REPOSITY_URL = "Genesis-Embodied-AI/Genesis"
 DEFAULT_BRANCH_NAME = "main"
 
-HUGGINGFACE_ASSETS_REVISION = "f71514040a0303ac32562241b313237711c122b5"
+HUGGINGFACE_ASSETS_REVISION = "0f5098c4c4e00c161180d25446c4b65114a2b3f4"
 HUGGINGFACE_SNAPSHOT_REVISION = "63afb805efb70350a983dcafee27fbd74a7a9286"
 
 MESH_EXTENSIONS = (".mtl", *MESH_FORMATS, *GLTF_FORMATS, *USD_FORMATS)
@@ -286,7 +286,7 @@ def assert_allclose(actual, desired, *, atol=None, rtol=None, tol=None, err_msg=
     np.testing.assert_allclose(*args, atol=atol, rtol=rtol, err_msg=err_msg)
 
 
-def assert_array_equal(actual, desired, *, err_msg=None):
+def assert_equal(actual, desired, *, err_msg=None):
     assert_allclose(actual, desired, atol=0.0, rtol=0.0, err_msg=err_msg)
 
 

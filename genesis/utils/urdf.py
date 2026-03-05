@@ -151,17 +151,18 @@ def parse_urdf(morph, surface):
                 # One asset may contain multiple meshes (.obj, .glb, ...)
                 mesh_path = urdfpy.utils.get_filename(parent_dir, geometry.filename)
                 tmeshes = geometry.meshes
+                metadatas = [{"mesh_path": mesh_path} for _ in tmeshes]
                 if mesh_path.lower().endswith(gs.options.morphs.GLTF_FORMATS):
-                    group_material = True
-                    meshes = gltf_utils.parse_mesh_glb(mesh_path, group_material, None, True, surface)
-                    tmeshes = [mesh.trimesh for mesh in meshes]
+                    meshes = gltf_utils.parse_mesh_glb(
+                        mesh_path, group_by_material=False, scale=None, is_mesh_zup=True, surface=surface
+                    )
+                    tmeshes, metadatas = zip(*[(mesh.trimesh, mesh.metadata) for mesh in meshes])
 
                 # Compute the absolute scale of the geometry
                 scale = float(morph.scale)
                 if geometry.scale is not None:
                     scale *= geometry.scale
 
-                metadata = {"mesh_path": mesh_path}
                 is_mesh_zup = morph.file_meshes_are_zup
             else:
                 if isinstance(geometry, urdfpy.Box):
@@ -189,11 +190,11 @@ def parse_urdf(morph, surface):
                 tmeshes = [tmesh]
 
                 scale = morph.scale
-                metadata = {}
+                metadatas = [{}]
                 is_mesh_zup = True
 
             # Each mesh is one RigidGeom in genesis
-            for tmesh in tmeshes:
+            for tmesh, metadata in zip(tmeshes, metadatas, strict=True):
                 # Overwrite surface color by original color specified in URDF file only if necessary
                 is_urdf_material = False
                 if geom_is_col:
@@ -394,63 +395,40 @@ def parse_equalities(robot, morph):
 
 
 def merge_fixed_links(robot, links_to_keep):
+    # Compute breadth-first ordered sequence of joints from root to leaves
+    child_map = {}
+    for joint in robot.joints:
+        child_map.setdefault(joint.parent, []).append(joint)
+    joints_ordered = []
+    queue = [robot.base_link.name]
+    visited = set()
+    while queue:
+        link_name = queue.pop(0)
+        if link_name in visited:
+            continue
+        visited.add(link_name)
+        for joint in child_map.get(link_name, []):
+            joints_ordered.append(joint)
+            queue.append(joint.child)
+
+    # Prune fixed joints in descending order
     links = robot.links.copy()
     joints = robot.joints.copy()
-    link_name_to_idx = {link.name: idx for idx, link in enumerate(links)}
-    original_to_merged = {}
+    for joint in joints_ordered[::-1]:
+        if joint.joint_type == "fixed" and joint.child not in links_to_keep:
+            parent_link = next(iter(link for link in links if link.name == joint.parent))
+            child_link = next(iter(link for link in links if link.name == joint.child))
 
-    while True:
-        fixed_joint_found = False
-        for joint in joints:
-            if joint.joint_type == "fixed" and joint.child not in links_to_keep:
-                parent_name = joint.parent
-                child_name = joint.child
+            update_subtree(links, joints, child_link.name, joint.origin)
+            merge_inertia(parent_link, child_link)
+            parent_link.visuals.extend(child_link.visuals)
+            parent_link.collisions.extend(child_link.collisions)
+            joints.remove(joint)
+            links.remove(child_link)
 
-                # Follow the chain to find the ultimate merged parent
-                while parent_name in original_to_merged:
-                    parent_name = original_to_merged[parent_name]
-
-                # Follow the chain to find the ultimate merged child
-                while child_name in original_to_merged:
-                    child_name = original_to_merged[child_name]
-
-                parent_idx = link_name_to_idx.get(parent_name)
-                child_idx = link_name_to_idx.get(child_name)
-
-                if parent_idx is None or child_idx is None:
-                    continue
-
-                parent_link = links[parent_idx]
-                child_link = links[child_idx]
-
-                # Update the mapping for the child to point to the ultimate parent
-                original_to_merged[joint.child] = parent_name
-
-                # Update all existing mappings that point to the child
-                for key in original_to_merged:
-                    if original_to_merged[key] == child_name:
-                        original_to_merged[key] = parent_name
-
-                update_subtree(links, joints, child_link.name, joint.origin)
-                merge_inertia(parent_link, child_link)
-                parent_link.visuals.extend(child_link.visuals)
-                parent_link.collisions.extend(child_link.collisions)
-
-                links.pop(child_idx)
-                joints.remove(joint)
-                link_name_to_idx = {link.name: idx for idx, link in enumerate(links)}
-
-                fixed_joint_found = True
-                break
-
-        if not fixed_joint_found:
-            break
-
-    for joint in joints:
-        if joint.parent in original_to_merged:
-            joint.parent = original_to_merged[joint.parent]
-        if joint.child in original_to_merged:
-            joint.child = original_to_merged[joint.child]
+            for joint in joints:
+                if joint.parent == child_link.name:
+                    joint.parent = parent_link.name
 
     return urdfpy.URDF(robot.name, links=links, joints=joints, materials=robot.materials)
 
