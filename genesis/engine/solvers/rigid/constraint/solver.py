@@ -3067,6 +3067,9 @@ def func_update_contact_force(
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_l, i_b in qd.ndrange(n_links, _B):
         links_state.contact_force[i_l, i_b] = qd.Vector.zero(gs.qd_float, 3)
+        links_state.contact_torque[i_l, i_b] = qd.Vector.zero(gs.qd_float, 3)
+        links_state.contact_force_sensor[i_l, i_b] = qd.Vector.zero(gs.qd_float, 3)
+        links_state.contact_torque_sensor[i_l, i_b] = qd.Vector.zero(gs.qd_float, 3)
 
     qd.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b in range(_B):
@@ -3087,12 +3090,37 @@ def func_update_contact_force(
                 force = force + n * constraint_state.efc_force[i_c * 4 + i_dir + const_start, i_b]
 
             collider_state.contact_data.force[i_c, i_b] = force
-
+            force_a_sensor = gu.qd_inv_transform_by_quat(force, links_state.quat[contact_data_link_a, i_b])
+            force_b_sensor = gu.qd_inv_transform_by_quat(force, links_state.quat[contact_data_link_b, i_b])
             links_state.contact_force[contact_data_link_a, i_b] = (
                 links_state.contact_force[contact_data_link_a, i_b] - force
             )
             links_state.contact_force[contact_data_link_b, i_b] = (
                 links_state.contact_force[contact_data_link_b, i_b] + force
+            )
+            links_state.contact_force_sensor[contact_data_link_a, i_b] = (
+                links_state.contact_force_sensor[contact_data_link_a, i_b] - force_a_sensor
+            )
+            links_state.contact_force_sensor[contact_data_link_b, i_b] = (
+                links_state.contact_force_sensor[contact_data_link_b, i_b] + force_b_sensor
+            )
+            pos_a = links_state.pos[contact_data_link_a, i_b]
+            pos_b = links_state.pos[contact_data_link_b, i_b]
+            torque_a = (collider_state.contact_data.pos[i_c, i_b] - pos_a).cross(-force)
+            torque_b = (collider_state.contact_data.pos[i_c, i_b] - pos_b).cross(force)
+            torque_a_sensor = gu.qd_inv_transform_by_quat(torque_a, links_state.quat[contact_data_link_a, i_b])
+            torque_b_sensor = gu.qd_inv_transform_by_quat(torque_b, links_state.quat[contact_data_link_b, i_b])
+            links_state.contact_torque[contact_data_link_a, i_b] = (
+                links_state.contact_torque[contact_data_link_a, i_b] + torque_a
+            )
+            links_state.contact_torque[contact_data_link_b, i_b] = (
+                links_state.contact_torque[contact_data_link_b, i_b] + torque_b
+            )
+            links_state.contact_torque_sensor[contact_data_link_a, i_b] = (
+                links_state.contact_torque_sensor[contact_data_link_a, i_b] + torque_a_sensor
+            )
+            links_state.contact_torque_sensor[contact_data_link_b, i_b] = (
+                links_state.contact_torque_sensor[contact_data_link_b, i_b] + torque_b_sensor
             )
 
 

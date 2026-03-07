@@ -1311,7 +1311,9 @@ class StructLinksState(metaclass=BASE_METACLASS):
     cfrc_coupling_ang: V_ANNOTATION
     cfrc_coupling_vel: V_ANNOTATION
     contact_force: V_ANNOTATION
+    contact_force_sensor: V_ANNOTATION
     contact_torque: V_ANNOTATION
+    contact_torque_sensor: V_ANNOTATION
     hibernated: V_ANNOTATION
 
 
@@ -1363,7 +1365,9 @@ def get_links_state(solver):
         cfrc_coupling_ang=V(dtype=gs.qd_vec3, shape=shape, needs_grad=requires_grad),
         cfrc_coupling_vel=V(dtype=gs.qd_vec3, shape=shape, needs_grad=requires_grad),
         contact_force=V(dtype=gs.qd_vec3, shape=shape, needs_grad=requires_grad),
+        contact_force_sensor=V(dtype=gs.qd_vec3, shape=shape, needs_grad=requires_grad),
         contact_torque=V(dtype=gs.qd_vec3, shape=shape, needs_grad=requires_grad),
+        contact_torque_sensor=V(dtype=gs.qd_vec3, shape=shape, needs_grad=requires_grad),
         hibernated=V(dtype=gs.qd_int, shape=shape),
     )
 

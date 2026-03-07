@@ -374,49 +374,6 @@ class MPMEntity(ParticleEntity):
             poss = poss[0]
         return poss
 
-    @ti.kernel
-    def _kernel_get_mass(self, mass: ti.types.ndarray()):
-        total_mass = 0.0
-        for i_p in range(self.n_particles):
-            i_global = i_p + self._particle_start
-            total_mass += self._solver.particles_info[i_global].mass / self._solver._p_vol_scale
-        mass[0] = total_mass
-
-    def get_mass(self):
-        """
-        Get the total mass of the particle entity.
-
-        Returns
-        -------
-        mass : float
-            The total mass of the entity.
-        """
-        total_mass = 0.0
-        for i_p in range(self.n_particles):
-            i_global = i_p + self._particle_start
-            total_mass += self._solver.particles_info[i_global].mass / self._solver._p_vol_scale
-        return total_mass
-
-    def get_COM(self):
-        """
-        Get the center of mass (COM) of the particle entity.
-
-        Returns
-        -------
-        com : np.ndarray
-            The center of mass of the entity, shape (3,).
-        """
-        com = np.zeros(3, dtype=gs.np_float)
-        total_mass = self.get_mass()
-        if total_mass == 0:
-            return com
-        positions = self.get_particles()[0]
-        for i_p in range(self.n_particles):
-            i_global = i_p + self._particle_start
-            particle_mass = self._solver.particles_info[i_global].mass / self._solver._p_vol_scale
-            com += particle_mass * positions[i_p]
-
-        return com / total_mass
     @gs.assert_built
     def set_particles_vel(self, vels, particles_idx_local=None, envs_idx=None):
         envs_idx = self._scene._sanitize_envs_idx(envs_idx)

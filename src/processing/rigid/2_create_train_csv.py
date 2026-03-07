@@ -4,10 +4,9 @@ import sys
 
 import pandas as pd
 
-MODE = "eval"  # "train" or "eval"
-DATASETS = ["gso", "gso_simple"]  if MODE == "train" else ["ycb", "ycb_simple"]
-DATA_DIR = "/home/user/Genesis/data/"
-out_path = f"/home/user/Genesis/data/{MODE}.csv"
+MODE = "train_03062026"  # "train" or "eval"
+DATA_DIR = f"/home/user/Genesis/data/{MODE}"
+out_path = f"{DATA_DIR}/{MODE}.csv"
 
 def add_labels(df: pd.DataFrame) -> pd.DataFrame:
 
@@ -66,15 +65,14 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
 
 def main() -> int:
     files = []
-    for dataset in DATASETS:
-        annotation_dir = os.path.join(DATA_DIR, dataset, "csv", "*", "Rigid", "none")
-        pattern = os.path.join(annotation_dir, "*_annotations.csv")
-        files.extend(sorted(glob.glob(pattern)))
+    annotation_dir = os.path.join(DATA_DIR, "csv", "*", "Rigid", "none")
+    pattern = os.path.join(annotation_dir, "*_annotations.csv")
+    files.extend(sorted(glob.glob(pattern)))
     dfs = []
     for fp in files:
         df = pd.read_csv(fp)
         obj_name = os.path.basename(fp).replace("_Rigid_none_annotations.csv", "")
-        df["csv_path"] = f"{DATA_DIR}{dataset}/csv/{obj_name}/Rigid/none/{obj_name}_Rigid_none.csv"
+        df["csv_path"] = f"{DATA_DIR}/csv/{obj_name}/Rigid/none/{obj_name}_Rigid_none.csv"
         dfs.append(df)
 
     out = pd.concat(dfs, ignore_index=True)

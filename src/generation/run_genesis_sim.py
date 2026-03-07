@@ -30,8 +30,8 @@ else:
     TARGET_CHOICES = ['none']
 
 MAX_PARALLEL_PROCESSES = 8
-DATASET = "ycb_force"
-DATASET_TYPE = "ycb"  # Options: "ycb", "gso", "hugging_face"
+DATASET = "eval_03062026"
+DATASET_TYPE = "ycb"  # Options: "ycb", "gso"
 RUNNING_DROP_IN_BOX = False
 ## -------------------------- PATH SETUP -------------------------- ##
 
@@ -189,7 +189,7 @@ def create_scene(obj_path: str):
         )
     else:
         scene = gs.Scene(
-            sim_options=gs.options.SimOptions(dt=1e-2, substeps=5),
+            sim_options=gs.options.SimOptions(dt=1e-2),
             viewer_options=gs.options.ViewerOptions(camera_pos=(3,-1,1.5), camera_lookat=(0,0,0), camera_fov=30),
             show_viewer=False,
         )
@@ -227,8 +227,8 @@ def create_scene(obj_path: str):
 def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, target_choice):
     name= paths['object_name']
     motors_dof, fingers_dof = np.arange(7), np.arange(7, 9)
-    franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,100,100]))
-    franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,10,10]))
+    franka.set_dofs_kp(np.array([4500,4500,3500,3500,2000,2000,2000,1000,1000]))
+    franka.set_dofs_kv(np.array([450,450,350,350,200,200,200,100,100]))
     franka.set_dofs_force_range(
         np.array([-87, -87, -87, -87, -12, -12, -12, -10, -10]),
         np.array([87, 87, 87, 87, 12, 12, 12, 10, 10]),
@@ -258,8 +258,8 @@ def run_rotation(scene, cam, franka, gso_object, df, deform_csv, seg_df, paths, 
     mm.set_to_pose(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, qpos, motors_dof, fingers_dof, steps=20)
     mm.descend_to_object(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, steps=30)
     current_force = 10.0
-    # mm.grasp_object_position(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
-    mm.grasp_object_force(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
+    mm.grasp_object_position(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
+    # mm.grasp_object_force(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, end_effector, x, y, z, motors_dof, fingers_dof, grasp=True, grip_force=-current_force, steps=200)
     seg_df.loc[len(seg_df)] = ['hold', int(scene.t)]
     # mm.keep_holding(scene, cam, franka, gso_object, df, deform_csv, str(paths['images_dir']), PHOTO_INTERVAL, name, motors_dof, fingers_dof, grip_force=-current_force, steps=100)
     seg_df.loc[len(seg_df)] = ['lift', int(scene.t)]

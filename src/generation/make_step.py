@@ -61,9 +61,14 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
 
     # Record robot state (DOFs and force/torque on end-effector links)
     dofs = franka.get_dofs_position().tolist()
-    # Links 9 and 10 are the gripper fingers
-    links_ft = franka.get_links_force_torque([9, 10], sensor=True)
-    forces_torques = links_ft[0].tolist() + links_ft[1].tolist()
+    # Links 9 and 10 are the gripper fingers. 9 is the left finger, 10 is the right finger.
+    links_f = franka.get_links_contact_force([9, 10], sensor=True)
+    links_t = franka.get_links_contact_torque([9, 10], sensor=True)
+    left_finger_force = links_f[0].tolist()
+    right_finger_force = links_f[1].tolist()
+    left_finger_torque = links_t[0].tolist()
+    right_finger_torque = links_t[1].tolist()
+    force_torques = left_finger_force + left_finger_torque + right_finger_force +right_finger_torque
 
     eef_pos = franka.get_links_pos([8, 9, 10]).flatten().tolist()
     finger_ctrl = franka.get_dofs_control_force([7, 8])
@@ -87,7 +92,7 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
             obj_contacts[1] = 1
         if 0 in obj_contact_pairs:
             obj_contacts[2] = 1
-    df.loc[len(df)] = [scene.t] + forces_torques + dofs + eef_pos + finger_control + obj_com + obj_mass + obj_bounding_box + obj_contacts
+    df.loc[len(df)] = [scene.t] + force_torques + dofs + eef_pos + finger_control + obj_com + obj_mass + obj_bounding_box + obj_contacts
 
     # Save photos from multiple camera angles if the condition is met
     if force_photo or (t % photo_interval == 0):

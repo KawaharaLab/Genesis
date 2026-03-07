@@ -2,9 +2,9 @@ import pandas as pd
 import numpy as np
 
 DEBUG = False
-DATA_TYPE = "eval"  # train / eval
-DATA_DIR = f"/home/user/Genesis/data"
-N = 20 if DATA_TYPE == "train" else 15  # percentage of maximum allowed label ratio
+DATA_TYPE = "train_03062026"  # train / eval
+DATA_DIR = f"/home/user/Genesis/data/{DATA_TYPE}"
+N = 20 if "train" in DATA_TYPE else 15  # percentage of maximum allowed label ratio
 P = N / 100.0
 fix_seed = True
 SEED = 42
@@ -37,7 +37,7 @@ if DEBUG:
     exit(0)
 #####################################################
 
-csv_path = f"/home/user/Genesis/data/{DATA_TYPE}.csv"
+csv_path = f"{DATA_DIR}/{DATA_TYPE}.csv"
 df = pd.read_csv(csv_path)
 data_len = len(df)
 print(f"original size: {data_len}")

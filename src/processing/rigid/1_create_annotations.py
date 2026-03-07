@@ -8,8 +8,8 @@ import csv
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
-DATASET = "gso_simple" 
-WINDOW_STRIDE = 80 if "ycb" in DATASET else 10
+DATASET = "train_03062026" 
+WINDOW_STRIDE = 40 if "eval" in DATASET else 10
 #------------------- Generate labels -------------------#
 
 def extract_floats_from_string(data_string: str) -> list[float]:
@@ -46,9 +46,10 @@ def detect_bugs(force_df: pd.DataFrame, start: int) -> bool:
     The finger joint angles are sometimes small negative values when fingers are closed tight (and holding nothing)
     Force sensors may also report small negative values when fingers are free and open.
     """
-    left_minus = np.any(force_df['dof_7'][start:start+SEQUENCE_LENGTH].to_numpy() < -0.0001)
-    force_left_minus = np.any(force_df['left_fy'][start:start+SEQUENCE_LENGTH].to_numpy() < -0.01)
-    return True if left_minus and force_left_minus else False
+    # left_minus = np.any(force_df['dof_7'][start:start+SEQUENCE_LENGTH].to_numpy() < -0.0001)
+    # force_left_minus = np.any(force_df['left_fy'][start:start+SEQUENCE_LENGTH].to_numpy() < -10)
+    return False
+    # return True if left_minus and force_left_minus else False
 
 def split_for_model(step_df, force_df):
     """

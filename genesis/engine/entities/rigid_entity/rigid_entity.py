@@ -2222,7 +2222,7 @@ class RigidEntity(Entity):
         com : torch.Tensor, shape (3,) or (n_envs, 3)
             The position of the entity's root center of mass.
         """
-        return self._solver.get_links_root_COM(self._base_links_idx, envs_idx, unsafe=unsafe).squeeze(-2)
+        return self._solver.get_links_root_COM(self.base_link_idx, envs_idx)[..., 0, :]
 
     @gs.assert_built
     def get_pos(self, envs_idx=None):
@@ -2526,27 +2526,6 @@ class RigidEntity(Entity):
     def get_links_inertial_mass(self, links_idx_local=None, envs_idx=None):
         links_idx = self._get_global_idx(links_idx_local, self.n_links, self._link_start, unsafe=True)
         return self._solver.get_links_inertial_mass(links_idx, envs_idx)
-
-    @gs.assert_built
-    def get_links_force_torque(self, links_idx_local=None, envs_idx=None, *, unsafe=False, sensor=True):
-        """
-        Returns force and torque of the specified entity's links expressed at
-        their respective origin in local coordinates.
-
-        Parameters
-        ----------
-        links_idx_local : None | array_like
-            The indices of the links. Defaults to None.
-        envs_idx : None | array_like, optional
-            The indices of the environments. If None, all environments will be considered. Defaults to None.
-
-        Returns
-        -------
-        acc : torch.Tensor, shape (n_links, 6) or (n_envs, n_links, 6)
-            The force and torque of the specified entity's links.
-        """
-        links_idx = self._get_idx(links_idx_local, self.n_links, self._link_start, unsafe=True)
-        return self._solver.get_links_force_torque(links_idx, envs_idx, mimick_sensor=sensor, unsafe=unsafe)
     
     @gs.assert_built
     def get_links_invweight(self, links_idx_local=None, envs_idx=None):
@@ -3282,6 +3261,76 @@ class RigidEntity(Entity):
         """
         links_idx = slice(self.link_start, self.link_end)
         tensor = qd_to_torch(self._solver.links_state.contact_force, envs_idx, links_idx, transpose=True, copy=True)
+        return tensor[0] if self._solver.n_envs == 0 else tensor
+
+    def get_links_contact_force(
+        self,
+        links_idx_local=None,
+        envs_idx=None,
+        sensor=True,
+        *,
+        unsafe=False,
+    ):
+        """
+        Returns the contact force applied on the entity's links.
+
+        Parameters
+        ----------
+        links_idx_local : None | array_like
+            The indices of the links. Defaults to None.
+        envs_idx : None | array_like, optional
+            The indices of the environments. If None, all environments will be considered. Defaults to None.
+        ref: "link_origin" | "link_com" | "root_com"
+            The reference point being used to express the position of each link.
+            * "root_com": center of mass of the sub-entities to which the link belongs. As a reminder, a single
+              kinematic tree (aka. 'RigidEntity') may compromise multiple "physical" entities, i.e. a kinematic tree
+              that may have at most one free joint, at its root.
+
+        Returns
+        -------
+        contact_force : torch.Tensor, shape (n_links, 3) or (n_envs, n_links, 3)
+            The contact force applied on all the entity's links.
+        """
+        links_idx = self._get_global_idx(links_idx_local, self.n_links, self._link_start, unsafe=True)
+        if sensor:
+            tensor = qd_to_torch(self._solver.links_state.contact_force_sensor, envs_idx, links_idx, transpose=True, copy=True)
+        else:
+            tensor = qd_to_torch(self._solver.links_state.contact_force, envs_idx, links_idx, transpose=True, copy=True)
+        return tensor[0] if self._solver.n_envs == 0 else tensor
+
+    def get_links_contact_torque(
+        self,
+        links_idx_local=None,
+        envs_idx=None,
+        sensor=True,
+        *,
+        unsafe=False,
+    ):
+        """
+        Returns the contact torque applied on the entity's links.
+
+        Parameters
+        ----------
+        links_idx_local : None | array_like
+            The indices of the links. Defaults to None.
+        envs_idx : None | array_like, optional
+            The indices of the environments. If None, all environments will be considered. Defaults to None.
+        ref: "link_origin" | "link_com" | "root_com"
+            The reference point being used to express the position of each link.
+            * "root_com": center of mass of the sub-entities to which the link belongs. As a reminder, a single
+              kinematic tree (aka. 'RigidEntity') may compromise multiple "physical" entities, i.e. a kinematic tree
+              that may have at most one free joint, at its root.
+
+        Returns
+        -------
+        contact_torque : torch.Tensor, shape (n_links, 3) or (n_envs, n_links, 3)
+            The contact torque applied on all the entity's links.
+        """
+        links_idx = self._get_global_idx(links_idx_local, self.n_links, self._link_start, unsafe=True)
+        if sensor:
+            tensor = qd_to_torch(self._solver.links_state.contact_torque_sensor, envs_idx, links_idx, transpose=True, copy=True)
+        else:
+            tensor = qd_to_torch(self._solver.links_state.contact_torque, envs_idx, links_idx, transpose=True, copy=True)
         return tensor[0] if self._solver.n_envs == 0 else tensor
 
     def set_friction_ratio(self, friction_ratio, links_idx_local=None, envs_idx=None):

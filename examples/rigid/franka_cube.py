@@ -43,6 +43,14 @@ def main():
             pos=(0.65, 0.0, 0.02),
         )
     )
+    ########################## sensors ##########################
+    sensor_options = gs.sensors.ContactForce(
+        entity_idx=franka.idx,
+        link_idx_local=9,
+        draw_debug=False,
+    )
+    sensor = scene.add_sensor(sensor_options)
+    # sensor.start_recording()
     ########################## build ##########################
     scene.build()
 
@@ -63,16 +71,20 @@ def main():
 
     # hold
     for i in range(100):
-        print("hold", i)
+        # print("hold", i)
         scene.step()
 
     # grasp
     finder_pos = -0.0
     for i in range(100):
-        print("grasp", i)
+        # print("grasp", i)
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_position(np.array([finder_pos, finder_pos]), fingers_dof)
         scene.step()
+        print(sensor.read())
+        links_f = franka.get_links_contact_force([9], sensor=True)
+        print("contact force on left finger:", links_f.tolist())
+
 
     # lift
     qpos = franka.inverse_kinematics(
@@ -81,11 +93,11 @@ def main():
         quat=np.array([0, 1, 0, 0]),
     )
     for i in range(200):
-        print("lift", i)
+        # print("lift", i)
         franka.control_dofs_position(qpos[:-2], motors_dof)
         franka.control_dofs_position(np.array([finder_pos, finder_pos]), fingers_dof)
         scene.step()
-
+        print(sensor.read())
 
 if __name__ == "__main__":
     main()
