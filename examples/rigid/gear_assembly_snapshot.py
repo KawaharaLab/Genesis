@@ -108,9 +108,50 @@ def adjust_chain_centers(centers, distance_offset: float):
     c2[2] = c0[2]
     return [c0, c1, c2]
 
+GEAR_FLIP_X_ROT = np.array(
+    [
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, -1.0],
+    ],
+    dtype=np.float64,
+)
+
+def rotmat_to_quat(rot: np.ndarray):
+    m = rot
+    tr = float(m[0, 0] + m[1, 1] + m[2, 2])
+    if tr > 0.0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (m[2, 1] - m[1, 2]) / s
+        qy = (m[0, 2] - m[2, 0]) / s
+        qz = (m[1, 0] - m[0, 1]) / s
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = math.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2.0
+        qw = (m[2, 1] - m[1, 2]) / s
+        qx = 0.25 * s
+        qy = (m[0, 1] + m[1, 0]) / s
+        qz = (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] > m[2, 2]:
+        s = math.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2.0
+        qw = (m[0, 2] - m[2, 0]) / s
+        qx = (m[0, 1] + m[1, 0]) / s
+        qy = 0.25 * s
+        qz = (m[1, 2] + m[2, 1]) / s
+    else:
+        s = math.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2.0
+        qw = (m[1, 0] - m[0, 1]) / s
+        qx = (m[0, 2] + m[2, 0]) / s
+        qy = (m[1, 2] + m[2, 1]) / s
+        qz = 0.25 * s
+
+    q = np.array([qw, qx, qy, qz], dtype=np.float64)
+    q /= np.linalg.norm(q) + 1e-12
+    return tuple(q.tolist())
+
 def yaw_quat_deg(yaw_deg: float):
-    half = math.radians(yaw_deg) * 0.5
-    return (math.cos(half), 0.0, 0.0, math.sin(half))
+    rot = yaw_rotmat(yaw_deg) @ GEAR_FLIP_X_ROT
+    return rotmat_to_quat(rot)
 
 def yaw_rotmat(yaw_deg: float):
     th = math.radians(yaw_deg)
@@ -176,8 +217,9 @@ def detect_gear_center_local(mesh: trimesh.Trimesh):
     if not hole_candidates:
         return center
 
-    # use the largest inner loop as shaft hole center
-    hole_idx = max(hole_candidates, key=lambda i: areas[i])
+    # use the inner loop closest to bbox center (robust against decorative holes)
+    bbox_xy = center[:2].copy()
+    hole_idx = min(hole_candidates, key=lambda i: float(np.linalg.norm(loops[i].mean(axis=0) - bbox_xy)))
     cxy = loops[hole_idx].mean(axis=0)
     center[0] = float(cxy[0])
     center[1] = float(cxy[1])
@@ -282,9 +324,10 @@ def radial_distance_to_loop(loop_xy: np.ndarray, center_xy: np.ndarray, angle_lo
     return best_t
 
 def gear_pose_from_center(center_world: np.ndarray, local_center: np.ndarray, yaw_deg: float):
-    rot = yaw_rotmat(yaw_deg)
+    # All gears are mounted upside-down by applying a 180-deg rotation around X.
+    rot = yaw_rotmat(yaw_deg) @ GEAR_FLIP_X_ROT
     pos = center_world - rot @ local_center
-    quat = yaw_quat_deg(yaw_deg)
+    quat = rotmat_to_quat(rot)
     return pos, quat
 
 def world_loop_from_pose(loop_local: np.ndarray, center_world: np.ndarray, local_center: np.ndarray, yaw_deg: float):
@@ -339,6 +382,23 @@ def find_meshing_yaw(
 
     return best_yaw
 
+def find_clearance_yaw(loop_local, center_local, target_dir_world, yaw_samples):
+    if loop_local is None:
+        return 0.0
+    n = max(24, int(yaw_samples))
+    tx, ty = float(target_dir_world[0]), float(target_dir_world[1])
+    best_yaw = 0.0
+    best_r = 1e18
+    for yaw in np.linspace(0.0, 360.0, n, endpoint=False):
+        # convert world direction to local direction under yaw
+        ang_world = math.atan2(ty, tx)
+        ang_local = ang_world - math.radians(float(yaw))
+        r = radial_distance_to_loop(loop_local, center_local[:2], ang_local)
+        if r < best_r:
+            best_r = r
+            best_yaw = float(yaw)
+    return best_yaw
+
 def report_gear_contacts(gear_entities, gear_names):
     print("=== Gear contact check (simulation data) ===")
     any_contact = False
@@ -386,30 +446,66 @@ def place_mesh_with_color(
 def bounds_after_translation(mins: np.ndarray, maxs: np.ndarray, pos: np.ndarray):
     return mins + pos, maxs + pos
 
-def render_rgb_image(cam):
+def render_rgb_image(cam, rotate_k: int = 0, out_res=(1600, 896)):
     rgb, _, _, _ = cam.render(rgb=True, depth=False, segmentation=False, normal=False)
     rgb = np.asarray(rgb)
     if rgb.dtype != np.uint8:
         rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+
+    k = int(rotate_k) % 4
+    if k != 0:
+        rgb = np.rot90(rgb, k=k)
+
+    h, w = rgb.shape[:2]
+    target_w, target_h = int(out_res[0]), int(out_res[1])
+    target_ratio = target_w / max(1, target_h)
+
+    # keep horizontal output even when rotated frame becomes portrait
+    if h > w:
+        crop_h = max(1, min(h, int(w / target_ratio)))
+        y0 = max(0, (h - crop_h) // 2)
+        rgb = rgb[y0 : y0 + crop_h, :, :]
+    elif w > 0 and h > 0:
+        cur_ratio = w / h
+        if cur_ratio < target_ratio:
+            crop_h = max(1, min(h, int(w / target_ratio)))
+            y0 = max(0, (h - crop_h) // 2)
+            rgb = rgb[y0 : y0 + crop_h, :, :]
+
+    rgb = np.asarray(Image.fromarray(rgb).resize((target_w, target_h), resample=Image.Resampling.BILINEAR))
     return rgb
 
-def build_camera(scene, center, radius, view: str, vis: bool):
+def build_camera(scene, center, radius, view: str, vis: bool, chain_dir_xy: np.ndarray):
     fov = 42.0
+    chain_dir = np.asarray(chain_dir_xy, dtype=np.float64)
+    n = np.linalg.norm(chain_dir)
+    if n < 1e-9:
+        chain_dir = np.array([1.0, 0.0], dtype=np.float64)
+    else:
+        chain_dir = chain_dir / n
+    perp = np.array([-chain_dir[1], chain_dir[0]], dtype=np.float64)
+
     if view == "top":
-        pos = center + np.array([0.0, 0.0, 1.35 * radius], dtype=np.float64)
+        pos = center + np.array([0.0, 0.0, 1.85 * radius], dtype=np.float64)
+        lookat = center
     elif view == "side":
-        pos = center + np.array([0.0, -1.55 * radius, 0.35 * radius], dtype=np.float64)
+        # Side view: chain axis appears horizontal, plate remains at the bottom.
+        pos = center + np.array(
+            [-perp[0] * 1.85 * radius, -perp[1] * 1.85 * radius, 0.90 * radius],
+            dtype=np.float64,
+        )
+        lookat = center + np.array([0.0, 0.0, 0.10 * radius], dtype=np.float64)
     else:
         raise ValueError(f"Unknown view: {view}")
 
-    dist = np.linalg.norm(pos - center)
+    dist = np.linalg.norm(pos - lookat)
     near = max(0.05, dist - 2.5 * radius)
     far = dist + 3.5 * radius + 10.0
 
     return scene.add_camera(
-        res=(1280, 960),
+        res=(1600, 896),
         pos=tuple(pos),
-        lookat=tuple(center),
+        lookat=tuple(lookat),
         fov=fov,
         near=near,
         far=far,
@@ -594,18 +690,57 @@ def main():
     gear_mesh_objs = []
     for stl_name, _ in gear_specs:
         mesh, gear_min, gear_max = mesh_bounds(GEAR_DIR / stl_name)
-        gear_center_local = detect_gear_center_local(mesh)
+        if stl_name == "Gear_Medium.STL":
+            gear_center_local = detect_gear_center_local(mesh)
+        else:
+            gear_center_local = 0.5 * (gear_min + gear_max)
         loop_local = outer_loop_xy(mesh)
         gear_mesh_data.append((stl_name, gear_min, gear_max, gear_center_local, loop_local))
         gear_mesh_objs.append(mesh)
 
-    # Fast init: skip expensive yaw optimization and use authored phase.
-    # Medium gear is spawned above, so only fixed gears are checked for initial penetration.
+    # Keep medium-only behavior unchanged.
     gear_yaws = [0.0, 0.0, 0.0]
 
     if args.only_medium_drop:
         validate_initial_non_penetration(shaft_world_centers, gear_mesh_data, gear_yaws, ignore_indices=(0, 1, 2))
     else:
+        # Full mode: solve phase to improve meshing (large->medium->small).
+        d_lm = shaft_world_centers[1][:2] - shaft_world_centers[0][:2]
+        gear_yaws[0] = find_clearance_yaw(
+            gear_mesh_data[0][4],
+            gear_mesh_data[0][3],
+            d_lm,
+            yaw_samples=int(args.yaw_samples),
+        )
+
+        gear_yaws[1] = find_meshing_yaw(
+            prev_loop=gear_mesh_data[0][4],
+            prev_center_local=gear_mesh_data[0][3],
+            prev_center_world=shaft_world_centers[0],
+            prev_yaw_deg=gear_yaws[0],
+            cur_loop=gear_mesh_data[1][4],
+            cur_center_local=gear_mesh_data[1][3],
+            cur_center_world=shaft_world_centers[1],
+            line_backlash=float(args.line_backlash),
+            yaw_samples=int(args.yaw_samples),
+        )
+
+        gear_yaws[2] = find_meshing_yaw(
+            prev_loop=gear_mesh_data[1][4],
+            prev_center_local=gear_mesh_data[1][3],
+            prev_center_world=shaft_world_centers[1],
+            prev_yaw_deg=gear_yaws[1],
+            cur_loop=gear_mesh_data[2][4],
+            cur_center_local=gear_mesh_data[2][3],
+            cur_center_world=shaft_world_centers[2],
+            line_backlash=float(args.line_backlash),
+            yaw_samples=int(args.yaw_samples),
+        )
+
+        print(
+            f"Meshing yaws (full mode): large={gear_yaws[0]:.3f}, "
+            f"medium={gear_yaws[1]:.3f}, small={gear_yaws[2]:.3f}"
+        )
         validate_initial_non_penetration(shaft_world_centers, gear_mesh_data, gear_yaws, ignore_indices=(1,))
     validate_height_alignment(shaft_world_centers, tol=1e-3)
     if shaft_alignment_errors:
@@ -620,8 +755,13 @@ def main():
         _, gear_min, gear_max, gear_center_local, _ = gear_mesh_data[i]
         gear_pos, gear_quat = gear_pose_from_center(center_world, gear_center_local, gear_yaws[i])
 
-        # medium gear only: spawn above shaft and let it descend during simulation
-        gear_fixed = i != 1
+        # medium gear starts above shaft and descends in both modes.
+        if args.only_medium_drop:
+            gear_fixed = False
+        else:
+            # Full mode: large/small are also dynamic so they can rotate on their shafts.
+            gear_fixed = False
+
         if i == 1:
             gear_pos = gear_pos.copy()
             gear_pos[2] += float(args.drop_height)
@@ -642,8 +782,16 @@ def main():
     max_gear_r = max([0.5 * float(gmax[0] - gmin[0]) for _, gmin, gmax, _, _ in gear_mesh_data])
     scene_radius = max(12.0, 0.75 * shaft_span + 1.1 * max_gear_r)
 
-    cam_top = build_camera(scene, scene_center, scene_radius, view="top", vis=args.vis)
-    cam_side = build_camera(scene, scene_center, scene_radius, view="side", vis=args.vis)
+    chain_vec = shaft_world_centers[2][:2] - shaft_world_centers[0][:2]
+    if np.linalg.norm(chain_vec) < 1e-9:
+        chain_vec = np.array([1.0, 0.0], dtype=np.float64)
+
+    # Top view post-rotation: force large-medium-small to appear horizontally.
+    top_rotate_k = 0 if abs(chain_vec[0]) >= abs(chain_vec[1]) else 1
+    side_rotate_k = 0
+
+    cam_top = build_camera(scene, scene_center, scene_radius, view="top", vis=args.vis, chain_dir_xy=chain_vec)
+    cam_side = build_camera(scene, scene_center, scene_radius, view="side", vis=args.vis, chain_dir_xy=chain_vec)
 
     scene.build()
     validate_rigid_entities(gear_entities, gear_names)
@@ -671,7 +819,7 @@ def main():
         scene.step()
     report_gear_contacts(gear_entities, gear_names)
 
-    rgb = render_rgb_image(cam_top)
+    rgb = render_rgb_image(cam_top, rotate_k=top_rotate_k, out_res=(1600, 896))
     output_path = Path(args.output).resolve()
     Image.fromarray(rgb).save(output_path)
 
@@ -686,8 +834,8 @@ def main():
     side_frames = []
     for _ in range(n_frames):
         scene.step()
-        top_frames.append(Image.fromarray(render_rgb_image(cam_top)))
-        side_frames.append(Image.fromarray(render_rgb_image(cam_side)))
+        top_frames.append(Image.fromarray(render_rgb_image(cam_top, rotate_k=top_rotate_k, out_res=(1600, 896))))
+        side_frames.append(Image.fromarray(render_rgb_image(cam_side, rotate_k=side_rotate_k, out_res=(1600, 896))))
 
     for _ in range(max(0, int(args.settle_steps))):
         scene.step()
