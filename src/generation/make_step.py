@@ -2,12 +2,49 @@ import os
 import imageio.v3 as iio
 
 
+class EarlyDropDetected(RuntimeError):
+    """Raised when the object is dropped before an intentional release."""
+
+
+EARLY_DROP_MONITOR = False
+INTENTIONAL_RELEASE = False
+EARLY_DROP_STREAK = 0
+EARLY_DROP_PENDING = False
+
+
+def set_early_drop_monitor(enabled: bool):
+    global EARLY_DROP_MONITOR, EARLY_DROP_STREAK, EARLY_DROP_PENDING
+    EARLY_DROP_MONITOR = bool(enabled)
+    EARLY_DROP_STREAK = 0
+    EARLY_DROP_PENDING = False
+
+
+def set_intentional_release(enabled: bool):
+    global INTENTIONAL_RELEASE, EARLY_DROP_STREAK, EARLY_DROP_PENDING
+    INTENTIONAL_RELEASE = bool(enabled)
+    if INTENTIONAL_RELEASE:
+        EARLY_DROP_STREAK = 0
+        EARLY_DROP_PENDING = False
+
+
 def get_bounding_box(gso_object):
     aabbs = gso_object.get_AABB().cpu().numpy()
     return aabbs[0].tolist() + aabbs[1].tolist()
 
-def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, photo_interval,
-                           name, gso_object, gripper_force=0.0, force_photo=False):
+def _execute_simulation_step(
+    scene,
+    cam,
+    franka,
+    df,
+    deform_csv,
+    photo_path,
+    photo_interval,
+    name,
+    gso_object,
+    gripper_force=0.0,
+    force_photo=False,
+    cam_wrist=None,
+):
     """
     Executes a single step in the simulation, records data, and optionally saves images.
     This is an internal helper function consolidating logic from make_step and final_make_step.
@@ -48,26 +85,39 @@ def _execute_simulation_step(scene, cam, franka, df, deform_csv, photo_path, pho
         obj_contacts[2] = 1
     df.loc[len(df)] = [scene.t] + force_torques + dofs + eef_pos + finger_control + obj_com + obj_mass + obj_bounding_box + obj_contacts
 
-    # Save photos from multiple camera angles if the condition is met
+    global EARLY_DROP_STREAK, EARLY_DROP_PENDING
+    if EARLY_DROP_MONITOR and not INTENTIONAL_RELEASE:
+        fingers_in_contact = bool(obj_contacts[0] or obj_contacts[1])
+        if fingers_in_contact:
+            EARLY_DROP_STREAK = 0
+            EARLY_DROP_PENDING = False
+        else:
+            EARLY_DROP_STREAK += 1
+            if EARLY_DROP_STREAK >= 3:
+                EARLY_DROP_PENDING = True
+
+    # Save photos from main camera and optional wrist camera.
     if force_photo or (t % photo_interval == 0):
-        camera_poses = [
-            # {'pos': (2.1, -1.2, 0.1), 'lookat': (0.45, 0.45, 0.5)},
-            {'pos': (1.6, -1.6, 0.2), 'lookat': (0.4, 0.4, 0.2)},
-            {'pos': (-1.6, 1.6, 0.2), 'lookat': (0.4, 0.4, 0.2)},
-            {'pos': (2, 2, 0.2), 'lookat': (0, 0, 0.2)}
-        ]
-        for i, pose in enumerate(camera_poses):
-            cam.set_pose(**pose)
-            rgb, _, _, _ = cam.render(rgb=True)
-            if photo_path:
-                filepath = os.path.join(photo_path, f"camera_{i}/{name}_{t:05d}.png")
-                iio.imwrite(filepath, rgb)
+        cam.set_pose(pos=(3.0, 0.0, 0.35), lookat=(0.0, 0.0, 0.35))
+        rgb, _, _, _ = cam.render(rgb=True)
+        if photo_path:
+            filepath = os.path.join(photo_path, f"camera_0/{name}_{t:05d}.png")
+            iio.imwrite(filepath, rgb)
+        if cam_wrist is not None and photo_path:
+            rgb_wrist, _, _, _ = cam_wrist.render(rgb=True)
+            filepath_wrist = os.path.join(photo_path, f"camera_wrist/{name}_{t:05d}.png")
+            iio.imwrite(filepath_wrist, rgb_wrist)
     if t % 100 == 0 or force_photo:
         print(f"Step: {t:05d} | Object: {name}")
 
     # # Return False to stop the simulation if forces are too high (indicating instability)
     # if abs(df.iloc[-1, 8]) > 100:
     #     return False
+    if EARLY_DROP_MONITOR and not INTENTIONAL_RELEASE and EARLY_DROP_PENDING and (force_photo or (t % photo_interval == 0)):
+        raise EarlyDropDetected(
+            f"Object lost finger contact for >=3 consecutive steps; terminated after image save at step {int(scene.t)}."
+        )
+
     return True
 
 # Define the public-facing functions that call the internal helper
