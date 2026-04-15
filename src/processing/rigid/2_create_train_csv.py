@@ -4,7 +4,7 @@ import sys
 
 import pandas as pd
 
-MODE = "train_03062026"  # "train" or "eval"
+MODE = "eval_03062026"  # "train" or "eval"
 DATA_DIR = f"/home/user/Genesis/data/{MODE}"
 out_path = f"{DATA_DIR}/{MODE}.csv"
 

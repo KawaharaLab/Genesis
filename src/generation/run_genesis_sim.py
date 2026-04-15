@@ -383,7 +383,7 @@ def main(object_name: str, target_choice: str = 'soft'):
 
 
 def get_tasks_to_run():
-    if 0:
+    if 1:
         # return [('Twinlab_100_Whey_Protein_Fuel_Chocolate', 'none'), ('ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box', 'none'), ('Reebok_FUELTRAIN', 'none')]
         # return [('010_potted_meat_can', 'none')]
         # return [('010_potted_meat_can', 'none'), ('002_master_chef_can', 'none'), ('062_dice', 'none')]

@@ -8,7 +8,7 @@ import csv
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
-DATASET = "train_03062026" 
+DATASET = "eval_03062026" 
 WINDOW_STRIDE = 40 if "eval" in DATASET else 10
 #------------------- Generate labels -------------------#
 

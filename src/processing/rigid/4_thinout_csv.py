@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 DEBUG = False
-DATA_TYPE = "train_03062026"  # train / eval
+DATA_TYPE = "eval_03062026"  # train / eval
 DATA_DIR = f"/home/user/Genesis/data/{DATA_TYPE}"
 N = 20 if "train" in DATA_TYPE else 15  # percentage of maximum allowed label ratio
 P = N / 100.0
