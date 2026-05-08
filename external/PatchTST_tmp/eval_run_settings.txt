@@ -1,0 +1,74 @@
+python PatchTST_self_supervised/patchtst_eval.py \
+  --model_path /home/user/PatchTST/saved_models/contrastive/rose-tree-25_best.pth \
+  --method cosine \
+  --selected_labels hold,slip \
+  --train_dir /home/user/Genesis/data/train/ \
+  --eval_dir  /home/user/Genesis/data/eval/ \
+  --train_csv train_thin_15pct.csv \
+  --eval_csv  eval_thin_10pct.csv \
+  --context_points 80 \
+  --target_points 0 \
+  --patch_len 10 \
+  --stride 10 \
+  --n_layers 3 \
+  --n_heads 16 \
+  --d_model 256 \
+  --d_ff 768 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --pool last \
+  --batch_size 256 \
+  --epochs 5 \
+  --lr 1e-3 \
+  --weight_decay 0.0 \
+  --seed 42
+
+  python PatchTST_self_supervised/patchtst_eval.py \
+  --model_path /home/user/PatchTST/saved_models/contrastive/sleek-snowflake-4_best.pth \
+  --method linear \
+  --selected_labels drop,empty,grasp,hold,place,slip \
+  --train_dir /home/user/Genesis/data/train/ \
+  --eval_dir  /home/user/Genesis/data/eval/ \
+  --train_csv train_thin_15pct.csv \
+  --eval_csv  eval_thin_10pct.csv \
+  --context_points 80 \
+  --target_points 0 \
+  --patch_len 16 \
+  --stride 8 \
+  --n_layers 4 \
+  --n_heads 16 \
+  --d_model 256 \
+  --d_ff 1024 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --pool mean \
+  --batch_size 256 \
+  --epochs 5 \
+  --lr 1e-3 \
+  --weight_decay 0.0 \
+  --seed 42
+
+python PatchTST_self_supervised_new_unstable/patchtst_eval.py \
+  --model_path /home/user/PatchTST/saved_models/contrastive/rose-tree-25_best.pth \
+  --method cosine \
+  --selected_labels drop,empty,grasp,hold,place,slip \
+  --train_dir /home/user/Genesis/data/train/ \
+  --eval_dir  /home/user/Genesis/data/eval_old/ \
+  --train_csv train_thin_15pct.csv \
+  --eval_csv  eval_thin_10pct.csv \
+  --context_points 80 \
+  --target_points 0 \
+  --patch_len 10 \
+  --stride 10 \
+  --n_layers 3 \
+  --n_heads 16 \
+  --d_model 256 \
+  --d_ff 768 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --pool last \
+  --batch_size 256 \
+  --epochs 5 \
+  --lr 1e-3 \
+  --weight_decay 0.0 \
+  --seed 42

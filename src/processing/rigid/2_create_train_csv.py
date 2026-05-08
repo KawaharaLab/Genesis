@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-MODE = "eval_04072026"  # "train" or "eval"
+MODE = "train_04272026"  # "train" or "eval"
 DATA_DIR = f"/home/user/Genesis/data/{MODE}"
 out_path = f"{DATA_DIR}/{MODE}.csv"
 
@@ -19,11 +19,20 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
 
     df["action"] = df["action"].fillna("").astype(str).str.strip()
     df["interaction"] = df["interaction"].fillna("").astype(str).str.strip()
+    df["weight"] = df["weight"].fillna("").astype(str).str.strip()
 
     def _fallback_action(annotation: str) -> str:
         text = (annotation or "").lower()
         if "accidental drop" in text:
             return "accidental drop"
+        if "pressing" in text and "then releasing" in text:
+            return "press then release"
+        if "pressing" in text:
+            return "press"
+        if "bumping" in text:
+            return "bump"
+        if "placing" in text:
+            return "place"
         if "place firmly" in text:
             return "place firmly"
         if "place gently" in text:
@@ -40,12 +49,19 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
         text = (annotation or "").lower()
         if "stable" in text:
             return "stable"
-        if "slipping quickly" in text or "slips quickly" in text or "fast slip" in text:
+        if "slip quickly" in text:
             return "fast slip"
-        if "slipping slowly" in text or "slips slowly" in text or "slow slip" in text:
+        if "slip slowly" in text:
             return "slow slip"
         if "slip" in text:
             return "slow slip"
+
+    def _fallback_weight(annotation: str) -> str:
+        text = (annotation or "").lower()
+        if "light" in text:
+            return "light"
+        if "heavy" in text:
+            return "heavy"
         return ""
 
     missing_action = df["action"] == ""
@@ -56,22 +72,24 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
     if missing_interaction.any():
         df.loc[missing_interaction, "interaction"] = df.loc[missing_interaction, "annotation"].map(_fallback_interaction)
 
+    missing_weight = df["weight"] == ""
+    if missing_weight.any():
+        df.loc[missing_weight, "weight"] = df.loc[missing_weight, "annotation"].map(_fallback_weight)
+
     # For drop categories, interaction is intentionally omitted.
     df.loc[df["action"].isin(["accidental drop", "drop"]), "interaction"] = ""
 
     def _to_label(row: pd.Series) -> str:
         action = row["action"]
-        interaction = row["interaction"]
         if action == "hold":
-            if interaction == "stable":
-                return "stable"
-            if interaction in {"slow slip", "fast slip"}:
-                return "slip"
+            return "hold"
         if action in {"place gently"}:
             return "place gently"
         if action in {"place firmly"}:
             return "place firmly"
-        if action in {"grasp", "hold", "accidental drop", "drop"}:
+        if "press" in action:
+            return "press"
+        if action in {"grasp", "place", "bump", "hold", "accidental drop", "drop"}:
             return action
         return "unknown"
 
@@ -103,6 +121,8 @@ def main() -> int:
     for fp in files:
         df = pd.read_csv(fp)
         obj_name, material, deformation = parse_annotation_path(fp)
+        if deformation == "bump":
+            continue
         df["csv_path"] = f"{DATA_DIR}/csv/{obj_name}/{material}/{deformation}/{obj_name}_{material}_{deformation}.csv"
         dfs.append(df)
 

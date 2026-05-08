@@ -1,0 +1,11 @@
+python PatchTST_self_supervised/patchtst_umap.py   --model_path /home/user/PatchTST/saved_models/contrastive/sleek-snowflake-4_best.pth   --ckpt_type contrastive --out patchtst_umap_snowflake_best.png
+
+python PatchTST_self_supervised/patchtst_umap.py   --model_path /home/user/PatchTST/saved_models/contrastive/efficient-leaf-5_best.pth   --ckpt_type contrastive --out patchtst_umap_leaf_best.png
+
+python PatchTST_self_supervised/patchtst_umap.py   --model_path /home/user/PatchTST/saved_models/contrastive/colorful-armadillo-2_best.pth   --ckpt_type contrastive --out patchtst_umap_armadillo_best.png
+
+python PatchTST_self_supervised/patchtst_umap.py   --model_path /home/user/PatchTST/saved_models/contrastive/avid-paper-8_best.pth   --ckpt_type contrastive --out patchtst_umap_paper_best.png
+
+python PatchTST_self_supervised/patchtst_umap.py   --model_path /home/user/PatchTST/saved_models/contrastive/iconic-butterfly-7_best.pth   --ckpt_type contrastive --out patchtst_umap_butterfly_best.png
+
+python PatchTST_self_supervised/patchtst_umap.py   --model_path /home/user/PatchTST/saved_models/contrastive/unique-planet-9_best.pth   --ckpt_type contrastive --out patchtst_umap_planet_best.png

@@ -10,12 +10,13 @@ import pandas as pd
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
-DATASET = "eval_04072026"
+DATASET = "train_04272026"
 WINDOW_STRIDE = 10
 # WINDOW_STRIDE = 40 if "eval" in DATASET else 10
 MAX_FORCE_ABS = 100.0
 SLOW_SLIP_THRESHOLD = 0.002
 FAST_SLIP_THRESHOLD = 0.004
+PLACE_ACTION = "place"
 
 
 def detect_bugs(force_df: pd.DataFrame, start: int, length: int = SEQUENCE_LENGTH) -> bool:
@@ -58,13 +59,44 @@ def _first_step(steps_df: pd.DataFrame, candidates: set[str]) -> int | None:
     return int(rows["step"].min())
 
 
-def _first_plane_contact_index(force_df: pd.DataFrame) -> int | None:
-    if "obj_plane" not in force_df.columns or force_df.empty:
+def _first_rising_contact_after(contact: np.ndarray, start_step: int | None) -> int | None:
+    if contact.size == 0:
         return None
-    contact = force_df["obj_plane"].to_numpy(dtype=bool)
-    if not np.any(contact):
+    begin = max(0, int(start_step) if start_step is not None else 0)
+    begin = min(begin, len(contact) - 1)
+    if contact[begin]:
+        return begin
+    for i in range(begin + 1, len(contact)):
+        if (not contact[i - 1]) and contact[i]:
+            return i
+    if np.any(contact[begin:]):
+        return int(begin + np.argmax(contact[begin:]))
+    return None
+
+
+def _support_contact_series(force_df: pd.DataFrame) -> np.ndarray:
+    if force_df.empty:
+        return np.array([], dtype=bool)
+    tile = force_df["obj_target_tile"].to_numpy(dtype=bool) if "obj_target_tile" in force_df.columns else None
+    plane = force_df["obj_plane"].to_numpy(dtype=bool) if "obj_plane" in force_df.columns else None
+    if tile is None and plane is None:
+        return np.array([], dtype=bool)
+    if tile is None:
+        return plane
+    if plane is None:
+        return tile
+    return np.logical_or(tile, plane)
+
+
+def _first_support_contact_after(force_df: pd.DataFrame, start_step: int | None) -> int | None:
+    return _first_rising_contact_after(_support_contact_series(force_df), start_step)
+
+
+def _first_obstacle_contact_after(force_df: pd.DataFrame, start_step: int | None) -> int | None:
+    if "obj_obstacle" not in force_df.columns:
         return None
-    return int(np.argmax(contact))
+    obstacle = force_df["obj_obstacle"].to_numpy(dtype=bool)
+    return _first_rising_contact_after(obstacle, start_step)
 
 
 def _first_release_index(force_df: pd.DataFrame, start_step: int | None = None) -> int | None:
@@ -109,17 +141,19 @@ def _first_grasp_contact_index(force_df: pd.DataFrame, start_step: int | None = 
 
 def _infer_place_mode(deformation: str, metadata: dict, steps_df: pd.DataFrame) -> str:
     place_mode = str(metadata.get("place_mode") or "").strip()
-    if place_mode in {"drop", "gentle", "firm"}:
+    if place_mode in {"drop", "gentle", "firm", "bump"}:
         return place_mode
 
     if deformation.startswith("early_"):
         tail = deformation.replace("early_", "", 1)
-        if tail in {"drop", "gentle", "firm"}:
+        if tail in {"drop", "gentle", "firm", "bump"}:
             return tail
 
     actions = set(steps_df["action"].astype(str).tolist())
     if "drop" in actions:
         return "drop"
+    if "bump_push" in actions:
+        return "bump"
     if "gentle_place" in actions:
         return "gentle"
     if "press_place" in actions:
@@ -138,9 +172,9 @@ def _is_early_drop_case(deformation: str, metadata: dict, steps_df: pd.DataFrame
 def _hold_condition(force_segment: pd.DataFrame) -> bool:
     left = force_segment["obj_left_finger"].to_numpy(dtype=bool)
     right = force_segment["obj_right_finger"].to_numpy(dtype=bool)
-    plane = force_segment["obj_plane"].to_numpy(dtype=bool)
+    support = _support_contact_series(force_segment)
     contact_either = np.logical_or(left, right)
-    return bool(np.all(contact_either) and not np.any(plane))
+    return bool(np.all(contact_either) and not np.any(support))
 
 
 def _estimate_interaction(force_segment: pd.DataFrame) -> str:
@@ -171,17 +205,23 @@ def _estimate_interaction(force_segment: pd.DataFrame) -> str:
 def _determine_action(
     start: int,
     force_segment: pd.DataFrame,
-    hold_start_step: int | None,
     place_start_step: int | None,
-    first_plane_contact_idx: int | None,
+    first_support_contact_idx: int | None,
     first_grasp_contact_idx: int | None,
     first_release_idx: int | None,
+    first_obstacle_contact_idx: int | None,
+    bump_push_step: int | None,
+    press_place_step: int | None,
     early_drop_case: bool,
     place_mode: str,
 ) -> str:
     seg_end = start + len(force_segment) - 1
     includes_grasp_contact = first_grasp_contact_idx is not None and (start <= first_grasp_contact_idx <= seg_end)
     includes_release = first_release_idx is not None and (start <= first_release_idx <= seg_end)
+    includes_support_contact = first_support_contact_idx is not None and (start <= first_support_contact_idx <= seg_end)
+    includes_obstacle_contact = (
+        first_obstacle_contact_idx is not None and (start <= first_obstacle_contact_idx <= seg_end)
+    )
 
     # Placement phase: explicit terminal labels.
     if place_start_step is not None and start >= place_start_step:
@@ -189,12 +229,36 @@ def _determine_action(
             return "accidental drop" if includes_release else "hold"
         if place_mode == "drop":
             return "drop" if includes_release else "hold"
-        # For gentle/firm place, only label as "place" after object-plane contact appears.
-        if first_plane_contact_idx is None or seg_end < first_plane_contact_idx:
+        if place_mode == "bump":
+            bump_start = bump_push_step if bump_push_step is not None else place_start_step
+            if start < bump_start:
+                return "hold"
+            if includes_obstacle_contact:
+                return "bump"
+            if first_obstacle_contact_idx is None:
+                return "bump" if start == bump_start else "press"
+            if start > first_obstacle_contact_idx:
+                return "press"
             return "hold"
-        if place_mode == "gentle":
-            return "place gently"
-        return "place firmly"
+        if includes_release:
+            if includes_support_contact:
+                return PLACE_ACTION
+            if first_support_contact_idx is not None and start > first_support_contact_idx:
+                return "press then release"
+        if includes_support_contact:
+            return PLACE_ACTION
+        if first_support_contact_idx is None:
+            fallback_place_step = press_place_step if press_place_step is not None else place_start_step
+            if includes_release and start > fallback_place_step:
+                return "press then release"
+            if start == fallback_place_step:
+                return PLACE_ACTION
+            if start > fallback_place_step:
+                return "press"
+            return "hold"
+        if start > first_support_contact_idx:
+            return "press"
+        return "hold"
 
     # Pre-placement phase.
     if includes_grasp_contact:
@@ -239,6 +303,34 @@ def _build_annotation(action: str, interaction: str | None, force_segment: pd.Da
 
     if action == "drop":
         return f"Released {obj_phrase}, dropping it."
+
+    if action == "bump":
+        if fast_slip:
+            return f"Bumping {obj_phrase}, letting it slip quickly."
+        if slow_slip:
+            return f"Bumping {obj_phrase}, letting it slip slowly."
+        return f"Bumping {obj_phrase} with stable contact."
+
+    if action == PLACE_ACTION:
+        if fast_slip:
+            return f"Placing {obj_phrase}, letting it slip quickly."
+        if slow_slip:
+            return f"Placing {obj_phrase}, letting it slip slowly."
+        return f"Placing {obj_phrase} with stable contact."
+
+    if action == "press":
+        if fast_slip:
+            return f"Pressing {obj_phrase}, letting it slip quickly."
+        if slow_slip:
+            return f"Pressing {obj_phrase}, letting it slip slowly."
+        return f"Pressing {obj_phrase} with stable contact."
+
+    if action == "press then release":
+        if fast_slip:
+            return f"Pressing {obj_phrase} and then releasing it, while it slips quickly."
+        if slow_slip:
+            return f"Pressing {obj_phrase} and then releasing it, while it slips slowly."
+        return f"Pressing {obj_phrase} and then releasing it."
 
     if action == "place gently":
         if fast_slip:
@@ -300,10 +392,13 @@ def main(obj_name: str, csv_path: str, deformation: str, material: str = "Rigid"
     metadata = _load_metadata(csv_path, obj_name, material, deformation)
 
     windows = split_for_model(force_df)
-    hold_start_step = _first_step(steps_df, {"hold"})
-    place_start_step = _first_step(steps_df, {"place", "drop", "gentle_place", "press_place"})
-    first_plane_contact_idx = _first_plane_contact_index(force_df)
+    place_start_step = _first_step(steps_df, {"place", "drop", "gentle_place", "press_place", "bump_push"})
+    bump_push_step = _first_step(steps_df, {"bump_push"})
+    press_place_step = _first_step(steps_df, {"press_place"})
+    first_support_contact_idx = _first_support_contact_after(force_df, start_step=place_start_step)
+    first_obstacle_contact_idx = _first_obstacle_contact_after(force_df, start_step=place_start_step)
     first_grasp_contact_idx = _first_grasp_contact_index(force_df)
+    hold_start_step = _first_step(steps_df, {"hold"})
     release_search_start = hold_start_step if hold_start_step is not None else place_start_step
     first_release_idx = _first_release_index(force_df, release_search_start)
     early_drop_case = _is_early_drop_case(deformation, metadata, steps_df)
@@ -324,11 +419,13 @@ def main(obj_name: str, csv_path: str, deformation: str, material: str = "Rigid"
         action = _determine_action(
             start=start,
             force_segment=force_segment,
-            hold_start_step=hold_start_step,
             place_start_step=place_start_step,
-            first_plane_contact_idx=first_plane_contact_idx,
+            first_support_contact_idx=first_support_contact_idx,
             first_grasp_contact_idx=first_grasp_contact_idx,
             first_release_idx=first_release_idx,
+            first_obstacle_contact_idx=first_obstacle_contact_idx,
+            bump_push_step=bump_push_step,
+            press_place_step=press_place_step,
             early_drop_case=early_drop_case,
             place_mode=place_mode,
         )

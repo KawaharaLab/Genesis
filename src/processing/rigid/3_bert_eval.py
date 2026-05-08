@@ -4,8 +4,8 @@ import torch
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
-data_dir = "data/eval_04072026"
-save_dir = "data/eval_04072026/bert_emb"
+data_dir = "data/eval_04272026"
+save_dir = "data/eval_04272026/bert_emb"
 os.makedirs(save_dir, exist_ok=True)
 
 model_name = "sentence-transformers/all-mpnet-base-v2"
@@ -13,7 +13,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = SentenceTransformer(model_name, device=device)
 model.max_seq_length = 512
 
-csv_path = "data/eval_04072026/eval_04072026_thin_20pct.csv"
+csv_path = "data/eval_04272026/eval_04272026_thin_17pct.csv"
 df = pd.read_csv(csv_path)
 
 target_cols = ["label", "action", "weight", "interaction", "annotation"]

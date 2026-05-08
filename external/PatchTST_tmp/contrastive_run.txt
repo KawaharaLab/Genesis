@@ -1,0 +1,217 @@
+sleek-snowflake
+python PatchTST_self_supervised/patchtst_contrastive.py \
+  --data_dir /home/user/Genesis/data/ \
+  --index_csv train_thin_15pct.csv \
+  --val_index_csv eval_thin_10pct.csv \
+  --context_points 80 \
+  --force_cols left_fx,left_fy,left_fz,left_tx,left_ty,left_tz,right_fx,right_fy,right_fz,right_tx,right_ty,right_tz \
+  --pretrained_path /home/user/PatchTST/saved_models/force/masked_patchtst/based_model/patchtst_pretrained_cw80_patch16_stride8_epochs-pretrain100_mask0.5_model2.pth \
+  --patch_len 16 \
+  --stride 8 \
+  --n_layers 4 \
+  --n_heads 16 \
+  --d_model 256 \
+  --d_ff 1024 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --out_embed_dim 768 \
+  --pool mean \
+  --epochs 100 \
+  --warmup_epochs 10 \
+  --peak_lr 5e-4 \
+  --min_lr 1e-5 \
+  --weight_decay 1e-4 \
+  --batch_size 256 \
+  --gradient_clipping 1.0 \
+  --freeze_backbone_epochs 0 \
+  --seed 42 \
+  --num_workers 4 \
+  --project patchtst_ssl_based \
+  --wandb_api_key API_KEY \
+  --save_dir /home/user/PatchTST/saved_models/contrastive/
+
+efficient-leaf
+python PatchTST_self_supervised/wip_patchtst_contrastive.py \
+  --data_dir /home/user/Genesis/data/ \
+  --index_csv train_thin_15pct.csv \
+  --val_index_csv eval_thin_10pct.csv \
+  --context_points 80 \
+  --pretrained_path /home/user/PatchTST/saved_models/force/masked_patchtst/based_model/patchtst_pretrained_cw80_patch10_stride10_epochs-pretrain10_mask0.4_model1.pth \
+  --patch_len 16 \
+  --stride 8 \
+  --n_layers 4 \
+  --n_heads 16 \
+  --d_model 256 \
+  --d_ff 1024 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --out_embed_dim 768 --pool mean \
+  --epochs 100 \
+  --warmup_epochs 20 \
+  --peak_lr 3e-4 \
+  --min_lr 1e-5 \
+  --weight_decay 1e-4 \
+  --batch_size 256 \
+  --gradient_clipping 1.0 \
+  --freeze_backbone_epochs 5 \
+  --seed 42 --num_workers 4 \
+  --project patchtst_ssl_based \
+  --wandb_api_key API_KEY \
+  --save_dir /home/user/PatchTST/saved_models/contrastive/
+
+
+newest run original pretain og settings - iconice butterfly
+python PatchTST_self_supervised/patchtst_contrastive.py \
+  --data_dir /home/user/Genesis/data/ \
+  --index_csv train_thin_15pct.csv \
+  --val_index_csv eval_thin_10pct.csv \
+  --context_points 80 \
+  --pretrained_path /home/user/PatchTST/saved_models/force/masked_patchtst/based_model/patchtst_pretrained_cw80_patch10_stride10_epochs-pretrain10_mask0.4_model1.pth \
+  --patch_len 10 \
+  --stride 10 \
+  --n_layers 3 \
+  --n_heads 16 \
+  --d_model 128 \
+  --d_ff 768 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --out_embed_dim 768 \
+  --pool mean \
+  --epochs 100 \
+  --warmup_epochs 10 \
+  --peak_lr 5e-4 \
+  --min_lr 1e-5 \
+  --weight_decay 0.0 \
+  --batch_size 256 \
+  --gradient_clipping 1.0 \
+  --freeze_backbone_epochs 0 \
+  --seed 42 \
+  --num_workers 4 \
+  --project patchtst_ssl_based \
+  --wandb_api_key API_KEY \
+  --save_dir /home/user/PatchTST/saved_models/contrastive/
+
+newest pretrian model 2 default settings - avid paper
+python PatchTST_self_supervised/patchtst_contrastive.py \
+  --data_dir /home/user/Genesis/data/ \
+  --index_csv train_thin_15pct.csv \
+  --val_index_csv eval_thin_10pct.csv \
+  --context_points 80 \
+  --pretrained_path /home/user/PatchTST/saved_models/force/masked_patchtst/based_model/patchtst_pretrained_cw80_patch16_stride8_epochs-pretrain100_mask0.5_model2.pth \
+  --patch_len 10 \
+  --stride 10 \
+  --n_layers 3 \
+  --n_heads 16 \
+  --d_model 128 \
+  --d_ff 768 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --out_embed_dim 768 \
+  --pool mean \
+  --epochs 100 \
+  --warmup_epochs 10 \
+  --peak_lr 5e-4 \
+  --min_lr 1e-5 \
+  --weight_decay 0.0 \
+  --batch_size 256 \
+  --gradient_clipping 1.0 \
+  --freeze_backbone_epochs 0 \
+  --seed 42 \
+  --num_workers 4 \
+  --project patchtst_ssl_based \
+  --wandb_api_key API_KEY \
+  --save_dir /home/user/PatchTST/saved_models/contrastive/
+
+new default settings mdoel 5 - neat_dream
+python PatchTST_self_supervised/patchtst_contrastive.py \
+  --data_dir /home/user/Genesis/data/ \
+  --index_csv train_thin_15pct.csv \
+  --val_index_csv eval_thin_10pct.csv \
+  --context_points 80 \
+  --pretrained_path /home/user/PatchTST/saved_models/force/masked_patchtst/based_model/patchtst_pretrained_cw80_patch10_stride10_epochs-pretrain70_mask0.4_model5.pth \
+  --patch_len 10 \
+  --stride 10 \
+  --n_layers 3 \
+  --n_heads 16 \
+  --d_model 128 \
+  --d_ff 768 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --out_embed_dim 768 \
+  --pool mean \
+  --epochs 100 \
+  --warmup_epochs 10 \
+  --peak_lr 5e-4 \
+  --min_lr 1e-5 \
+  --weight_decay 1e-4 \
+  --batch_size 256 \
+  --gradient_clipping 1.0 \
+  --freeze_backbone_epochs 5 \
+  --seed 42 \
+  --num_workers 4 \
+  --project patchtst_ssl_based \
+  --wandb_api_key API_KEY \
+  --save_dir /home/user/PatchTST/saved_models/contrastive/
+
+new default settings mdoel 6 - neat_dream
+python PatchTST_self_supervised/patchtst_contrastive.py \
+  --data_dir /home/user/Genesis/data/ \
+  --index_csv train_thin_15pct.csv \
+  --val_index_csv eval_thin_10pct.csv \
+  --context_points 80 \
+  --pretrained_path /home/user/PatchTST/saved_models/force/masked_patchtst/based_model/patchtst_pretrained_cw80_patch10_stride10_epochs-pretrain70_mask0.4_model6.pth \
+  --patch_len 10 \
+  --stride 10 \
+  --n_layers 3 \
+  --n_heads 16 \
+  --d_model 128 \
+  --d_ff 768 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --out_embed_dim 768 \
+  --pool mean \
+  --epochs 100 \
+  --warmup_epochs 10 \
+  --peak_lr 5e-4 \
+  --min_lr 1e-5 \
+  --weight_decay 1e-4 \
+  --batch_size 256 \
+  --gradient_clipping 1.0 \
+  --freeze_backbone_epochs 5 \
+  --seed 42 \
+  --num_workers 4 \
+  --project patchtst_ssl_based \
+  --wandb_api_key API_KEY \
+  --save_dir /home/user/PatchTST/saved_models/contrastive/
+
+
+
+python PatchTST_self_supervised_new_unstable/patchtst_contrastive.py \
+  --data_dir /home/user/Genesis/data/ \
+  --index_csv train_thin_15pct.csv \
+  --val_index_csv eval_thin_10pct.csv \
+  --context_points 80 \
+  --pretrained_path /home/user/PatchTST/saved_models/force/masked_patchtst/based_model/patchtst_pretrained_cw80_patch10_stride10_epochs-pretrain70_mask0.4_model6.pth \
+  --patch_len 10 \
+  --stride 10 \
+  --n_layers 3 \
+  --n_heads 16 \
+  --d_model 128 \
+  --d_ff 768 \
+  --dropout 0.2 \
+  --head_dropout 0.2 \
+  --out_embed_dim 768 \
+  --pool mean \
+  --epochs 100 \
+  --warmup_epochs 10 \
+  --peak_lr 5e-4 \
+  --min_lr 1e-5 \
+  --weight_decay 1e-4 \
+  --batch_size 256 \
+  --gradient_clipping 1.0 \
+  --freeze_backbone_epochs 5 \
+  --seed 42 \
+  --num_workers 4 \
+  --project patchtst_ssl_based \
+  --wandb_api_key API_KEY \
+  --save_dir /home/user/PatchTST/saved_models/contrastive/

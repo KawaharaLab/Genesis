@@ -18,6 +18,7 @@ from make_step import (
     EarlyDropDetected,
     final_make_step,
     make_step,
+    set_object_contact_targets,
     set_early_drop_monitor,
     set_intentional_release,
 )
@@ -38,11 +39,13 @@ DATA_ROOT = PROJECT_ROOT / "data"
 
 PHOTO_INTERVAL = 80
 MATERIAL_TYPE = "Rigid"
-TARGET_CHOICES = ["drop", "gentle", "firm"]
+TARGET_CHOICES = ["gentle","firm", "gentle_simple"]
+GRASP_TO_LIFT_WAIT_STEPS = 100
 
 MAX_PARALLEL_PROCESSES = 8
-DATASET = "eval_04072026"
-DATASET_TYPE = "ycb"  # Options: "ycb", "gso"
+DATASET = "train_04272026"
+DATASET_TYPE = "ycb" if "eval" in DATASET else "gso"  # Options: "ycb", "gso"
+OUTPUT_VARIANT_LABEL = "vary"  # e.g. "heavy", "light", "v2"; set "" to disable
 PLACE_TARGET_X_RANGE = (0.20, 0.70)
 PLACE_TARGET_Y_RANGE = (0.20, 0.70)
 MIN_PLACE_DISTANCE_FROM_SPAWN = 0.14
@@ -51,6 +54,9 @@ MAX_PLACE_DISTANCE_FROM_ROBOT = 0.82
 TARGET_TILE_SIZE = 0.20
 TARGET_TILE_THICKNESS = 0.004
 TARGET_TILE_COLOR = (0.10, 0.35, 0.90, 1.0)
+BUMP_WALL_SIZE = (0.06, 0.06, 0.035)
+BUMP_WALL_COLOR = (0.90, 0.25, 0.20, 1.0)
+BUMP_PUSH_STEPS = 100
 TOPPLE_THRESHOLD_DEG = 35.0
 
 
@@ -201,7 +207,33 @@ def sample_place_target(source_xy, robot_xy=(0.0, 0.0)):
     return float(fallback[0]), float(fallback[1])
 
 
-def create_scene(obj_path: str):
+def _is_simple_mode(place_mode: str) -> bool:
+    return place_mode in ("drop_simple", "gentle_simple")
+
+
+def _plan_bump_wall(source_xy, target_xy):
+    source = np.asarray(source_xy, dtype=float)
+    target = np.asarray(target_xy, dtype=float)
+    delta = target - source
+    distance = float(np.linalg.norm(delta))
+    if distance < 1e-6:
+        direction = np.array([1.0, 0.0], dtype=float)
+        distance = 1e-6
+    else:
+        direction = delta / distance
+
+    min_along = 0.08
+    max_along = max(min_along, distance - 0.06)
+    along = float(np.clip(distance * 0.45, min_along, max_along))
+    wall_xy = source + direction * along
+    return {
+        "center_xy": (float(wall_xy[0]), float(wall_xy[1])),
+        "size_xyz": tuple(float(v) for v in BUMP_WALL_SIZE),
+        "distance_from_source": along,
+    }
+
+
+def create_scene(obj_path: str, place_mode: str = "gentle"):
     if torch.cuda.is_available():
         gs.init(backend=gs.gpu)
     else:
@@ -252,14 +284,18 @@ def create_scene(obj_path: str):
     wrist_mount_link = franka.get_link("hand")
     cam_wrist.attach(wrist_mount_link, gu.trans_R_to_T(trans, R))
 
-    rho = 200.0 * random.uniform(1.0, 5.0)
+    rho = 200.0 * random.uniform(1.0, 10.0)
     gso_object = scene.add_entity(
         material=gs.materials.Rigid(rho=rho),
         morph=gs.morphs.Mesh(file=obj_path, scale=object_scale, pos=object_spawn_pos, euler=object_euler),
         surface=gs.surfaces.Default(color=color),
     )
 
-    target_xy = sample_place_target(drop_center, robot_xy=(0.0, 0.0))
+    # Simple modes: object starts already on the tile and is placed/dropped back onto it.
+    if _is_simple_mode(place_mode):
+        target_xy = (float(drop_center[0]), float(drop_center[1]))
+    else:
+        target_xy = sample_place_target(drop_center, robot_xy=(0.0, 0.0))
     target_tile = scene.add_entity(
         material=gs.materials.Rigid(rho=800, friction=1.0, coup_friction=1.0),
         morph=gs.morphs.Box(
@@ -269,9 +305,24 @@ def create_scene(obj_path: str):
         ),
         surface=gs.surfaces.Default(color=TARGET_TILE_COLOR),
     )
+    wall_plan = None
+    obstacle_entity = None
+    if place_mode == "bump":
+        wall_plan = _plan_bump_wall(drop_center, target_xy)
+        wall_x, wall_y = wall_plan["center_xy"]
+        wall_sx, wall_sy, wall_sz = wall_plan["size_xyz"]
+        obstacle_entity = scene.add_entity(
+            material=gs.materials.Rigid(rho=1200, friction=1.2, coup_friction=1.2),
+            morph=gs.morphs.Box(
+                size=(wall_sx, wall_sy, wall_sz),
+                pos=(wall_x, wall_y, wall_sz * 0.5),
+                fixed=True,
+            ),
+            surface=gs.surfaces.Default(color=BUMP_WALL_COLOR),
+        )
 
     scene.build()
-    return scene, cam, cam_wrist, franka, gso_object, target_xy, target_tile
+    return scene, cam, cam_wrist, franka, gso_object, target_xy, target_tile, obstacle_entity, wall_plan
 
 
 def _settle_after_release(scene, cam, cam_wrist, franka, gso_object, df, deform_csv, paths, grip_force, steps=100):
@@ -387,7 +438,7 @@ def _run_place_phase(
 ):
     name = paths["object_name"]
 
-    if place_mode == "drop":
+    if place_mode in ("drop", "drop_simple"):
         seg_df.loc[len(seg_df)] = ["drop", int(scene.t)]
         release_z = place_eef_z_nominal + random.uniform(0.05, 0.08)
         mm.descend_to_place_cautiously(
@@ -452,7 +503,7 @@ def _run_place_phase(
         metadata["toppled"] = bool(tilt_change_deg >= TOPPLE_THRESHOLD_DEG)
         return
 
-    if place_mode == "gentle":
+    if place_mode in ("gentle", "gentle_simple"):
         seg_df.loc[len(seg_df)] = ["gentle_place", int(scene.t)]
         mm.descend_to_place_cautiously(
             scene=scene,
@@ -554,7 +605,7 @@ def _run_place_phase(
         )
 
         press_depth = 0.03
-        press_steps = 100
+        press_steps = 120
         for step in range(press_steps):
             z_target = place_eef_z_nominal - press_depth * (step + 1) / press_steps
             qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([place_x, place_y, z_target]), quat=np.array([0, 1, 0, 0]))
@@ -635,6 +686,73 @@ def _run_place_phase(
         metadata["toppled"] = bool(tilt_change_deg >= TOPPLE_THRESHOLD_DEG)
         return
 
+    if place_mode == "bump":
+        seg_df.loc[len(seg_df)] = ["bump_push", int(scene.t)]
+        push_eef_z = franka.get_links_pos([8]).tolist()[0][2]
+        for _ in range(BUMP_PUSH_STEPS):
+            qpos = franka.inverse_kinematics(
+                link=end_effector,
+                pos=np.array([place_x, place_y, push_eef_z]),
+                quat=np.array([0, 1, 0, 0]),
+            )
+            franka.control_dofs_position(qpos[:-2], motors_dof)
+            franka.control_dofs_position(np.array([0.0, 0.0]), fingers_dof)
+            make_step(
+                scene=scene,
+                cam=cam,
+                franka=franka,
+                df=df,
+                deform_csv=deform_csv,
+                photo_path=str(paths["images_dir"]),
+                photo_interval=PHOTO_INTERVAL,
+                gso_object=gso_object,
+                name=name,
+                gripper_force=-current_force,
+                cam_wrist=cam_wrist,
+            )
+
+        set_intentional_release(True)
+        mm.release_object(
+            scene=scene,
+            cam=cam,
+            franka=franka,
+            gso_object=gso_object,
+            df=df,
+            deform_csv=deform_csv,
+            photo_path=str(paths["images_dir"]),
+            photo_interval=PHOTO_INTERVAL,
+            name=name,
+            fingers_dof=fingers_dof,
+            grip_force=-current_force,
+            steps=45,
+            cam_wrist=cam_wrist,
+        )
+        quat_at_release = _flatten_quat_wxyz(gso_object.get_quat())
+        _retreat_up_to_height(
+            scene,
+            cam,
+            cam_wrist,
+            franka,
+            gso_object,
+            df,
+            deform_csv,
+            paths,
+            end_effector,
+            motors_dof,
+            fingers_dof,
+            -current_force,
+            retreat_target_z,
+            place_x,
+            place_y,
+            steps=110,
+        )
+        _settle_after_release(scene, cam, cam_wrist, franka, gso_object, df, deform_csv, paths, -current_force, steps=120)
+        quat_after_retreat = _flatten_quat_wxyz(gso_object.get_quat())
+        tilt_change_deg = _compute_max_xy_tilt_change_deg(quat_at_release, quat_after_retreat)
+        metadata["tilt_xy_deg"] = round(float(tilt_change_deg), 4)
+        metadata["toppled"] = bool(tilt_change_deg >= TOPPLE_THRESHOLD_DEG)
+        return
+
     raise ValueError(f"Unsupported place mode: {place_mode}")
 
 
@@ -651,6 +769,7 @@ def run_rotation(
     place_target_xy,
     place_mode,
     metadata,
+    wall_plan=None,
 ):
     name = paths["object_name"]
     motors_dof, fingers_dof = np.arange(7), np.arange(7, 9)
@@ -679,6 +798,8 @@ def run_rotation(
 
     metadata["target_xy"] = {"x": float(place_x), "y": float(place_y)}
     metadata["place_mode"] = str(place_mode)
+    if wall_plan is not None:
+        metadata["bump_wall"] = wall_plan
     seg_df.loc[len(seg_df)] = ["grasp", int(scene.t)]
     mm.set_to_pose(
         scene=scene,
@@ -740,9 +861,33 @@ def run_rotation(
     set_early_drop_monitor(True)
 
     seg_df.loc[len(seg_df)] = ["hold", int(scene.t)]
+    hold_qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z]), quat=np.array([0, 1, 0, 0]))
+    for _ in range(GRASP_TO_LIFT_WAIT_STEPS):
+        franka.control_dofs_position(hold_qpos[:-2], motors_dof)
+        franka.control_dofs_position(np.array([0.0, 0.0]), fingers_dof)
+        make_step(
+            scene=scene,
+            cam=cam,
+            franka=franka,
+            gso_object=gso_object,
+            df=df,
+            deform_csv=deform_csv,
+            photo_path=str(paths["images_dir"]),
+            photo_interval=PHOTO_INTERVAL,
+            name=name,
+            gripper_force=-current_force,
+            cam_wrist=cam_wrist,
+        )
+
     seg_df.loc[len(seg_df)] = ["lift", int(scene.t)]
-    for i in range(200):
-        curr_z = z + (i * 0.00075)
+    lift_steps = 200
+    lift_step_size = 0.00075
+    if place_mode == "bump":
+        # Keep transport height lower so only the lower part of the object tends to hit the low wall.
+        lift_steps = 120
+        lift_step_size = 0.00035
+    for i in range(lift_steps):
+        curr_z = z + (i * lift_step_size)
         if not mm.lift_object(
             scene=scene,
             cam=cam,
@@ -766,24 +911,46 @@ def run_rotation(
             break
 
     seg_df.loc[len(seg_df)] = ["move_to_target", int(scene.t)]
-    mm.move_to_place_xy(
-        scene=scene,
-        cam=cam,
-        franka=franka,
-        gso_object=gso_object,
-        df=df,
-        deform_csv=deform_csv,
-        photo_path=str(paths["images_dir"]),
-        photo_interval=PHOTO_INTERVAL,
-        name=name,
-        end_effector=end_effector,
-        x=place_x,
-        y=place_y,
-        motors_dof=motors_dof,
-        fingers_dof=fingers_dof,
-        grip_force=-current_force,
-        cam_wrist=cam_wrist,
-    )
+    if _is_simple_mode(place_mode):
+        # Keep the object above the same tile: no long XY transport.
+        hold_qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z + 0.12]), quat=np.array([0, 1, 0, 0]))
+        for _ in range(80):
+            franka.control_dofs_position(hold_qpos[:-2], motors_dof)
+            franka.control_dofs_position(np.array([0.0, 0.0]), fingers_dof)
+            make_step(
+                scene=scene,
+                cam=cam,
+                franka=franka,
+                gso_object=gso_object,
+                df=df,
+                deform_csv=deform_csv,
+                photo_path=str(paths["images_dir"]),
+                photo_interval=PHOTO_INTERVAL,
+                name=name,
+                gripper_force=-current_force,
+                cam_wrist=cam_wrist,
+            )
+        place_x, place_y = x, y
+    else:
+        mm.move_to_place_xy(
+            scene=scene,
+            cam=cam,
+            franka=franka,
+            gso_object=gso_object,
+            df=df,
+            deform_csv=deform_csv,
+            photo_path=str(paths["images_dir"]),
+            photo_interval=PHOTO_INTERVAL,
+            name=name,
+            end_effector=end_effector,
+            x=place_x,
+            y=place_y,
+            motors_dof=motors_dof,
+            fingers_dof=fingers_dof,
+            grip_force=-current_force,
+            steps=220 if place_mode == "bump" else 300,
+            cam_wrist=cam_wrist,
+        )
     retreat_target_z = franka.get_links_pos([8]).tolist()[0][2]
 
     seg_df.loc[len(seg_df)] = ["place", int(scene.t)]
@@ -875,9 +1042,16 @@ def _accidental_choice_exists(object_name: str, choice_name: str) -> bool:
     return csv_dir.exists() or img_dir.exists()
 
 
+def _append_output_variant(name: str) -> str:
+    label = OUTPUT_VARIANT_LABEL.strip()
+    if not label:
+        return name
+    return f"{name}_{label}"
+
+
 def _resolve_accidental_choice(object_name: str, target_choice: str, attempt_idx: int) -> str:
     # Preferred names: accidental_drop_1_{target}, accidental_drop_2_{target}
-    base = f"accidental_drop_{attempt_idx}_{target_choice}"
+    base = _append_output_variant(f"accidental_drop_{attempt_idx}_{target_choice}")
     if not _accidental_choice_exists(object_name, base):
         return base
 
@@ -886,6 +1060,45 @@ def _resolve_accidental_choice(object_name: str, target_choice: str, attempt_idx
     while True:
         candidate = f"{base}_run{suffix}"
         if not _accidental_choice_exists(object_name, candidate):
+            return candidate
+        suffix += 1
+
+
+def _choice_exists(object_name: str, choice_name: str) -> bool:
+    csv_dir = DATA_ROOT / DATASET / "csv" / object_name / MATERIAL_TYPE / choice_name
+    img_dir = DATA_ROOT / DATASET / "images" / object_name / MATERIAL_TYPE / choice_name
+    return csv_dir.exists() or img_dir.exists()
+
+
+def _resolve_final_choice(object_name: str, target_choice: str) -> str:
+    """
+    Returns a safe destination choice for successful runs.
+    If target_choice already exists from a previous run, append _runN.
+    """
+    base = _append_output_variant(target_choice)
+    if not _choice_exists(object_name, base):
+        return base
+
+    suffix = 2
+    while True:
+        candidate = f"{base}_run{suffix}"
+        if not _choice_exists(object_name, candidate):
+            return candidate
+        suffix += 1
+
+
+def _resolve_attempt_choice(object_name: str, target_choice: str, attempt_idx: int) -> str:
+    """
+    Returns an isolated working directory name for each attempt to avoid image overwrite.
+    """
+    base = f"_attempt_{attempt_idx}_{target_choice}"
+    if not _choice_exists(object_name, base):
+        return base
+
+    suffix = 2
+    while True:
+        candidate = f"{base}_run{suffix}"
+        if not _choice_exists(object_name, candidate):
             return candidate
         suffix += 1
 
@@ -912,8 +1125,9 @@ def _rename_attempt_outputs(object_name: str, source_choice: str, target_choice:
         shutil.move(str(img_src), str(img_dst))
 
 
-def run_single_simulation(object_name: str, target_choice: str):
-    paths = setup_paths(object_name, target_choice)
+def run_single_simulation(object_name: str, target_choice: str, output_choice: str | None = None):
+    output_choice = target_choice if output_choice is None else output_choice
+    paths = setup_paths(object_name, output_choice)
     force_df = pd.DataFrame(
         columns=[
             "step",
@@ -962,6 +1176,8 @@ def run_single_simulation(object_name: str, target_choice: str):
             "obj_left_finger",
             "obj_right_finger",
             "obj_plane",
+            "obj_target_tile",
+            "obj_obstacle",
         ]
     )
     deform_df = pd.DataFrame(columns=["step", "deformations", "grip_force"])
@@ -970,6 +1186,7 @@ def run_single_simulation(object_name: str, target_choice: str):
         "object_name": object_name,
         "material_type": MATERIAL_TYPE,
         "target_choice": target_choice,
+        "output_choice": output_choice,
         "topple_threshold_deg": float(TOPPLE_THRESHOLD_DEG),
         "target_xy": None,
         "place_mode": None,
@@ -979,8 +1196,12 @@ def run_single_simulation(object_name: str, target_choice: str):
 
     scene = None
     cam = cam_wrist = franka = gso_object = None
+    wall_plan = None
     try:
-        scene, cam, cam_wrist, franka, gso_object, place_target_xy, _ = create_scene(str(paths["input_obj"]))
+        scene, cam, cam_wrist, franka, gso_object, place_target_xy, target_tile, obstacle_entity, wall_plan = create_scene(
+            str(paths["input_obj"]), target_choice
+        )
+        set_object_contact_targets(target_tile=target_tile, obstacle=obstacle_entity)
         run_rotation(
             scene,
             cam,
@@ -994,6 +1215,7 @@ def run_single_simulation(object_name: str, target_choice: str):
             place_target_xy,
             target_choice,
             metadata,
+            wall_plan,
         )
     except EarlyDropDetected as exc:
         segment_df.loc[len(segment_df)] = [f"early_drop_{target_choice}", int(scene.t)]
@@ -1001,6 +1223,7 @@ def run_single_simulation(object_name: str, target_choice: str):
         raise EarlyDropSimulationError(str(exc), paths, force_df, deform_df, segment_df, metadata) from exc
     finally:
         # Ensure each attempt fully tears down Genesis before any retry.
+        set_object_contact_targets(target_tile=None, obstacle=None)
         gs.destroy()
     metadata["terminated_early_drop"] = False
     return paths, force_df, deform_df, segment_df, metadata
@@ -1008,17 +1231,32 @@ def run_single_simulation(object_name: str, target_choice: str):
 
 def main(object_name: str, target_choice: str = "gentle"):
     print(f"🚀 Starting simulation for '{object_name}' with target '{target_choice}'...")
-    try:
-        setup_paths(object_name, target_choice)
-    except FileNotFoundError as e:
-        print(f"❌ Aborting: {e}")
+    input_obj_path = DATA_ROOT / "objects" / DATASET_TYPE / object_name / "model.obj"
+    if DATASET_TYPE == "hugging_face":
+        input_obj_path = DATA_ROOT / "objects" / DATASET_TYPE / object_name / f"{object_name}.glb"
+    if not input_obj_path.exists():
+        print(f"❌ Aborting: Input file not found at: {input_obj_path}")
         return
 
     last_failed = None
     for attempt in range(2):
+        attempt_idx = attempt + 1
+        attempt_choice = _resolve_attempt_choice(object_name, target_choice, attempt_idx)
         try:
-            paths, force_df, deform_df, segment_df, metadata = run_single_simulation(object_name, target_choice)
+            paths, force_df, deform_df, segment_df, metadata = run_single_simulation(
+                object_name, target_choice, output_choice=attempt_choice
+            )
+            final_choice = _resolve_final_choice(object_name, target_choice)
+            metadata["target_choice"] = final_choice
+            metadata["source_target_choice"] = target_choice
+            metadata["attempt_choice"] = attempt_choice
             save_results(force_df, deform_df, segment_df, metadata, paths)
+            _rename_attempt_outputs(object_name, attempt_choice, final_choice)
+            if final_choice != target_choice:
+                print(
+                    f"ℹ️ Destination '{target_choice}' already exists. "
+                    f"Saved to '{final_choice}' instead."
+                )
             print(f"✅ Finished simulation for '{object_name}'.")
             return
         except EarlyDropSimulationError as exc:
@@ -1027,10 +1265,11 @@ def main(object_name: str, target_choice: str = "gentle"):
             early_metadata = dict(exc.metadata)
             early_metadata["target_choice"] = early_choice
             early_metadata["source_target_choice"] = target_choice
+            early_metadata["attempt_choice"] = attempt_choice
             # 1) Save all outputs into the current attempt directory.
             save_results(exc.force_df, exc.deform_df, exc.segment_df, early_metadata, exc.paths)
             # 2) Rename the whole attempt directory to accidental_drop_*.
-            _rename_attempt_outputs(object_name, target_choice, early_choice)
+            _rename_attempt_outputs(object_name, attempt_choice, early_choice)
             print(f"⚠️ Saved early-drop result to '{early_choice}'.")
             last_failed = (early_choice, exc.force_df, exc.deform_df, exc.segment_df, early_metadata)
             if attempt == 0:
@@ -1045,7 +1284,7 @@ def main(object_name: str, target_choice: str = "gentle"):
 
 def get_tasks_to_run():
     if 0: # DO NOT CHANGE
-        return [("001_chips_can", "drop")]
+        return [("001_chips_can", "bump")]
         # return [("001_chips_can", "drop"), ("001_chips_can", "gentle"), ("001_chips_can", "firm"), ("002_master_chef_can", "drop"), ("002_master_chef_can", "gentle"), ("002_master_chef_can", "firm"), ("003_cracker_box", "drop"), ("003_cracker_box", "gentle"), ("003_cracker_box", "firm"), ("004_sugar_box", "drop"), ("004_sugar_box", "gentle"), ("004_sugar_box", "firm"), ("005_tomato_soup_can", "drop"), ("005_tomato_soup_can", "gentle"), ("005_tomato_soup_can", "firm")]
 
     tasks = []

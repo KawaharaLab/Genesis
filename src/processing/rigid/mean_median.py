@@ -6,12 +6,11 @@ import time
 from pathlib import Path
 import csv
 
-from simple_annotation_bank import RobotLabelTemplate
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 SEQUENCE_LENGTH = 80
 WINDOW_STRIDE = 10
-DATA_TYPE = "eval"
+DATA_TYPE = "eval_04272026"  # "train_04272026" or "eval_04272026"
 
 #------------------- Generate labels -------------------#
 
@@ -46,6 +45,7 @@ def get_picked_up_objects(all_objects, material='Rigid'):
             continue
         
         csv_path = os.path.join(picked_up_path, f'{obj_name}_{material}_none.csv')
+        print(f'Checking {csv_path}')
         if not os.path.exists(csv_path):
             print(f'❌ {obj_name} (no csv)')
             continue

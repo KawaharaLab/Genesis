@@ -1,75 +1,41 @@
-import pandas as pd
-import numpy as np
+import os
 
-DEBUG = False
-DATA_TYPE = "train_04072026"  # train / eval
+import numpy as np
+import pandas as pd
+
+DATA_TYPE = "train_04272026"  # train / eval
 DATA_DIR = f"/home/user/Genesis/data/{DATA_TYPE}"
-N = 20 # percentage of maximum allowed label ratio
+N = 18  # percentage of maximum allowed label ratio
 P = N / 100.0
 fix_seed = True
 SEED = 42
 FOR_VISION = False
-
-import os
-if DEBUG:
-    # csv_path = f"{DATA_DIR}/{DATA_TYPE}.csv"
-    csv_path = "data/eval_heavy/eval_heavy_v.csv"
-    # csv_path = "/home/user/Genesis/data/train_old/train_old_thin_20pct.csv"
-    csv_path = "/home/user/Genesis/data/eval_heavy/eval_heavy_thin_15pct.csv"
-
-    df = pd.read_csv(csv_path)
-    print(f"dataset: {csv_path}")
-
-    targets = ["label", "action", "weight", "interaction", "annotation"]
-    # label column distribution
-    for target in targets:
-        if target in df.columns:
-            labels = df[target].dropna()
-            total = len(labels)
-            vc = labels.value_counts()
-            print(f"\n{target} distribution:")
-            for lbl, cnt in vc.items():
-                pct = cnt / total * 100 if total else 0
-                print(f"  {lbl}: {cnt} ({pct:.2f}%)")
-        else:
-            print(f"\n{target} column not found")
-
-    exit(0)
-#####################################################
 
 csv_path = f"{DATA_DIR}/{DATA_TYPE}.csv"
 df = pd.read_csv(csv_path)
 data_len = len(df)
 print(f"original size: {data_len}")
 
-# When FOR_VISION, synchronize label with annotation keywords (slip/stable) before further processing
-# if FOR_VISION and "annotation" in df.columns and "label" in df.columns:
-#     ann_series = df["annotation"].astype(str)
-#     slip_mask_sync = ann_series.str.contains("slip", case=False, na=False)
-#     stable_mask_sync = ann_series.str.contains("stable", case=False, na=False)
-#     # Apply slip first so "slip" dominates if both appear (rare but deterministic)
-#     updated_slip = slip_mask_sync.sum()
-#     updated_stable = (~slip_mask_sync & stable_mask_sync).sum()
-#     if updated_slip or updated_stable:
-#         df.loc[slip_mask_sync, "label"] = "slip"
-#         df.loc[~slip_mask_sync & stable_mask_sync, "label"] = "stable"
-#         print(f"[vision sync] set label=slip for {updated_slip} rows; label=stable for {updated_stable} rows")
-
 if "label" not in df.columns:
     raise ValueError("CSV に 'label' 列が必要です")
 
-# Normalize label column (handle missing and empty strings)
-# labels_series = df["annotation"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
 labels_series = df["label"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
-df["__normalized_label"] = labels_series  # working column
+df["__normalized_label"] = labels_series
 
-# ------------------------------------------------------------------
-# FOR_VISION 特別処理: slip / stable を 1:1 で均衡させ、他ラベルは除外
-# ------------------------------------------------------------------
+if "weight" in df.columns:
+    weights = df["weight"].fillna("<<MISSING>>").astype(str).str.strip().str.lower().replace("", "<<EMPTY>>")
+else:
+    weights = pd.Series(["<<MISSING>>"] * len(df), index=df.index)
+
+weights = weights.replace({"lightweight": "light", "heavyweight": "heavy"})
+weights = np.where(np.isin(weights, ["light", "heavy"]), weights, "unknown")
+df["__normalized_weight"] = weights
+
+
+# FOR_VISION mode keeps the existing slip/stable balancing behavior.
 if FOR_VISION:
-    # 1) filter rows where start % 80 == 0
     if "start" in df.columns:
-        start_mask = (df["start"]!= 0) & (df["start"] % 80 == 0)
+        start_mask = (df["start"] != 0) & (df["start"] % 80 == 0)
         removed = (~start_mask).sum()
         print(f"filtered out (start %80 != 0): {removed}")
         df_v = df.loc[start_mask].copy()
@@ -79,13 +45,11 @@ if FOR_VISION:
 
     if df_v.empty:
         print("[WARN] Data is empty after filtering. Exiting.")
-        exit(0)
+        raise SystemExit(0)
 
-    # labels_v = df_v["annotation"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
     labels_v = df_v["label"].fillna("<<MISSING>>").astype(str).str.strip().replace("", "<<EMPTY>>")
     df_v["__normalized_label"] = labels_v
 
-    # 3) extract slip / stable
     slip_mask = labels_v.str.contains("slip", case=False, na=False)
     stable_mask = labels_v.str.contains("stable", case=False, na=False)
 
@@ -112,94 +76,163 @@ if FOR_VISION:
     final_size = len(df_final)
     print(f"final size (vision): {final_size}")
 
-    # show distribution
     vision_counts = df_final["__normalized_label"].value_counts()
     print("[after vision] distribution (by count desc):")
     for lbl, cnt in vision_counts.sort_values(ascending=False).items():
         print(f"  {lbl}: {cnt} ({cnt / final_size * 100 if final_size else 0:.2f}%)")
 
-    # 作業列削除
-    df_final.drop(columns=["__normalized_label"], inplace=True)
+    df_final.drop(columns=["__normalized_label", "__normalized_weight"], inplace=True)
     out_path = f"{csv_path.replace('.csv', '')}_vision.csv"
     df_final.to_csv(out_path, index=False)
     print(f"saved -> {out_path}")
-    exit(0)
+    raise SystemExit(0)
 
 
-label_counts = labels_series.value_counts().sort_index()
-print("\n[before] label distribution:")
-for lbl, cnt in label_counts.items():
-    print(f"  {lbl}: {cnt} ({cnt / data_len * 100:.2f}%)")
-
-unique_labels = label_counts.index.tolist()
-L = len(unique_labels)
-if L == 0:
-    print("No labels found. Nothing to thin.")
-    exit(0)
-
-# Feasibility check: if P < 1/L it's impossible to make every label <= P
-P_min = 1.0 / L
-if P < P_min:
-    raise ValueError(f"N%={N}% is impossible for {L} unique labels (minimum required ratio={P_min*100:.2f}%). Increase N to >= {P_min*100:.2f}.")
-
-# random number generator
 rng = np.random.default_rng(SEED) if fix_seed else np.random.default_rng()
 
-# initialize indices to keep per label
-label_to_indices: dict[str, list[int]] = {}
-for lbl in unique_labels:
-    label_to_indices[lbl] = df.index[df["__normalized_label"] == lbl].tolist()
 
-# Iteratively downsample labels that exceed the threshold
-iteration = 0
-while True:
-    iteration += 1
-    # current active total
-    active_total = sum(len(v) for v in label_to_indices.values())
-    if active_total == 0:
-        break
+def apply_label_ratio_cap(df_in: pd.DataFrame, ratio_cap: float, rng_local: np.random.Generator) -> pd.DataFrame:
+    label_counts = df_in["__normalized_label"].value_counts().sort_index()
+    unique_labels = label_counts.index.tolist()
+    L = len(unique_labels)
+    if L == 0:
+        return df_in.iloc[0:0].copy()
 
-    changed = False
-    threshold = P * active_total
-    # downsample any label that exceeds the threshold
-    for lbl, inds in list(label_to_indices.items()):
-        c = len(inds)
-        if c > threshold:
-            allowed = int(np.floor(threshold))
-            if allowed < 1:
-                allowed = 1  # keep at least 1 item per label (change to 0 if desired)
-            if c > allowed:
-                # randomly keep only 'allowed' items
-                keep = rng.choice(inds, size=allowed, replace=False).tolist()
-                label_to_indices[lbl] = keep
-                changed = True
-    if not changed:
-        break
+    p_min = 1.0 / L
+    if ratio_cap < p_min:
+        raise ValueError(
+            f"N%={N}% is impossible for {L} unique labels (minimum required ratio={p_min*100:.2f}%). "
+            f"Increase N to >= {p_min*100:.2f}."
+        )
 
-# final set of indices to keep
-keep_indices = set()
-for lst in label_to_indices.values():
-    keep_indices.update(lst)
+    label_to_indices: dict[str, list[int]] = {}
+    for lbl in unique_labels:
+        label_to_indices[lbl] = df_in.index[df_in["__normalized_label"] == lbl].tolist()
 
-df_final = df.loc[sorted(keep_indices)].copy()
+    while True:
+        active_total = sum(len(v) for v in label_to_indices.values())
+        if active_total == 0:
+            break
+
+        changed = False
+        threshold = ratio_cap * active_total
+        for lbl, inds in list(label_to_indices.items()):
+            c = len(inds)
+            if c > threshold:
+                allowed = max(1, int(np.floor(threshold)))
+                if c > allowed:
+                    keep = rng_local.choice(inds, size=allowed, replace=False).tolist()
+                    label_to_indices[lbl] = keep
+                    changed = True
+        if not changed:
+            break
+
+    keep_indices = set()
+    for lst in label_to_indices.values():
+        keep_indices.update(lst)
+    return df_in.loc[sorted(keep_indices)].copy()
+
+
+def weight_balance(df_in: pd.DataFrame, rng_local: np.random.Generator) -> pd.DataFrame:
+    known = df_in[df_in["__normalized_weight"].isin(["light", "heavy"])].copy()
+    if known.empty:
+        print("[weight] no light/heavy rows found; skip weight balancing")
+        return df_in
+
+    light_df = known[known["__normalized_weight"] == "light"]
+    heavy_df = known[known["__normalized_weight"] == "heavy"]
+    if light_df.empty or heavy_df.empty:
+        print("[weight] only one side exists; skip weight balancing")
+        return df_in
+
+    target_per_weight = min(len(light_df), len(heavy_df))
+    print(f"[weight] target per class: {target_per_weight} (light={len(light_df)}, heavy={len(heavy_df)})")
+
+    # Preserve label distribution inside each weight class as much as possible.
+    label_probs = known["__normalized_label"].value_counts(normalize=True)
+
+    selected_indices: list[int] = []
+    for w in ["light", "heavy"]:
+        wdf = known[known["__normalized_weight"] == w]
+        counts = wdf["__normalized_label"].value_counts()
+
+        desired = (label_probs * target_per_weight).fillna(0.0)
+        base = desired.astype(int)
+        base = np.minimum(base, counts.reindex(base.index).fillna(0).astype(int))
+
+        picked = int(base.sum())
+        need = target_per_weight - picked
+        remainder = (desired - base).sort_values(ascending=False)
+
+        if need > 0:
+            for lbl in remainder.index:
+                if need <= 0:
+                    break
+                available = int(counts.get(lbl, 0) - base.get(lbl, 0))
+                if available <= 0:
+                    continue
+                add = min(available, need)
+                base.loc[lbl] = int(base.get(lbl, 0)) + add
+                need -= add
+
+        if need > 0:
+            extra_pool = wdf.index.tolist()
+            take_extra = rng_local.choice(extra_pool, size=need, replace=False).tolist()
+            selected_indices.extend(take_extra)
+
+        for lbl, n_take in base.items():
+            if n_take <= 0:
+                continue
+            pool = wdf[wdf["__normalized_label"] == lbl].index.tolist()
+            if len(pool) <= n_take:
+                selected_indices.extend(pool)
+            else:
+                selected_indices.extend(rng_local.choice(pool, size=n_take, replace=False).tolist())
+
+    selected_indices = sorted(set(selected_indices))
+    out = known.loc[selected_indices].copy()
+    return out
+
+
+before_counts = df["__normalized_label"].value_counts().sort_values(ascending=False)
+print("\n[before] label distribution:")
+for lbl, cnt in before_counts.items():
+    print(f"  {lbl}: {cnt} ({cnt / data_len * 100:.2f}%)")
+
+before_w = df["__normalized_weight"].value_counts().sort_values(ascending=False)
+print("[before] weight distribution:")
+for w, cnt in before_w.items():
+    print(f"  {w}: {cnt} ({cnt / data_len * 100:.2f}%)")
+
+# 1) label ratio cap (existing behavior)
+df_thin = apply_label_ratio_cap(df, P, rng)
+
+# 2) balance weight light/heavy (new)
+df_thin = weight_balance(df_thin, rng)
+
+# 3) re-apply label ratio cap after weight balancing
+df_final = apply_label_ratio_cap(df_thin, P, rng)
+
 final_size = len(df_final)
-
-final_counts = df_final["__normalized_label"].value_counts()
 print("\n[after] label distribution (by count desc):")
-for lbl, cnt in final_counts.sort_values(ascending=False).items():
-    pct = cnt / final_size * 100 if final_size else 0
-    print(f"  {lbl}: {cnt} ({pct:.2f}%)")
+final_counts = df_final["__normalized_label"].value_counts().sort_values(ascending=False)
+for lbl, cnt in final_counts.items():
+    print(f"  {lbl}: {cnt} ({cnt / final_size * 100 if final_size else 0:.2f}%)")
 
-worst_lbl = max(final_counts.items(), key=lambda x: x[1] / final_size if final_size else 0)[0]
-worst_ratio = final_counts[worst_lbl] / final_size * 100 if final_size else 0
-print(f"\nWorst label ratio: {worst_lbl} = {worst_ratio:.2f}% (limit {N:.2f}%)")
+print("[after] weight distribution:")
+final_w = df_final["__normalized_weight"].value_counts().sort_values(ascending=False)
+for w, cnt in final_w.items():
+    print(f"  {w}: {cnt} ({cnt / final_size * 100 if final_size else 0:.2f}%)")
+
+if final_size > 0:
+    worst_lbl = max(final_counts.items(), key=lambda x: x[1] / final_size)[0]
+    worst_ratio = final_counts[worst_lbl] / final_size * 100
+    print(f"\nWorst label ratio: {worst_lbl} = {worst_ratio:.2f}% (limit {N:.2f}%)")
 
 print(f"dropped: {data_len - final_size}")
 print(f"final size: {final_size} (was {data_len})")
 
-# 作業列削除
-df_final.drop(columns=["__normalized_label"], inplace=True)
-
+df_final.drop(columns=["__normalized_label", "__normalized_weight"], inplace=True)
 out_path = f"{csv_path.replace('.csv', '')}_thin_{N}pct.csv"
 df_final.to_csv(out_path, index=False)
 print(f"saved -> {out_path}")

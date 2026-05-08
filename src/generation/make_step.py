@@ -1,5 +1,6 @@
 import os
 import imageio.v3 as iio
+import numpy as np
 
 
 class EarlyDropDetected(RuntimeError):
@@ -10,6 +11,8 @@ EARLY_DROP_MONITOR = False
 INTENTIONAL_RELEASE = False
 EARLY_DROP_STREAK = 0
 EARLY_DROP_PENDING = False
+TARGET_TILE_LINK_IDX = None
+OBSTACLE_LINK_IDX = None
 
 
 def set_early_drop_monitor(enabled: bool):
@@ -27,9 +30,34 @@ def set_intentional_release(enabled: bool):
         EARLY_DROP_PENDING = False
 
 
+def set_object_contact_targets(target_tile=None, obstacle=None):
+    """
+    Register optional support/obstacle entities used for per-step contact logging.
+    """
+    global TARGET_TILE_LINK_IDX, OBSTACLE_LINK_IDX
+    TARGET_TILE_LINK_IDX = None if target_tile is None else int(target_tile.idx)
+    OBSTACLE_LINK_IDX = None if obstacle is None else int(obstacle.idx)
+
+
 def get_bounding_box(gso_object):
     aabbs = gso_object.get_AABB().cpu().numpy()
     return aabbs[0].tolist() + aabbs[1].tolist()
+
+
+def _as_int_set(values) -> set[int]:
+    if values is None:
+        return set()
+    arr = values
+    if hasattr(arr, "detach"):
+        arr = arr.detach().cpu().numpy()
+    arr = np.asarray(arr).reshape(-1)
+    out = set()
+    for v in arr.tolist():
+        try:
+            out.add(int(v))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 def _execute_simulation_step(
     scene,
@@ -74,15 +102,21 @@ def _execute_simulation_step(
     obj_mass = [gso_object.get_mass()]
     obj_bounding_box = get_bounding_box(gso_object)
 
-    obj_contacts = [0, 0, 0]
+    obj_contacts = [0, 0, 0, 0, 0]
     obj_contact_info = gso_object.get_contacts()
-    obj_contact_pairs = obj_contact_info["link_a"]
+    link_a = obj_contact_info.get("link_a", [])
+    link_b = obj_contact_info.get("link_b", [])
+    obj_contact_pairs = _as_int_set(link_a) | _as_int_set(link_b)
     if franka.get_link("left_finger").idx in obj_contact_pairs:
         obj_contacts[0] = 1
     if franka.get_link("right_finger").idx in obj_contact_pairs:
         obj_contacts[1] = 1
     if 0 in obj_contact_pairs:
         obj_contacts[2] = 1
+    if TARGET_TILE_LINK_IDX is not None and TARGET_TILE_LINK_IDX in obj_contact_pairs:
+        obj_contacts[3] = 1
+    if OBSTACLE_LINK_IDX is not None and OBSTACLE_LINK_IDX in obj_contact_pairs:
+        obj_contacts[4] = 1
     df.loc[len(df)] = [scene.t] + force_torques + dofs + eef_pos + finger_control + obj_com + obj_mass + obj_bounding_box + obj_contacts
 
     global EARLY_DROP_STREAK, EARLY_DROP_PENDING
