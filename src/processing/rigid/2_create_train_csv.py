@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pandas as pd
 
-MODE = "train_04272026"  # "train" or "eval"
+from force_window_filter import filter_all_zero_force_windows
+
+MODE = os.environ.get("MODE", "eval_04272026")  # "train" or "eval"
 DATA_DIR = f"/home/user/Genesis/data/{MODE}"
 out_path = f"{DATA_DIR}/{MODE}.csv"
 
@@ -43,6 +45,8 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
             return "hold"
         if "grasp" in text:
             return "grasp"
+        if "lift" in text:
+            return "lift"
         return ""
 
     def _fallback_interaction(annotation: str) -> str:
@@ -89,7 +93,9 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
             return "place firmly"
         if "press" in action:
             return "press"
-        if action in {"grasp", "place", "bump", "hold", "accidental drop", "drop"}:
+        if "grasp" in action:
+            return "grasp"
+        if action in {"lift", "place", "bump", "hold", "accidental drop", "drop"}:
             return action
         return "unknown"
 
@@ -128,6 +134,10 @@ def main() -> int:
 
     out = pd.concat(dfs, ignore_index=True)
     out = add_labels(out)
+    before_filter = len(out)
+    out, removed_zero = filter_all_zero_force_windows(out)
+    if removed_zero:
+        print(f"Removed {removed_zero} all-zero force windows ({before_filter} -> {len(out)}).")
     out.to_csv(out_path, index=False)
 
     print(f"Wrote {out_path} with {len(out)} rows from {len(files)} files.")

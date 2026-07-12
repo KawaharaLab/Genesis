@@ -13,7 +13,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = SentenceTransformer(model_name, device=device)
 model.max_seq_length = 512
 
-csv_path = "data/eval_04272026/eval_04272026_thin_17pct.csv"
+csv_path = "data/eval_04272026/eval_04272026_thin_15pct.csv"
 df = pd.read_csv(csv_path)
 
 target_cols = ["label", "action", "weight", "interaction", "annotation"]

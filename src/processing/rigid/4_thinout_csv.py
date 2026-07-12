@@ -3,9 +3,11 @@ import os
 import numpy as np
 import pandas as pd
 
-DATA_TYPE = "train_04272026"  # train / eval
+from force_window_filter import filter_all_zero_force_windows
+
+DATA_TYPE = os.environ.get("DATA_TYPE", "eval_04272026")  # train / eval
 DATA_DIR = f"/home/user/Genesis/data/{DATA_TYPE}"
-N = 18  # percentage of maximum allowed label ratio
+N = int(os.environ.get("THIN_PCT", "15"))  # percentage of maximum allowed label ratio
 P = N / 100.0
 fix_seed = True
 SEED = 42
@@ -15,6 +17,11 @@ csv_path = f"{DATA_DIR}/{DATA_TYPE}.csv"
 df = pd.read_csv(csv_path)
 data_len = len(df)
 print(f"original size: {data_len}")
+
+df, removed_zero_windows = filter_all_zero_force_windows(df)
+if removed_zero_windows:
+    print(f"filtered out all-zero force windows: {removed_zero_windows}")
+data_len = len(df)
 
 if "label" not in df.columns:
     raise ValueError("CSV に 'label' 列が必要です")

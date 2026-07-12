@@ -8,12 +8,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from force_window_filter import SEQUENCE_LENGTH, force_window_is_all_zero
+
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
-SEQUENCE_LENGTH = 80
-DATASET = "train_04272026"
+DATASET = os.environ.get("DATASET", "train_04272026")
 WINDOW_STRIDE = 10
 # WINDOW_STRIDE = 40 if "eval" in DATASET else 10
 MAX_FORCE_ABS = 100.0
+CONTACT_FORCE_COLS = ["left_fx", "left_fy", "left_fz", "right_fx", "right_fy", "right_fz"]
 SLOW_SLIP_THRESHOLD = 0.002
 FAST_SLIP_THRESHOLD = 0.004
 PLACE_ACTION = "place"
@@ -23,12 +25,27 @@ def detect_bugs(force_df: pd.DataFrame, start: int, length: int = SEQUENCE_LENGT
     """
     Exclude segments containing extreme contact-force readings.
     """
-    force_cols = ["left_fx", "left_fy", "left_fz", "right_fx", "right_fy", "right_fz"]
     end = start + length
     seg = force_df.iloc[start:end]
     if seg.empty:
         return True
-    return bool(np.any(np.abs(seg[force_cols].to_numpy()) >= MAX_FORCE_ABS))
+    return bool(np.any(np.abs(seg[CONTACT_FORCE_COLS].to_numpy()) >= MAX_FORCE_ABS))
+
+
+def _has_bimanual_contact(force_df: pd.DataFrame, start: int, length: int = SEQUENCE_LENGTH) -> bool:
+    """
+    Keep a window only when both fingers touch the object at least once in the window.
+    """
+    end = start + length
+    seg = force_df.iloc[start:end]
+    if seg.empty:
+        return False
+    if "obj_left_finger" not in seg.columns or "obj_right_finger" not in seg.columns:
+        return False
+
+    left = seg["obj_left_finger"].to_numpy(dtype=bool)
+    right = seg["obj_right_finger"].to_numpy(dtype=bool)
+    return bool(np.any(left) and np.any(right))
 
 
 def split_for_model(force_df: pd.DataFrame) -> list[dict]:
@@ -38,7 +55,11 @@ def split_for_model(force_df: pd.DataFrame) -> list[dict]:
     start = 0
     windows = []
     while start + SEQUENCE_LENGTH <= len(force_df):
-        if not detect_bugs(force_df, start):
+        if (
+            not detect_bugs(force_df, start)
+            and not force_window_is_all_zero(force_df, start)
+            and _has_bimanual_contact(force_df, start)
+        ):
             windows.append({"start": start})
         start += WINDOW_STRIDE
     return windows
@@ -74,6 +95,17 @@ def _first_rising_contact_after(contact: np.ndarray, start_step: int | None) -> 
     return None
 
 
+def _first_falling_contact_after(contact: np.ndarray, start_step: int | None) -> int | None:
+    if contact.size == 0:
+        return None
+    begin = max(1, int(start_step) if start_step is not None else 1)
+    begin = min(begin, len(contact) - 1)
+    for i in range(begin, len(contact)):
+        if contact[i - 1] and (not contact[i]):
+            return i
+    return None
+
+
 def _support_contact_series(force_df: pd.DataFrame) -> np.ndarray:
     if force_df.empty:
         return np.array([], dtype=bool)
@@ -90,6 +122,10 @@ def _support_contact_series(force_df: pd.DataFrame) -> np.ndarray:
 
 def _first_support_contact_after(force_df: pd.DataFrame, start_step: int | None) -> int | None:
     return _first_rising_contact_after(_support_contact_series(force_df), start_step)
+
+
+def _first_support_detach_after(force_df: pd.DataFrame, start_step: int | None) -> int | None:
+    return _first_falling_contact_after(_support_contact_series(force_df), start_step)
 
 
 def _first_obstacle_contact_after(force_df: pd.DataFrame, start_step: int | None) -> int | None:
@@ -208,6 +244,7 @@ def _determine_action(
     place_start_step: int | None,
     first_support_contact_idx: int | None,
     first_grasp_contact_idx: int | None,
+    first_lift_idx: int | None,
     first_release_idx: int | None,
     first_obstacle_contact_idx: int | None,
     bump_push_step: int | None,
@@ -217,6 +254,7 @@ def _determine_action(
 ) -> str:
     seg_end = start + len(force_segment) - 1
     includes_grasp_contact = first_grasp_contact_idx is not None and (start <= first_grasp_contact_idx <= seg_end)
+    includes_lift = first_lift_idx is not None and (start <= first_lift_idx <= seg_end)
     includes_release = first_release_idx is not None and (start <= first_release_idx <= seg_end)
     includes_support_contact = first_support_contact_idx is not None and (start <= first_support_contact_idx <= seg_end)
     includes_obstacle_contact = (
@@ -261,8 +299,12 @@ def _determine_action(
         return "hold"
 
     # Pre-placement phase.
+    if includes_grasp_contact and includes_lift:
+        return "grasp then lift"
     if includes_grasp_contact:
         return "grasp"
+    if includes_lift:
+        return "lift"
     if _hold_condition(force_segment):
         return "hold"
     if early_drop_case:
@@ -290,6 +332,20 @@ def _build_annotation(action: str, interaction: str | None, force_segment: pd.Da
         if slow_slip:
             return f"Grasping {obj_phrase}, letting it slip slowly."
         return f"Grasping {obj_phrase} with stable contact."
+
+    if action == "lift":
+        if fast_slip:
+            return f"Lifting {obj_phrase}, letting it slip quickly."
+        if slow_slip:
+            return f"Lifting {obj_phrase}, letting it slip slowly."
+        return f"Lifting {obj_phrase} with stable contact."
+
+    if action == "grasp then lift":
+        if fast_slip:
+            return f"Grasping then lifting {obj_phrase}, letting it slip quickly."
+        if slow_slip:
+            return f"Grasping then lifting {obj_phrase}, letting it slip slowly."
+        return f"Grasping then lifting {obj_phrase} with stable contact."
 
     if action == "hold":
         if fast_slip:
@@ -398,6 +454,7 @@ def main(obj_name: str, csv_path: str, deformation: str, material: str = "Rigid"
     first_support_contact_idx = _first_support_contact_after(force_df, start_step=place_start_step)
     first_obstacle_contact_idx = _first_obstacle_contact_after(force_df, start_step=place_start_step)
     first_grasp_contact_idx = _first_grasp_contact_index(force_df)
+    first_lift_idx = _first_support_detach_after(force_df, start_step=first_grasp_contact_idx)
     hold_start_step = _first_step(steps_df, {"hold"})
     release_search_start = hold_start_step if hold_start_step is not None else place_start_step
     first_release_idx = _first_release_index(force_df, release_search_start)
@@ -415,6 +472,8 @@ def main(obj_name: str, csv_path: str, deformation: str, material: str = "Rigid"
             continue
         if detect_bugs(force_df, start):
             continue
+        if force_window_is_all_zero(force_df, start):
+            continue
 
         action = _determine_action(
             start=start,
@@ -422,6 +481,7 @@ def main(obj_name: str, csv_path: str, deformation: str, material: str = "Rigid"
             place_start_step=place_start_step,
             first_support_contact_idx=first_support_contact_idx,
             first_grasp_contact_idx=first_grasp_contact_idx,
+            first_lift_idx=first_lift_idx,
             first_release_idx=first_release_idx,
             first_obstacle_contact_idx=first_obstacle_contact_idx,
             bump_push_step=bump_push_step,

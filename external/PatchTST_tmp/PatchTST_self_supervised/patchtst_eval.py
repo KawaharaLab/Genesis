@@ -155,6 +155,7 @@ def load_force_segments(eval_dir, index_csv="eval_thin_15pct.csv",
     meta_starts = []
     skipped_nonfinite = 0
     skipped_short = 0
+    all_zero_windows = 0
     for _, row in df.iterrows():
         fcsv = os.path.join(eval_dir, "csv", row["csv_path"])
         if not os.path.exists(fcsv):
@@ -170,6 +171,8 @@ def load_force_segments(eval_dir, index_csv="eval_thin_15pct.csv",
         if drop_nonfinite and not np.isfinite(arr).all():
             skipped_nonfinite += 1
             continue
+        if np.all(arr == 0.0):
+            all_zero_windows += 1
         segments.append(arr)  # [seq_len, nvars]
         meta_csv_paths.append(row["csv_path"])
         meta_starts.append(start)
@@ -179,10 +182,21 @@ def load_force_segments(eval_dir, index_csv="eval_thin_15pct.csv",
         else:
             labels.append(str(row.get(target_col, row.get(f"{target_col}_emb_index"))))
     if debug:
-        print(f"[debug] load_force_segments: total_rows={len(df)} usable={len(segments)} short_skipped={skipped_short} nonfinite_skipped={skipped_nonfinite}")
+        print(
+            f"[debug] load_force_segments: total_rows={len(df)} usable={len(segments)} "
+            f"short_skipped={skipped_short} nonfinite_skipped={skipped_nonfinite} "
+            f"all_zero_windows={all_zero_windows}"
+        )
     if len(segments)==0:
         raise RuntimeError("No usable segments after filtering.")
-    return np.stack(segments), labels, meta_csv_paths, meta_starts   # (N, seq_len, nvars), labels, metadata
+    stats = {
+        "total_rows": len(df),
+        "usable_segments": len(segments),
+        "skipped_short": skipped_short,
+        "skipped_nonfinite": skipped_nonfinite,
+        "all_zero_windows": all_zero_windows,
+    }
+    return np.stack(segments), labels, meta_csv_paths, meta_starts, stats   # (N, seq_len, nvars), labels, metadata, stats
 
 def build_patchtst_model(nvars, args):
     num_patch = (max(args.context_points, args.patch_len)-args.patch_len)//args.stride + 1
@@ -483,6 +497,7 @@ def main():
         os.makedirs(f"data/{model_id}/{model_name}/pred", exist_ok=True)
     # ターゲット別メトリクス格納
     metrics_by_target = {}
+    zero_windows_by_target = {}
 
     for target in targets:
         umap_out = f"data/{model_id}/{model_name}/umap/{target}_umap.png"
@@ -491,13 +506,14 @@ def main():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Load force segments
-        force_segments, labels, csv_paths, starts = load_force_segments(
+        force_segments, labels, csv_paths, starts, load_stats = load_force_segments(
             args.eval_dir, args.eval_csv,
             seq_len=args.context_points,
             target_col=target,
             drop_nonfinite=True,
             debug=args.debug
         )
+        zero_windows_by_target[target] = load_stats["all_zero_windows"]
         nvars = force_segments.shape[2]
 
         # Build model & load checkpoint / restore proj for contrastive
@@ -689,6 +705,13 @@ def main():
         with open(out_md, 'w', encoding='utf-8') as f:
             f.write("# UMAP Prototype Classification Metrics Summary\n\n")
             f.write("\n".join(lines) + "\n")
+            if len(zero_windows_by_target) > 0:
+                f.write("\n## All-zero Force Windows\n\n")
+                f.write("| Target | Count |\n")
+                f.write("| --- | --- |\n")
+                for target in targets:
+                    if target in zero_windows_by_target:
+                        f.write(f"| {target} | {zero_windows_by_target[target]} |\n")
         print(f"Saved aggregated UMAP metrics markdown -> {out_md}")
 
 if __name__ == "__main__":

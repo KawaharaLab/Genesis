@@ -358,6 +358,8 @@ def main():
         cam.stop_recording(save_to_filename=args.video, fps=effective_fps)
         print(f"saved -> {args.video}")
 
+    gs.destroy()
+
 
 if __name__ == "__main__":
     main()

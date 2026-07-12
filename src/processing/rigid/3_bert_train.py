@@ -13,7 +13,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = SentenceTransformer(model_name, device=device)
 model.max_seq_length = 512
 
-csv_path = "data/train_04272026/train_04272026_thin_18pct.csv"
+csv_path = "data/train_04272026/train_04272026_thin_15pct.csv"
 df = pd.read_csv(csv_path)
 
 # Collect unique annotations (ignore NaN / empty)

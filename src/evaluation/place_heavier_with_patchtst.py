@@ -31,11 +31,11 @@ SIM_STEP_COUNT = 0
 TRACE_RECORDER = {
     "enabled": False,
     "images_dir": None,
-    "image_stride": 20,
+    "image_stride": 80,
 }
 
 PANDA_XML_PATH = ROOT / "genesis" / "assets" / "xml" / "franka_emika_panda" / "panda.xml"
-DEFAULT_CKPT = ROOT / "data" / "PatchTST" / "twilight-music-38_epoch4000.pth"
+DEFAULT_CKPT = ROOT / "data" / "PatchTST" / "laced-lion-89_epoch4000.pth"
 TEXT_EMB_DIR = ROOT / "data" / "text_emb"
 
 
@@ -171,13 +171,18 @@ def control_pose(franka, motors_dof, fingers_dof, qpos, gripper_opening):
 def sim_step(scene, cam=None, record=False):
     global SIM_STEP_COUNT
     scene.step()
-    should_render = record or TRACE_RECORDER["enabled"]
+    trace_enabled = bool(TRACE_RECORDER["enabled"] and TRACE_RECORDER["images_dir"] is not None)
+    trace_step = trace_enabled and (SIM_STEP_COUNT % max(1, int(TRACE_RECORDER["image_stride"])) == 0)
+    should_render = bool(record or trace_step)
     if should_render and cam is not None:
-        rgb, _, _, _ = cam.render(rgb=True)
-        if TRACE_RECORDER["enabled"] and TRACE_RECORDER["images_dir"] is not None:
-            if SIM_STEP_COUNT % max(1, int(TRACE_RECORDER["image_stride"])) == 0:
-                frame_path = TRACE_RECORDER["images_dir"] / f"frame_{SIM_STEP_COUNT:06d}.png"
-                plt.imsave(frame_path, rgb)
+        try:
+            rgb, _, _, _ = cam.render(rgb=True)
+        except Exception as exc:
+            print(f"[warn] camera render failed: {exc}")
+            rgb = None
+        if rgb is not None and trace_step:
+            frame_path = TRACE_RECORDER["images_dir"] / f"frame_{SIM_STEP_COUNT:06d}.png"
+            plt.imsave(frame_path, rgb)
     SIM_STEP_COUNT += 1
 
 
@@ -203,6 +208,23 @@ def save_dict_rows_to_csv(rows: list[dict], csv_path: Path):
         writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def save_force_plot_pair(left_force: np.ndarray, right_force: np.ndarray, out_path: Path):
+    l = np.asarray(left_force, dtype=np.float32)
+    r = np.asarray(right_force, dtype=np.float32)
+    t = np.arange(min(len(l), len(r)), dtype=np.int32)
+    fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+    ax.plot(t, l[: len(t), 2], label="left_fz")
+    ax.plot(t, r[: len(t), 2], label="right_fz")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Force (N)")
+    ax.grid(True)
+    ax.legend()
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
 
 
 def move_ee(scene, franka, end_effector, motors_dof, fingers_dof, pos, gripper_opening, steps=120, cam=None, record=False):
@@ -257,6 +279,32 @@ def hold_and_collect_force(
         pad = np.repeat(arr[-1:, :], SEQ_LEN - arr.shape[0], axis=0)
         arr = np.concatenate([arr, pad], axis=0)
     return arr[-SEQ_LEN:, :]
+
+
+def get_force_vector_12(franka) -> np.ndarray:
+    f = np.asarray(franka.get_links_contact_force([9, 10], sensor=True).cpu().numpy(), dtype=np.float32)
+    t = np.asarray(franka.get_links_contact_torque([9, 10], sensor=True).cpu().numpy(), dtype=np.float32)
+    if f.ndim == 3:
+        f = f[0]
+    if t.ndim == 3:
+        t = t[0]
+    return np.concatenate([f[0], t[0], f[1], t[1]], axis=0).astype(np.float32)
+
+
+def object_touching_floor(obj_entity) -> bool:
+    contacts = obj_entity.get_contacts()
+    link_a = contacts.get("link_a", [])
+    link_b = contacts.get("link_b", [])
+    out = set()
+    for arr in (link_a, link_b):
+        if hasattr(arr, "detach"):
+            arr = arr.detach().cpu().numpy()
+        for v in np.asarray(arr).reshape(-1).tolist():
+            try:
+                out.add(int(v))
+            except (TypeError, ValueError):
+                pass
+    return 0 in out
 
 
 def get_aabb_min_max(obj_entity):
@@ -327,14 +375,54 @@ def pick_lift_hold_and_putback(
     )
 
     set_gripper(scene, franka, motors_dof, fingers_dof, 0.04, 0.0, scaled_steps(60, motion_speed), cam, record)
-    move_ee(
-        scene, franka, end_effector, motors_dof, fingers_dof, (x, y, safe_retract_z), 0.0, scaled_steps(50, motion_speed), cam, record
-    )
-    move_ee(
-        scene, franka, end_effector, motors_dof, fingers_dof, (x, y, lift_z), 0.0, scaled_steps(100, motion_speed), cam, record
+    # Hold for 0.5 s right after grasping, then start lifting.
+    hold_pose_after_grasp_steps = int(round(0.5 / DT))
+    hold_and_collect_force(
+        scene,
+        franka,
+        end_effector,
+        motors_dof,
+        fingers_dof,
+        (x, y, clamp_z),
+        0.0,
+        hold_pose_after_grasp_steps,
+        cam,
+        record,
     )
 
-    force_seq = hold_and_collect_force(
+    lift_force_seq_all = []
+    liftoff_step_idx = None
+    was_touching_floor = object_touching_floor(obj_entity)
+
+    for target, steps in [((x, y, safe_retract_z), scaled_steps(50, motion_speed)), ((x, y, lift_z), scaled_steps(100, motion_speed))]:
+        current = franka.get_links_pos([8])[0].cpu().numpy().reshape(3)
+        target_arr = np.array(target, dtype=float)
+        for i in range(max(1, steps)):
+            alpha = (i + 1) / max(1, steps)
+            interp = (1.0 - alpha) * current + alpha * target_arr
+            qpos = ik_pose(franka, end_effector, interp)
+            control_pose(franka, motors_dof, fingers_dof, qpos, gripper_opening=0.0)
+            sim_step(scene, cam=cam, record=record)
+            lift_force_seq_all.append(get_force_vector_12(franka))
+            touching_floor = object_touching_floor(obj_entity)
+            if was_touching_floor and (not touching_floor) and (liftoff_step_idx is None):
+                liftoff_step_idx = len(lift_force_seq_all) - 1
+            was_touching_floor = touching_floor
+
+    lift_arr = np.asarray(lift_force_seq_all, dtype=np.float32)
+    if lift_arr.shape[0] == 0:
+        lift_arr = np.zeros((1, 12), dtype=np.float32)
+    if liftoff_step_idx is None:
+        end_idx = lift_arr.shape[0]
+    else:
+        end_idx = min(lift_arr.shape[0], liftoff_step_idx + 40)
+    start_idx = max(0, end_idx - SEQ_LEN)
+    lift_arr_window = lift_arr[start_idx:end_idx]
+    if lift_arr_window.shape[0] < SEQ_LEN:
+        pad = np.repeat(lift_arr_window[-1:, :], SEQ_LEN - lift_arr_window.shape[0], axis=0)
+        lift_arr_window = np.concatenate([lift_arr_window, pad], axis=0)
+
+    hold_force_seq = hold_and_collect_force(
         scene,
         franka,
         end_effector,
@@ -357,7 +445,11 @@ def pick_lift_hold_and_putback(
     move_ee(
         scene, franka, end_effector, motors_dof, fingers_dof, (x, y, hover_z), 0.04, scaled_steps(80, motion_speed), cam, record
     )
-    return force_seq
+    return {
+        "hold_seq": hold_force_seq,
+        "lift_seq": lift_arr_window[-SEQ_LEN:, :],
+        "liftoff_detected": bool(liftoff_step_idx is not None),
+    }
 
 
 def pick_and_place_to_tile(
@@ -415,14 +507,41 @@ def pick_and_place_to_tile(
 def sample_object_params(object_type: str, rng: random.Random) -> dict:
     if object_type == "cube":
         size = float(rng.uniform(0.030, 0.075))
-        left_rho = 200.0 * rng.uniform(1.0, 10.0)
-        right_rho = 200.0 * rng.uniform(1.0, 10.0)
-        return {"size": size, "left_rho": float(left_rho), "right_rho": float(right_rho), "left_scale": None, "right_scale": None}
+        volume_m3 = size ** 3
+        light_mass_g = float(rng.uniform(40.0, 100.0))
+        heavy_mass_g = float(rng.uniform(100.0, 260.0))
+        light_mass_kg = light_mass_g / 1000.0
+        heavy_mass_kg = heavy_mass_g / 1000.0
+        light_rho = light_mass_kg / max(volume_m3, 1e-9)
+        heavy_rho = heavy_mass_kg / max(volume_m3, 1e-9)
+        if rng.random() < 0.5:
+            left_rho, right_rho = light_rho, heavy_rho
+            left_mass_g, right_mass_g = light_mass_g, heavy_mass_g
+        else:
+            left_rho, right_rho = heavy_rho, light_rho
+            left_mass_g, right_mass_g = heavy_mass_g, light_mass_g
+        return {
+            "size": size,
+            "left_rho": float(left_rho),
+            "right_rho": float(right_rho),
+            "left_mass_g": float(left_mass_g),
+            "right_mass_g": float(right_mass_g),
+            "left_scale": None,
+            "right_scale": None,
+        }
     left_scale = float(rng.uniform(0.075, 0.105))
     right_scale = float(rng.uniform(0.075, 0.105))
     left_rho = 200.0 * rng.uniform(1.0, 10.0)
     right_rho = 200.0 * rng.uniform(1.0, 10.0)
-    return {"size": None, "left_rho": float(left_rho), "right_rho": float(right_rho), "left_scale": left_scale, "right_scale": right_scale}
+    return {
+        "size": None,
+        "left_rho": float(left_rho),
+        "right_rho": float(right_rho),
+        "left_mass_g": None,
+        "right_mass_g": None,
+        "left_scale": left_scale,
+        "right_scale": right_scale,
+    }
 
 
 def run_single_trial(trial_idx, args, model, proj, heavy_vec, light_vec, params, run_root: Path):
@@ -526,12 +645,15 @@ def run_single_trial(trial_idx, args, model, proj, heavy_vec, light_vec, params,
         control_pose(franka, motors_dof, fingers_dof, home_q, gripper_opening=0.04)
         sim_step(scene, cam=cam, record=False)
 
-    left_force = pick_lift_hold_and_putback(
+    left_result = pick_lift_hold_and_putback(
         scene, franka, end_effector, motors_dof, fingers_dof, hand_idx, left_finger_idx, left_obj, finger_len, left_xy, args.motion_speed, cam, False
     )
-    right_force = pick_lift_hold_and_putback(
+    right_result = pick_lift_hold_and_putback(
         scene, franka, end_effector, motors_dof, fingers_dof, hand_idx, left_finger_idx, right_obj, finger_len, right_xy, args.motion_speed, cam, False
     )
+
+    left_force = left_result["hold_seq"] if args.judge_timing == "hold" else left_result["lift_seq"]
+    right_force = right_result["hold_seq"] if args.judge_timing == "hold" else right_result["lift_seq"]
 
     left_emb = embed_force_segment(model, proj, left_force)
     right_emb = embed_force_segment(model, proj, right_force)
@@ -540,7 +662,12 @@ def run_single_trial(trial_idx, args, model, proj, heavy_vec, light_vec, params,
     right_heavy = float(torch.dot(right_emb, heavy_vec))
     right_light = float(torch.dot(right_emb, light_vec))
     predicted_heavy = "left" if left_heavy >= right_heavy else "right"
-    gt_heavy = "left" if params["left_rho"] >= params["right_rho"] else "right"
+    if (params.get("left_mass_g") is not None) and (params.get("right_mass_g") is not None):
+        gt_heavy = "left" if params["left_mass_g"] >= params["right_mass_g"] else "right"
+    else:
+        left_proxy_mass = params["left_rho"] * ((params["left_scale"] if params["left_scale"] is not None else 1.0) ** 3)
+        right_proxy_mass = params["right_rho"] * ((params["right_scale"] if params["right_scale"] is not None else 1.0) ** 3)
+        gt_heavy = "left" if left_proxy_mass >= right_proxy_mass else "right"
     correct = bool(predicted_heavy == gt_heavy)
 
     if predicted_heavy == "left":
@@ -564,12 +691,22 @@ def run_single_trial(trial_idx, args, model, proj, heavy_vec, light_vec, params,
     placed_at_target = bool(place_dist <= place_threshold)
     task_success = bool(correct and placed_at_target)
 
-    save_matrix_csv(left_force, csv_dir / "left_force_seq.csv")
-    save_matrix_csv(right_force, csv_dir / "right_force_seq.csv")
+    save_matrix_csv(left_result["hold_seq"], csv_dir / "left_hold_force_seq.csv")
+    save_matrix_csv(right_result["hold_seq"], csv_dir / "right_hold_force_seq.csv")
+    save_matrix_csv(left_result["lift_seq"], csv_dir / "left_lift_force_seq.csv")
+    save_matrix_csv(right_result["lift_seq"], csv_dir / "right_lift_force_seq.csv")
+    save_matrix_csv(left_force, csv_dir / "left_force_seq_for_judgement.csv")
+    save_matrix_csv(right_force, csv_dir / "right_force_seq_for_judgement.csv")
+    save_force_plot_pair(left_force, right_force, csv_dir / "force_plot.png")
     score_row = {
         "trial_index": trial_idx + 1,
+        "judge_timing": args.judge_timing,
         "left_rho": float(params["left_rho"]),
         "right_rho": float(params["right_rho"]),
+        "left_mass_g": float(params["left_mass_g"]) if params["left_mass_g"] is not None else None,
+        "right_mass_g": float(params["right_mass_g"]) if params["right_mass_g"] is not None else None,
+        "left_liftoff_detected": bool(left_result["liftoff_detected"]),
+        "right_liftoff_detected": bool(right_result["liftoff_detected"]),
         "size": float(params["size"]) if params["size"] is not None else None,
         "left_scale": float(params["left_scale"]) if params["left_scale"] is not None else None,
         "right_scale": float(params["right_scale"]) if params["right_scale"] is not None else None,
@@ -616,6 +753,12 @@ def main():
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "data" / "evaluation_outputs"))
     parser.add_argument("--show-viewer", action="store_true")
     parser.add_argument("--object-type", choices=["cube", "bottle"], default="cube")
+    parser.add_argument(
+        "--judge-timing",
+        choices=["hold", "lift"],
+        default="hold",
+        help="Use hold phase or lift phase force sequence for heavy/light judgement.",
+    )
     parser.add_argument("--model-path", type=str, default=str(DEFAULT_CKPT))
     parser.add_argument("--motion-speed", type=float, default=1.8, help=">1.0 makes robot motions faster.")
     parser.add_argument("--trials", type=int, default=20)
@@ -631,11 +774,6 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if torch.cuda.is_available():
-        gs.init(backend=gs.gpu, logging_level="warning")
-    else:
-        gs.init(backend=gs.cpu, logging_level="warning")
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, proj = load_contrastive_patchtst(Path(args.model_path), device)
     heavy_vec = load_text_embedding("heavy")
@@ -648,12 +786,20 @@ def main():
     rng = random.Random(args.seed)
     trials = []
     for trial_idx in range(args.trials):
+        if torch.cuda.is_available():
+            gs.init(backend=gs.gpu, logging_level="warning")
+        else:
+            gs.init(backend=gs.cpu, logging_level="warning")
         params = sample_object_params(args.object_type, rng)
         trial = run_single_trial(trial_idx, args, model, proj, heavy_vec, light_vec, params, run_root)
+        gs.destroy()
         trials.append(trial)
         print(
             f"[trial {trial_idx + 1:02d}/{args.trials}] "
             f"left_rho={params['left_rho']:.1f} right_rho={params['right_rho']:.1f} "
+            f"left_mass_g={params['left_mass_g'] if params['left_mass_g'] is not None else '-'} "
+            f"right_mass_g={params['right_mass_g'] if params['right_mass_g'] is not None else '-'} "
+            f"judge={args.judge_timing} "
             f"pred={trial['scores']['predicted_heavy_side']} gt={trial['scores']['ground_truth_heavy_side']} "
             f"select_ok={trial['scores']['heavy_selection_correct']} "
             f"place_ok={trial['scores']['placed_at_target']} "
@@ -664,6 +810,7 @@ def main():
     payload = {
         "model_path": args.model_path,
         "object_type": args.object_type,
+        "judge_timing": args.judge_timing,
         "motion_speed": args.motion_speed,
         "trials": args.trials,
         "seed": args.seed,
