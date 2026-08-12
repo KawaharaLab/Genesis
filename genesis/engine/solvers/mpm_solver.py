@@ -227,7 +227,6 @@ class MPMSolver(Solver):
                 self.sim.rigid_solver.collider._sdf.activate()
 
             self.init_particle_fields()
-            self.deformation_metric = ti.field(dtype=gs.ti_float, shape=self._batch_shape(self._n_particles))
             self.init_grid_fields()
             self.init_vvert_fields()
             self.init_ckpt()

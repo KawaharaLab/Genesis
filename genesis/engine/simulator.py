@@ -323,9 +323,6 @@ class Simulator(RBC):
         self._coupler.couple(f)
         self.substep_post_coupling(f)
 
-        if self.mpm_solver.is_active():
-            self.mpm_solver.get_deformation_metric(f)
-
     def sub_step_grad(self, f):
         self.substep_post_coupling_grad(f)
         self._coupler.couple_grad(f)
