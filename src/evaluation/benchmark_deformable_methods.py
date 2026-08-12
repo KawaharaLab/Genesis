@@ -189,14 +189,19 @@ def _fem_proxy_morph(object_name, mesh_min, mesh_max, scale, spawn, euler):
     return morph, proxy
 
 
-def _run_stage(scene, commands):
+def _run_stage(scene, commands, frame_callback=None):
     _sync()
     start = time.perf_counter()
+    render_seconds = 0.0
     for command in commands:
         command()
         scene.step()
+        if frame_callback is not None:
+            render_start = time.perf_counter()
+            frame_callback()
+            render_seconds += time.perf_counter() - render_start
     _sync()
-    seconds = time.perf_counter() - start
+    seconds = time.perf_counter() - start - render_seconds
     return {"steps": len(commands), "physical_seconds": len(commands) * DT, "seconds": seconds}
 
 
@@ -249,6 +254,8 @@ def _materials(method):
 
 def run(args):
     global USE_TORCH_CUDA_SYNC
+    if args.video_stride < 1:
+        raise ValueError("--video-stride must be at least 1")
     precision = "64" if args.method == "fem_sap" else "32"
     genesis_backend = gs.cpu if args.method == "fem_ipc" else gs.gpu
     USE_TORCH_CUDA_SYNC = args.method != "fem_ipc"
@@ -286,7 +293,7 @@ def run(args):
         surface=gs.surfaces.Default(color=(0.1, 0.8, 0.1, 1.0)),
     )
     camera = None
-    if args.render:
+    if args.render or args.record_video:
         camera = scene.add_camera(res=(800, 600), pos=(1.25, 0.75, 0.55), lookat=(0.65, 0.0, 0.18), fov=35)
 
     _sync()
@@ -351,6 +358,23 @@ def run(args):
     }
 
     run_name = f"{args.object}_{args.method}"
+    video_frame_dir = output_dir / "video_frames" / run_name
+    video_frame_index = 0
+    simulation_step = 0
+    if args.record_video:
+        video_frame_dir.mkdir(parents=True, exist_ok=True)
+        for old_frame in video_frame_dir.glob("frame_*.png"):
+            old_frame.unlink()
+
+    def record_video_frame():
+        nonlocal video_frame_index, simulation_step
+        simulation_step += 1
+        if simulation_step % args.video_stride:
+            return
+        rgb, _, _, _ = camera.render(rgb=True)
+        iio.imwrite(video_frame_dir / f"frame_{video_frame_index:04d}.png", rgb)
+        video_frame_index += 1
+
     report = {
         "object": args.object,
         "method": args.method,
@@ -380,7 +404,7 @@ def run(args):
         report["images"]["initial"] = _render(camera, output_dir, run_name, "initial")
 
     for stage, stage_commands in commands.items():
-        report["stages"][stage] = _run_stage(scene, stage_commands)
+        report["stages"][stage] = _run_stage(scene, stage_commands, record_video_frame if args.record_video else None)
         snapshot, rest_tet_volumes = _snapshot(obj, args.method, rest_tet_volumes)
         report["snapshots"][stage] = snapshot
         if camera is not None and stage in ("approach", "close", "lift"):
@@ -422,6 +446,9 @@ def run(args):
     report["final_center_z_delta"] = float(
         report["snapshots"]["lift"]["center"][2] - report["snapshots"]["approach"]["center"][2]
     )
+    report["video_frames"] = str(video_frame_dir.resolve()) if args.record_video else None
+    report["video_frame_count"] = video_frame_index
+    report["video_fps"] = 1.0 / (DT * args.video_stride) if args.record_video else None
 
     report_path = output_dir / f"{run_name}.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -435,5 +462,7 @@ if __name__ == "__main__":
     parser.add_argument("--object", default="001_chips_can")
     parser.add_argument("--grid-density", type=float, default=128)
     parser.add_argument("--render", action="store_true")
+    parser.add_argument("--record-video", action="store_true")
+    parser.add_argument("--video-stride", type=int, default=2)
     parser.add_argument("--output", default=str(PROJECT_ROOT / "data" / "benchmark_deformable_methods_20260812"))
     run(parser.parse_args())
