@@ -11,8 +11,9 @@ EARLY_DROP_MONITOR = False
 INTENTIONAL_RELEASE = False
 EARLY_DROP_STREAK = 0
 EARLY_DROP_PENDING = False
-TARGET_TILE_LINK_IDX = None
-OBSTACLE_LINK_IDX = None
+CONTACT_LOSS_CONFIRM_STEPS = 5
+TARGET_SUPPORT_LINK_IDXS = set()
+OBSTACLE_LINK_IDXS = set()
 
 
 def set_early_drop_monitor(enabled: bool):
@@ -34,9 +35,18 @@ def set_object_contact_targets(target_tile=None, obstacle=None):
     """
     Register optional support/obstacle entities used for per-step contact logging.
     """
-    global TARGET_TILE_LINK_IDX, OBSTACLE_LINK_IDX
-    TARGET_TILE_LINK_IDX = None if target_tile is None else int(target_tile.idx)
-    OBSTACLE_LINK_IDX = None if obstacle is None else int(obstacle.idx)
+    global TARGET_SUPPORT_LINK_IDXS, OBSTACLE_LINK_IDXS
+
+    def _link_indices(entities):
+        if entities is None:
+            return set()
+        if not isinstance(entities, (list, tuple, set)):
+            entities = [entities]
+        return {int(link.idx) for entity in entities for link in entity.links}
+
+    # Contact records contain rigid-link indices, not entity indices.
+    TARGET_SUPPORT_LINK_IDXS = _link_indices(target_tile)
+    OBSTACLE_LINK_IDXS = _link_indices(obstacle)
 
 
 def get_bounding_box(gso_object):
@@ -113,9 +123,9 @@ def _execute_simulation_step(
         obj_contacts[1] = 1
     if 0 in obj_contact_pairs:
         obj_contacts[2] = 1
-    if TARGET_TILE_LINK_IDX is not None and TARGET_TILE_LINK_IDX in obj_contact_pairs:
+    if TARGET_SUPPORT_LINK_IDXS.intersection(obj_contact_pairs):
         obj_contacts[3] = 1
-    if OBSTACLE_LINK_IDX is not None and OBSTACLE_LINK_IDX in obj_contact_pairs:
+    if OBSTACLE_LINK_IDXS.intersection(obj_contact_pairs):
         obj_contacts[4] = 1
     df.loc[len(df)] = [scene.t] + force_torques + dofs + eef_pos + finger_control + obj_com + obj_mass + obj_bounding_box + obj_contacts
 
@@ -127,7 +137,7 @@ def _execute_simulation_step(
             EARLY_DROP_PENDING = False
         else:
             EARLY_DROP_STREAK += 1
-            if EARLY_DROP_STREAK >= 3:
+            if EARLY_DROP_STREAK >= CONTACT_LOSS_CONFIRM_STEPS:
                 EARLY_DROP_PENDING = True
 
     # Save photos from main camera and optional wrist camera.
@@ -149,7 +159,8 @@ def _execute_simulation_step(
     #     return False
     if EARLY_DROP_MONITOR and not INTENTIONAL_RELEASE and EARLY_DROP_PENDING and (force_photo or (t % photo_interval == 0)):
         raise EarlyDropDetected(
-            f"Object lost finger contact for >=3 consecutive steps; terminated after image save at step {int(scene.t)}."
+            f"Object lost finger contact for >={CONTACT_LOSS_CONFIRM_STEPS} consecutive steps; "
+            f"terminated after image save at step {int(scene.t)}."
         )
 
     return True

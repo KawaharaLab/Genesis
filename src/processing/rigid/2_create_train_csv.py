@@ -7,7 +7,7 @@ import pandas as pd
 
 from force_window_filter import filter_all_zero_force_windows
 
-MODE = os.environ.get("MODE", "eval_04272026")  # "train" or "eval"
+MODE = os.environ.get("MODE", "train_21072026")  # "train" or "eval"
 DATA_DIR = f"/home/user/Genesis/data/{MODE}"
 out_path = f"{DATA_DIR}/{MODE}.csv"
 
@@ -18,10 +18,13 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
         df["interaction"] = None
     if "weight" not in df.columns:
         df["weight"] = None
+    if "placement_outcome" not in df.columns:
+        df["placement_outcome"] = None
 
     df["action"] = df["action"].fillna("").astype(str).str.strip()
     df["interaction"] = df["interaction"].fillna("").astype(str).str.strip()
     df["weight"] = df["weight"].fillna("").astype(str).str.strip()
+    df["placement_outcome"] = df["placement_outcome"].fillna("").astype(str).str.strip().str.lower()
 
     def _fallback_action(annotation: str) -> str:
         text = (annotation or "").lower()
@@ -68,6 +71,14 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
             return "heavy"
         return ""
 
+    def _fallback_placement_outcome(annotation: str) -> str:
+        text = (annotation or "").lower()
+        if "topple" in text:
+            return "topple"
+        if "remain" in text and "upright" in text:
+            return "upright"
+        return ""
+
     missing_action = df["action"] == ""
     if missing_action.any():
         df.loc[missing_action, "action"] = df.loc[missing_action, "annotation"].map(_fallback_action)
@@ -80,11 +91,29 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
     if missing_weight.any():
         df.loc[missing_weight, "weight"] = df.loc[missing_weight, "annotation"].map(_fallback_weight)
 
+    df["placement_outcome"] = df["placement_outcome"].replace(
+        {
+            "toppled": "topple",
+            "topples after release": "topple",
+            "remains upright": "upright",
+        }
+    )
+    missing_placement_outcome = df["placement_outcome"] == ""
+    if missing_placement_outcome.any():
+        df.loc[missing_placement_outcome, "placement_outcome"] = df.loc[
+            missing_placement_outcome, "annotation"
+        ].map(_fallback_placement_outcome)
+
+    # Placement outcome is defined only for windows labeled as placement.
+    df.loc[df["action"] != "place", "placement_outcome"] = ""
+
     # For drop categories, interaction is intentionally omitted.
     df.loc[df["action"].isin(["accidental drop", "drop"]), "interaction"] = ""
 
     def _to_label(row: pd.Series) -> str:
         action = row["action"]
+        if action == "lift then accidental drop":
+            return "accidental drop"
         if action == "hold":
             return "hold"
         if action in {"place gently"}:

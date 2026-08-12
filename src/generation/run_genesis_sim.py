@@ -1,9 +1,11 @@
 import random
 import shutil
+import subprocess
+import sys
 import time
 import json
+import os
 from pathlib import Path
-from multiprocessing import Process
 
 import pandas as pd
 import numpy as np
@@ -39,11 +41,30 @@ DATA_ROOT = PROJECT_ROOT / "data"
 
 PHOTO_INTERVAL = 80
 MATERIAL_TYPE = "Rigid"
-TARGET_CHOICES = ["gentle","firm", "gentle_simple"]
+""""Train"""
+# TARGET_CHOICES = ["drop_simple", "drop", "inclined", "gentle_simple", "firm_simple"]
+# TARGET_CHOICES = ["gentle", "firm", "gentle_simple", "inclined"]
+# TARGET_CHOICES = ["drop_simple", "drop", "inclined", "gentle_simple", "firm_simple"]
+# TARGET_CHOICES = [
+#     choice.strip()
+#     for choice in os.environ.get("TARGET_CHOICES", ",".join(DEFAULT_TARGET_CHOICES)).split(",")
+#     if choice.strip()
+# ]
+"""Eval"""
+# TARGET_CHOICES = ["drop_simple", "drop", "inclined", "gentle_simple", "firm_simple", "gentle", "gentle_simple"]
+DEFAULT_TARGET_CHOICES = ["drop_simple", "drop", "inclined", "step", "gentle_simple", "firm_simple"]
+TARGET_CHOICES = [
+    choice.strip()
+    for choice in os.environ.get("TARGET_CHOICES", ",".join(DEFAULT_TARGET_CHOICES)).split(",")
+    if choice.strip()
+]
+
 GRASP_TO_LIFT_WAIT_STEPS = 100
 
-MAX_PARALLEL_PROCESSES = 8
-DATASET = "train_04272026"
+MAX_PARALLEL_PROCESSES = int(os.environ.get("MAX_PARALLEL_PROCESSES", "8"))
+if MAX_PARALLEL_PROCESSES < 1:
+    raise ValueError("MAX_PARALLEL_PROCESSES must be at least 1.")
+DATASET = os.environ.get("DATASET", "eval_21072026")
 DATASET_TYPE = "ycb" if "eval" in DATASET else "gso"  # Options: "ycb", "gso"
 OUTPUT_VARIANT_LABEL = "vary"  # e.g. "heavy", "light", "v2"; set "" to disable
 PLACE_TARGET_X_RANGE = (0.20, 0.70)
@@ -54,10 +75,51 @@ MAX_PLACE_DISTANCE_FROM_ROBOT = 0.82
 TARGET_TILE_SIZE = 0.20
 TARGET_TILE_THICKNESS = 0.004
 TARGET_TILE_COLOR = (0.10, 0.35, 0.90, 1.0)
+TARGET_RAMP_COLOR = (0.07, 0.22, 0.55, 1.0)
+TARGET_RAMP_MESH = Path(__file__).resolve().parent / "assets" / "inclined_ramp.obj"
 BUMP_WALL_SIZE = (0.06, 0.06, 0.035)
 BUMP_WALL_COLOR = (0.90, 0.25, 0.20, 1.0)
 BUMP_PUSH_STEPS = 100
 TOPPLE_THRESHOLD_DEG = 35.0
+INCLINED_TILE_ANGLES_DEG = (10, 30, 50)
+STEP_HEIGHTS_M = {
+    "step_2cm": 0.02,
+    "step_5cm": 0.05,
+    "step_8cm": 0.08,
+}
+STEP_PLATFORM_SIZE = 0.24
+STEP_OVERHANG_M = 0.015
+
+
+def _configured_gpu_ids() -> list[int]:
+    configured = os.environ.get("GENESIS_GPU_IDS")
+    if configured is not None:
+        configured = configured.strip().lower()
+        if configured in {"", "cpu", "none"}:
+            return []
+        try:
+            gpu_ids = [int(value.strip()) for value in configured.split(",") if value.strip()]
+        except ValueError as exc:
+            raise ValueError("GENESIS_GPU_IDS must be comma-separated integers or 'cpu'.") from exc
+        if not gpu_ids or any(gpu_id < 0 for gpu_id in gpu_ids):
+            raise ValueError("GENESIS_GPU_IDS must contain one or more non-negative GPU IDs.")
+        return list(dict.fromkeys(gpu_ids))
+
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible_devices is not None:
+        visible_devices = visible_devices.strip()
+        if not visible_devices or visible_devices == "-1":
+            return []
+        try:
+            return [int(value.strip()) for value in visible_devices.split(",") if value.strip()]
+        except ValueError as exc:
+            raise ValueError(
+                "CUDA_VISIBLE_DEVICES must use numeric physical GPU IDs with this launcher; "
+                "set GENESIS_GPU_IDS explicitly otherwise."
+            ) from exc
+
+    device_paths = sorted(Path("/dev").glob("nvidia[0-9]*"))
+    return [int(path.name.removeprefix("nvidia")) for path in device_paths]
 
 
 ## -------------------------- PATH SETUP -------------------------- ##
@@ -211,6 +273,97 @@ def _is_simple_mode(place_mode: str) -> bool:
     return place_mode in ("drop_simple", "gentle_simple")
 
 
+def _inclined_angle_deg(place_mode: str) -> float | None:
+    prefix = "inclined_"
+    if not place_mode.startswith(prefix):
+        return None
+    try:
+        angle_deg = float(place_mode.removeprefix(prefix))
+    except ValueError as exc:
+        raise ValueError(f"Invalid inclined mode: {place_mode}") from exc
+    if angle_deg not in INCLINED_TILE_ANGLES_DEG:
+        raise ValueError(
+            f"Unsupported inclined angle {angle_deg:g}; expected one of {INCLINED_TILE_ANGLES_DEG}"
+        )
+    return angle_deg
+
+
+def _is_inclined_mode(place_mode: str) -> bool:
+    return _inclined_angle_deg(place_mode) is not None
+
+
+def _step_height_m(place_mode: str) -> float | None:
+    return STEP_HEIGHTS_M.get(place_mode)
+
+
+def _is_step_mode(place_mode: str) -> bool:
+    return _step_height_m(place_mode) is not None
+
+
+def _expand_target_choices(target_choices: list[str]) -> list[str]:
+    expanded = []
+    for target in target_choices:
+        if target == "inclined":
+            expanded.extend(f"inclined_{angle:g}" for angle in INCLINED_TILE_ANGLES_DEG)
+        elif target == "step":
+            expanded.extend(STEP_HEIGHTS_M)
+        else:
+            expanded.append(target)
+    return expanded
+
+
+def _plan_target_tile(place_mode: str) -> dict:
+    angle_deg = _inclined_angle_deg(place_mode)
+    step_height = _step_height_m(place_mode)
+    if step_height is not None:
+        yaw_deg = random.uniform(0.0, 360.0)
+        yaw_rad = np.deg2rad(yaw_deg)
+        center_offset_xy = (0.5 * STEP_PLATFORM_SIZE + STEP_OVERHANG_M) * np.array(
+            [-np.sin(yaw_rad), np.cos(yaw_rad)]
+        )
+        return {
+            "inclination_deg": 0.0,
+            "step_height_m": float(step_height),
+            "overhang_m": STEP_OVERHANG_M,
+            "euler_deg": (0.0, 0.0, float(yaw_deg)),
+            "center_offset_xy": center_offset_xy.tolist(),
+            "size_xyz": (STEP_PLATFORM_SIZE, STEP_PLATFORM_SIZE, float(step_height)),
+            "center_z": 0.5 * float(step_height),
+            "surface_center_z": float(step_height),
+        }
+    if angle_deg is None:
+        return {
+            "inclination_deg": 0.0,
+            "euler_deg": (0.0, 0.0, 0.0),
+            "center_offset_xy": (0.0, 0.0),
+            "size_xyz": (TARGET_TILE_SIZE, TARGET_TILE_SIZE, TARGET_TILE_THICKNESS),
+            "center_z": TARGET_TILE_THICKNESS * 0.5,
+            "surface_center_z": TARGET_TILE_THICKNESS,
+        }
+
+    signed_angle_deg = angle_deg * random.choice((-1.0, 1.0))
+    yaw_deg = random.uniform(0.0, 360.0)
+    angle_rad = np.deg2rad(angle_deg)
+    center_z = 0.5 * (
+        TARGET_TILE_SIZE * np.sin(angle_rad) + TARGET_TILE_THICKNESS * np.cos(angle_rad)
+    )
+    surface_center_z = center_z + 0.5 * TARGET_TILE_THICKNESS * np.cos(angle_rad)
+    ramp_run = TARGET_TILE_SIZE * np.cos(angle_rad)
+    ramp_rise = TARGET_TILE_SIZE * np.sin(angle_rad)
+    ramp_yaw_deg = yaw_deg if signed_angle_deg > 0.0 else (yaw_deg + 180.0) % 360.0
+    return {
+        "inclination_deg": float(angle_deg),
+        "euler_deg": (float(signed_angle_deg), 0.0, float(yaw_deg)),
+        "center_offset_xy": (0.0, 0.0),
+        "size_xyz": (TARGET_TILE_SIZE, TARGET_TILE_SIZE, TARGET_TILE_THICKNESS),
+        "center_z": float(center_z),
+        "surface_center_z": float(surface_center_z),
+        "ramp_run": float(ramp_run),
+        "ramp_rise": float(ramp_rise),
+        "ramp_yaw_deg": float(ramp_yaw_deg),
+    }
+
+
 def _plan_bump_wall(source_xy, target_xy):
     source = np.asarray(source_xy, dtype=float)
     target = np.asarray(target_xy, dtype=float)
@@ -233,10 +386,19 @@ def _plan_bump_wall(source_xy, target_xy):
     }
 
 
-def create_scene(obj_path: str, place_mode: str = "gentle"):
-    if torch.cuda.is_available():
+def create_scene(obj_path: str, place_mode: str = "gentle", gpu_id: int | None = None):
+    if gpu_id == -1:
+        gs.init(backend=gs.cpu)
+    elif torch.cuda.is_available():
+        if gpu_id is not None:
+            device_count = torch.cuda.device_count()
+            if gpu_id >= device_count:
+                raise ValueError(f"GPU {gpu_id} is unavailable; PyTorch reports {device_count} visible GPU(s).")
+            torch.cuda.set_device(gpu_id)
         gs.init(backend=gs.gpu)
     else:
+        if gpu_id is not None:
+            raise RuntimeError(f"GPU {gpu_id} was requested, but CUDA is unavailable.")
         gs.init(backend=gs.cpu)
 
     object_scale, object_euler = set_grasp(obj_path)
@@ -296,11 +458,36 @@ def create_scene(obj_path: str, place_mode: str = "gentle"):
         target_xy = (float(drop_center[0]), float(drop_center[1]))
     else:
         target_xy = sample_place_target(drop_center, robot_xy=(0.0, 0.0))
+    target_tile_plan = _plan_target_tile(place_mode)
+    tile_offset_x, tile_offset_y = target_tile_plan["center_offset_xy"]
+    target_ramp = None
+    if _is_inclined_mode(place_mode):
+        target_ramp = scene.add_entity(
+            material=gs.materials.Rigid(rho=1200, friction=1.0, coup_friction=1.0),
+            morph=gs.morphs.Mesh(
+                file=str(TARGET_RAMP_MESH),
+                scale=(
+                    TARGET_TILE_SIZE,
+                    target_tile_plan["ramp_run"],
+                    target_tile_plan["ramp_rise"],
+                ),
+                pos=(target_xy[0], target_xy[1], 0.0),
+                euler=(0.0, 0.0, target_tile_plan["ramp_yaw_deg"]),
+                fixed=True,
+                convexify=True,
+            ),
+            surface=gs.surfaces.Default(color=TARGET_RAMP_COLOR),
+        )
     target_tile = scene.add_entity(
         material=gs.materials.Rigid(rho=800, friction=1.0, coup_friction=1.0),
         morph=gs.morphs.Box(
-            size=(TARGET_TILE_SIZE, TARGET_TILE_SIZE, TARGET_TILE_THICKNESS),
-            pos=(target_xy[0], target_xy[1], TARGET_TILE_THICKNESS * 0.5),
+            size=target_tile_plan["size_xyz"],
+            pos=(
+                target_xy[0] + tile_offset_x,
+                target_xy[1] + tile_offset_y,
+                target_tile_plan["center_z"],
+            ),
+            euler=target_tile_plan["euler_deg"],
             fixed=True,
         ),
         surface=gs.surfaces.Default(color=TARGET_TILE_COLOR),
@@ -322,7 +509,19 @@ def create_scene(obj_path: str, place_mode: str = "gentle"):
         )
 
     scene.build()
-    return scene, cam, cam_wrist, franka, gso_object, target_xy, target_tile, obstacle_entity, wall_plan
+    return (
+        scene,
+        cam,
+        cam_wrist,
+        franka,
+        gso_object,
+        target_xy,
+        target_tile,
+        obstacle_entity,
+        wall_plan,
+        target_tile_plan,
+        target_ramp,
+    )
 
 
 def _settle_after_release(scene, cam, cam_wrist, franka, gso_object, df, deform_csv, paths, grip_force, steps=100):
@@ -367,6 +566,17 @@ def _compute_max_xy_tilt_change_deg(quat_ref_wxyz, quat_now_wxyz):
     dx = abs(_angle_diff_deg(float(e_now[0]), float(e_ref[0])))
     dy = abs(_angle_diff_deg(float(e_now[1]), float(e_ref[1])))
     return max(dx, dy)
+
+
+def _store_placement_outcome(metadata, quat_at_release, quat_after_settle):
+    post_release_change = _compute_max_xy_tilt_change_deg(quat_at_release, quat_after_settle)
+    upright_reference = metadata.get("upright_reference_quat_wxyz", quat_at_release)
+    final_tilt = _compute_max_xy_tilt_change_deg(upright_reference, quat_after_settle)
+    outcome_tilt = max(post_release_change, final_tilt)
+    metadata["post_release_tilt_change_deg"] = round(float(post_release_change), 4)
+    metadata["tilt_xy_deg"] = round(float(final_tilt), 4)
+    metadata["outcome_tilt_xy_deg"] = round(float(outcome_tilt), 4)
+    metadata["toppled"] = bool(outcome_tilt >= TOPPLE_THRESHOLD_DEG)
 
 
 def _retreat_up_to_height(
@@ -498,12 +708,14 @@ def _run_place_phase(
         )
         _settle_after_release(scene, cam, cam_wrist, franka, gso_object, df, deform_csv, paths, -current_force, steps=180)
         quat_after_retreat = _flatten_quat_wxyz(gso_object.get_quat())
-        tilt_change_deg = _compute_max_xy_tilt_change_deg(quat_at_release, quat_after_retreat)
-        metadata["tilt_xy_deg"] = round(float(tilt_change_deg), 4)
-        metadata["toppled"] = bool(tilt_change_deg >= TOPPLE_THRESHOLD_DEG)
+        _store_placement_outcome(metadata, quat_at_release, quat_after_retreat)
         return
 
-    if place_mode in ("gentle", "gentle_simple"):
+    if (
+        place_mode in ("gentle", "gentle_simple")
+        or _is_inclined_mode(place_mode)
+        or _is_step_mode(place_mode)
+    ):
         seg_df.loc[len(seg_df)] = ["gentle_place", int(scene.t)]
         mm.descend_to_place_cautiously(
             scene=scene,
@@ -576,9 +788,7 @@ def _run_place_phase(
         )
         _settle_after_release(scene, cam, cam_wrist, franka, gso_object, df, deform_csv, paths, -current_force, steps=120)
         quat_after_retreat = _flatten_quat_wxyz(gso_object.get_quat())
-        tilt_change_deg = _compute_max_xy_tilt_change_deg(quat_at_release, quat_after_retreat)
-        metadata["tilt_xy_deg"] = round(float(tilt_change_deg), 4)
-        metadata["toppled"] = bool(tilt_change_deg >= TOPPLE_THRESHOLD_DEG)
+        _store_placement_outcome(metadata, quat_at_release, quat_after_retreat)
         return
 
     if place_mode in ("press", "firm"):
@@ -681,9 +891,7 @@ def _run_place_phase(
         )
         _settle_after_release(scene, cam, cam_wrist, franka, gso_object, df, deform_csv, paths, -current_force, steps=110)
         quat_after_retreat = _flatten_quat_wxyz(gso_object.get_quat())
-        tilt_change_deg = _compute_max_xy_tilt_change_deg(quat_at_release, quat_after_retreat)
-        metadata["tilt_xy_deg"] = round(float(tilt_change_deg), 4)
-        metadata["toppled"] = bool(tilt_change_deg >= TOPPLE_THRESHOLD_DEG)
+        _store_placement_outcome(metadata, quat_at_release, quat_after_retreat)
         return
 
     if place_mode == "bump":
@@ -748,9 +956,7 @@ def _run_place_phase(
         )
         _settle_after_release(scene, cam, cam_wrist, franka, gso_object, df, deform_csv, paths, -current_force, steps=120)
         quat_after_retreat = _flatten_quat_wxyz(gso_object.get_quat())
-        tilt_change_deg = _compute_max_xy_tilt_change_deg(quat_at_release, quat_after_retreat)
-        metadata["tilt_xy_deg"] = round(float(tilt_change_deg), 4)
-        metadata["toppled"] = bool(tilt_change_deg >= TOPPLE_THRESHOLD_DEG)
+        _store_placement_outcome(metadata, quat_at_release, quat_after_retreat)
         return
 
     raise ValueError(f"Unsupported place mode: {place_mode}")
@@ -770,8 +976,10 @@ def run_rotation(
     place_mode,
     metadata,
     wall_plan=None,
+    target_tile_plan=None,
 ):
     name = paths["object_name"]
+    metadata["upright_reference_quat_wxyz"] = _flatten_quat_wxyz(gso_object.get_quat()).tolist()
     motors_dof, fingers_dof = np.arange(7), np.arange(7, 9)
     franka.set_dofs_kp(np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 1000, 1000]))
     franka.set_dofs_kv(np.array([450, 450, 350, 350, 200, 200, 200, 100, 100]))
@@ -788,7 +996,7 @@ def run_rotation(
     x, y = obj_center[0], obj_center[1]
     z = upper_obj_bound[2] + offset
     place_x, place_y = place_target_xy
-    tile_top_z = TARGET_TILE_THICKNESS
+    tile_top_z = float((target_tile_plan or {}).get("surface_center_z", TARGET_TILE_THICKNESS))
     place_eef_z_nominal = tile_top_z + object_height + offset
 
     qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([x, y, z + 0.1]), quat=np.array([0, 1, 0, 0]))
@@ -798,6 +1006,7 @@ def run_rotation(
 
     metadata["target_xy"] = {"x": float(place_x), "y": float(place_y)}
     metadata["place_mode"] = str(place_mode)
+    metadata["target_tile"] = target_tile_plan or _plan_target_tile("flat")
     if wall_plan is not None:
         metadata["bump_wall"] = wall_plan
     seg_df.loc[len(seg_df)] = ["grasp", int(scene.t)]
@@ -932,6 +1141,13 @@ def run_rotation(
             )
         place_x, place_y = x, y
     else:
+        transport_steps = 300
+        if place_mode == "bump":
+            transport_steps = 220
+        elif _is_inclined_mode(place_mode) or _is_step_mode(place_mode):
+            # Tall objects such as cans are more likely to slip during a long lateral transfer.
+            # The placement signal does not depend on transport duration, so keep this case brief.
+            transport_steps = 120
         mm.move_to_place_xy(
             scene=scene,
             cam=cam,
@@ -948,7 +1164,7 @@ def run_rotation(
             motors_dof=motors_dof,
             fingers_dof=fingers_dof,
             grip_force=-current_force,
-            steps=220 if place_mode == "bump" else 300,
+            steps=transport_steps,
             cam_wrist=cam_wrist,
         )
     retreat_target_z = franka.get_links_pos([8]).tolist()[0][2]
@@ -1125,7 +1341,12 @@ def _rename_attempt_outputs(object_name: str, source_choice: str, target_choice:
         shutil.move(str(img_src), str(img_dst))
 
 
-def run_single_simulation(object_name: str, target_choice: str, output_choice: str | None = None):
+def run_single_simulation(
+    object_name: str,
+    target_choice: str,
+    output_choice: str | None = None,
+    gpu_id: int | None = None,
+):
     output_choice = target_choice if output_choice is None else output_choice
     paths = setup_paths(object_name, output_choice)
     force_df = pd.DataFrame(
@@ -1191,17 +1412,45 @@ def run_single_simulation(object_name: str, target_choice: str, output_choice: s
         "target_xy": None,
         "place_mode": None,
         "tilt_xy_deg": None,
+        "post_release_tilt_change_deg": None,
+        "outcome_tilt_xy_deg": None,
         "toppled": None,
+        "contact_logging_version": 2,
+        "gpu_id": (
+            int(os.environ["GENESIS_ASSIGNED_GPU"])
+            if "GENESIS_ASSIGNED_GPU" in os.environ
+            else (gpu_id if gpu_id is not None and gpu_id >= 0 else None)
+        ),
+        "compute_device": (
+            "cpu"
+            if gpu_id == -1
+            else f"physical_cuda:{os.environ['GENESIS_ASSIGNED_GPU']}"
+            if "GENESIS_ASSIGNED_GPU" in os.environ
+            else (f"cuda:{gpu_id}" if gpu_id is not None else "auto")
+        ),
     }
 
     scene = None
     cam = cam_wrist = franka = gso_object = None
     wall_plan = None
     try:
-        scene, cam, cam_wrist, franka, gso_object, place_target_xy, target_tile, obstacle_entity, wall_plan = create_scene(
-            str(paths["input_obj"]), target_choice
-        )
-        set_object_contact_targets(target_tile=target_tile, obstacle=obstacle_entity)
+        (
+            scene,
+            cam,
+            cam_wrist,
+            franka,
+            gso_object,
+            place_target_xy,
+            target_tile,
+            obstacle_entity,
+            wall_plan,
+            target_tile_plan,
+            target_ramp,
+        ) = create_scene(str(paths["input_obj"]), target_choice, gpu_id=gpu_id)
+        target_supports = [target_tile]
+        if target_ramp is not None:
+            target_supports.append(target_ramp)
+        set_object_contact_targets(target_tile=target_supports, obstacle=obstacle_entity)
         run_rotation(
             scene,
             cam,
@@ -1216,6 +1465,7 @@ def run_single_simulation(object_name: str, target_choice: str, output_choice: s
             target_choice,
             metadata,
             wall_plan,
+            target_tile_plan,
         )
     except EarlyDropDetected as exc:
         segment_df.loc[len(segment_df)] = [f"early_drop_{target_choice}", int(scene.t)]
@@ -1229,8 +1479,26 @@ def run_single_simulation(object_name: str, target_choice: str, output_choice: s
     return paths, force_df, deform_df, segment_df, metadata
 
 
-def main(object_name: str, target_choice: str = "gentle"):
-    print(f"🚀 Starting simulation for '{object_name}' with target '{target_choice}'...")
+def main(object_name: str, target_choice: str = "gentle", gpu_id: int | None = None):
+    if target_choice == "inclined":
+        for expanded_target in _expand_target_choices([target_choice]):
+            main(object_name, expanded_target, gpu_id=gpu_id)
+        return
+    if target_choice == "step":
+        for expanded_target in _expand_target_choices([target_choice]):
+            main(object_name, expanded_target, gpu_id=gpu_id)
+        return
+
+    assigned_gpu = os.environ.get("GENESIS_ASSIGNED_GPU")
+    if gpu_id == -1:
+        device_label = "CPU"
+    elif assigned_gpu is not None:
+        device_label = f"physical GPU {assigned_gpu} (process-local cuda:0)"
+    elif gpu_id is None:
+        device_label = "default device"
+    else:
+        device_label = f"GPU {gpu_id}"
+    print(f"🚀 Starting simulation for '{object_name}' with target '{target_choice}' on {device_label}...")
     input_obj_path = DATA_ROOT / "objects" / DATASET_TYPE / object_name / "model.obj"
     if DATASET_TYPE == "hugging_face":
         input_obj_path = DATA_ROOT / "objects" / DATASET_TYPE / object_name / f"{object_name}.glb"
@@ -1244,7 +1512,10 @@ def main(object_name: str, target_choice: str = "gentle"):
         attempt_choice = _resolve_attempt_choice(object_name, target_choice, attempt_idx)
         try:
             paths, force_df, deform_df, segment_df, metadata = run_single_simulation(
-                object_name, target_choice, output_choice=attempt_choice
+                object_name,
+                target_choice,
+                output_choice=attempt_choice,
+                gpu_id=gpu_id,
             )
             final_choice = _resolve_final_choice(object_name, target_choice)
             metadata["target_choice"] = final_choice
@@ -1295,8 +1566,10 @@ def get_tasks_to_run():
 
     object_names = [d.name for d in objects_dir.iterdir() if d.is_dir()]
     print(f"🔍 Found {len(object_names)} objects in '{objects_dir}'.")
-    for name in object_names:
-        for target in TARGET_CHOICES:
+    expanded_targets = _expand_target_choices(TARGET_CHOICES)
+    for target in expanded_targets:
+        print(f"🔄 Queueing one full object pass for target '{target}'.")
+        for name in object_names:
             print(f"  - Queueing '{name}' with target '{target}' (no previous runs).")
             tasks.append((name, target))
 
@@ -1304,22 +1577,67 @@ def get_tasks_to_run():
 
 
 if __name__ == "__main__":
+    single_object = os.environ.get("GENESIS_SINGLE_OBJECT")
+    single_target = os.environ.get("GENESIS_SINGLE_TARGET")
+    if single_object or single_target:
+        if not (single_object and single_target):
+            raise SystemExit("GENESIS_SINGLE_OBJECT and GENESIS_SINGLE_TARGET must be set together.")
+        child_gpu_id = 0 if os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() else -1
+        main(single_object, single_target, gpu_id=child_gpu_id)
+        raise SystemExit(0)
+
     tasks_to_run = get_tasks_to_run()
     if not tasks_to_run:
         print("🎉 No new simulations to run.")
         exit()
 
     print(f"\nFound {len(tasks_to_run)} simulation task(s) to run.")
-    processes = []
-    for object_name, target_choice in tasks_to_run:
-        while len(processes) >= MAX_PARALLEL_PROCESSES:
-            processes = [p for p in processes if p.is_alive()]
-            time.sleep(1)
-        p = Process(target=main, args=(object_name, target_choice))
-        p.start()
-        processes.append(p)
-        time.sleep(5)
+    gpu_ids = _configured_gpu_ids()
+    if gpu_ids:
+        print(f"🎛️ Using physical GPU IDs {gpu_ids} with least-loaded task assignment.")
+    else:
+        print("🖥️ No GPU selected; simulations will use the CPU backend.")
+    targets_in_order = list(dict.fromkeys(target for _, target in tasks_to_run))
+    for target_choice in targets_in_order:
+        target_tasks = [task for task in tasks_to_run if task[1] == target_choice]
+        print(f"\n▶ Starting full pass '{target_choice}' ({len(target_tasks)} objects).")
+        processes = []
+        failed_processes = 0
+        for object_name, _ in target_tasks:
+            while len(processes) >= MAX_PARALLEL_PROCESSES:
+                still_running = []
+                for process, assigned_gpu_id in processes:
+                    return_code = process.poll()
+                    if return_code is None:
+                        still_running.append((process, assigned_gpu_id))
+                    elif return_code != 0:
+                        failed_processes += 1
+                processes = still_running
+                time.sleep(1)
+            if gpu_ids:
+                active_per_gpu = {
+                    gpu_id: sum(assigned_gpu_id == gpu_id for _, assigned_gpu_id in processes) for gpu_id in gpu_ids
+                }
+                physical_gpu_id = min(gpu_ids, key=lambda gpu_id: (active_per_gpu[gpu_id], gpu_ids.index(gpu_id)))
+            else:
+                physical_gpu_id = None
+            child_env = os.environ.copy()
+            child_env["GENESIS_SINGLE_OBJECT"] = object_name
+            child_env["GENESIS_SINGLE_TARGET"] = target_choice
+            if physical_gpu_id is None:
+                child_env["CUDA_VISIBLE_DEVICES"] = ""
+                child_env.pop("GENESIS_ASSIGNED_GPU", None)
+            else:
+                child_env["CUDA_VISIBLE_DEVICES"] = str(physical_gpu_id)
+                child_env["GENESIS_ASSIGNED_GPU"] = str(physical_gpu_id)
+            p = subprocess.Popen([sys.executable, str(Path(__file__).resolve())], env=child_env)
+            processes.append((p, physical_gpu_id))
+            time.sleep(5)
 
-    for p in processes:
-        p.join()
+        for p, _ in processes:
+            if p.wait() != 0:
+                failed_processes += 1
+        if failed_processes:
+            print(f"⚠️ Full pass '{target_choice}' had {failed_processes} failed worker process(es).")
+        print(f"✅ Completed full pass '{target_choice}'.")
     print("\n\nAll simulations completed.")

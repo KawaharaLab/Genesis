@@ -5,13 +5,16 @@ import pandas as pd
 
 from force_window_filter import filter_all_zero_force_windows
 
-DATA_TYPE = os.environ.get("DATA_TYPE", "eval_04272026")  # train / eval
+DATA_TYPE = os.environ.get("DATA_TYPE", "train_21072026")  # train / eval
 DATA_DIR = f"/home/user/Genesis/data/{DATA_TYPE}"
 N = int(os.environ.get("THIN_PCT", "15"))  # percentage of maximum allowed label ratio
 P = N / 100.0
 fix_seed = True
 SEED = 42
 FOR_VISION = False
+BALANCE_PLACEMENT_OUTCOME = os.environ.get(
+    "BALANCE_PLACEMENT_OUTCOME", "0" if "04272026" in DATA_TYPE else "1"
+).lower() in {"1", "true", "yes"}
 
 csv_path = f"{DATA_DIR}/{DATA_TYPE}.csv"
 df = pd.read_csv(csv_path)
@@ -37,6 +40,39 @@ else:
 weights = weights.replace({"lightweight": "light", "heavyweight": "heavy"})
 weights = np.where(np.isin(weights, ["light", "heavy"]), weights, "unknown")
 df["__normalized_weight"] = weights
+
+if "interaction" in df.columns:
+    interactions = df["interaction"].fillna("").astype(str).str.strip().str.lower()
+else:
+    interactions = pd.Series([""] * len(df), index=df.index)
+interaction_aliases = {
+    "stable contact": "stable",
+    "slowly slipping": "slow slip",
+    "quickly slipping": "fast slip",
+}
+interactions = interactions.replace(interaction_aliases)
+interactions = np.where(np.isin(interactions, ["stable", "slow slip", "fast slip"]), interactions, "unknown")
+df["__normalized_interaction"] = interactions
+
+if "placement_outcome" in df.columns:
+    placement_outcomes = df["placement_outcome"].fillna("").astype(str).str.strip().str.lower()
+else:
+    placement_outcomes = pd.Series([""] * len(df), index=df.index)
+placement_aliases = {
+    "toppled": "topple",
+    "topples after release": "topple",
+    "remains upright": "upright",
+}
+placement_outcomes = placement_outcomes.replace(placement_aliases)
+placement_outcomes = np.where(np.isin(placement_outcomes, ["topple", "upright"]), placement_outcomes, "unknown")
+df["__normalized_placement_outcome"] = placement_outcomes
+
+HELPER_COLUMNS = [
+    "__normalized_label",
+    "__normalized_weight",
+    "__normalized_interaction",
+    "__normalized_placement_outcome",
+]
 
 
 # FOR_VISION mode keeps the existing slip/stable balancing behavior.
@@ -88,7 +124,7 @@ if FOR_VISION:
     for lbl, cnt in vision_counts.sort_values(ascending=False).items():
         print(f"  {lbl}: {cnt} ({cnt / final_size * 100 if final_size else 0:.2f}%)")
 
-    df_final.drop(columns=["__normalized_label", "__normalized_weight"], inplace=True)
+    df_final.drop(columns=HELPER_COLUMNS, inplace=True)
     out_path = f"{csv_path.replace('.csv', '')}_vision.csv"
     df_final.to_csv(out_path, index=False)
     print(f"saved -> {out_path}")
@@ -201,6 +237,46 @@ def weight_balance(df_in: pd.DataFrame, rng_local: np.random.Generator) -> pd.Da
     return out
 
 
+def balance_attribute(
+    df_in: pd.DataFrame,
+    normalized_col: str,
+    classes: list[str],
+    display_name: str,
+    rng_local: np.random.Generator,
+    announce: bool = True,
+) -> pd.DataFrame:
+    """Balance known attribute classes while retaining rows where the attribute is not applicable."""
+    counts = df_in[normalized_col].value_counts()
+    present_classes = [value for value in classes if int(counts.get(value, 0)) > 0]
+    if len(present_classes) < 2:
+        if announce:
+            print(f"[{display_name}] fewer than two known classes found; skip balancing")
+        return df_in
+
+    target_per_class = min(int(counts[value]) for value in present_classes)
+    count_text = ", ".join(f"{value}={int(counts[value])}" for value in present_classes)
+    if announce:
+        print(f"[{display_name}] target per class: {target_per_class} ({count_text})")
+
+    known_mask = df_in[normalized_col].isin(present_classes)
+    selected_indices = df_in.index[~known_mask].tolist()
+    for value in present_classes:
+        pool = df_in.index[df_in[normalized_col] == value].tolist()
+        if len(pool) <= target_per_class:
+            selected_indices.extend(pool)
+        else:
+            selected_indices.extend(rng_local.choice(pool, size=target_per_class, replace=False).tolist())
+
+    return df_in.loc[sorted(selected_indices)].copy()
+
+
+def print_attribute_distribution(df_in: pd.DataFrame, normalized_col: str, display_name: str) -> None:
+    counts = df_in[normalized_col].value_counts().sort_values(ascending=False)
+    print(f"[{display_name}] distribution:")
+    for value, count in counts.items():
+        print(f"  {value}: {count}")
+
+
 before_counts = df["__normalized_label"].value_counts().sort_values(ascending=False)
 print("\n[before] label distribution:")
 for lbl, cnt in before_counts.items():
@@ -210,6 +286,9 @@ before_w = df["__normalized_weight"].value_counts().sort_values(ascending=False)
 print("[before] weight distribution:")
 for w, cnt in before_w.items():
     print(f"  {w}: {cnt} ({cnt / data_len * 100:.2f}%)")
+print_attribute_distribution(df, "__normalized_interaction", "before interaction")
+if BALANCE_PLACEMENT_OUTCOME:
+    print_attribute_distribution(df, "__normalized_placement_outcome", "before placement_outcome")
 
 # 1) label ratio cap (existing behavior)
 df_thin = apply_label_ratio_cap(df, P, rng)
@@ -217,8 +296,37 @@ df_thin = apply_label_ratio_cap(df, P, rng)
 # 2) balance weight light/heavy (new)
 df_thin = weight_balance(df_thin, rng)
 
-# 3) re-apply label ratio cap after weight balancing
-df_final = apply_label_ratio_cap(df_thin, P, rng)
+# 3) Satisfy the label cap and both attribute balances together. Balancing one
+# attribute can disturb another, so repeat the downsampling-only operations until
+# a complete pass removes no rows.
+df_final = df_thin
+MAX_BALANCE_ROUNDS = 20
+for balance_round in range(1, MAX_BALANCE_ROUNDS + 1):
+    size_before_round = len(df_final)
+    df_final = apply_label_ratio_cap(df_final, P, rng)
+    df_final = balance_attribute(
+        df_final,
+        "__normalized_interaction",
+        ["stable", "slow slip", "fast slip"],
+        "interaction",
+        rng,
+        announce=balance_round == 1,
+    )
+    if BALANCE_PLACEMENT_OUTCOME:
+        df_final = balance_attribute(
+            df_final,
+            "__normalized_placement_outcome",
+            ["topple", "upright"],
+            "placement_outcome",
+            rng,
+            announce=balance_round == 1,
+        )
+    removed_this_round = size_before_round - len(df_final)
+    print(f"[balance] round {balance_round}: removed {removed_this_round}, remaining {len(df_final)}")
+    if removed_this_round == 0:
+        break
+else:
+    print(f"[WARN] balancing did not converge after {MAX_BALANCE_ROUNDS} rounds")
 
 final_size = len(df_final)
 print("\n[after] label distribution (by count desc):")
@@ -230,6 +338,9 @@ print("[after] weight distribution:")
 final_w = df_final["__normalized_weight"].value_counts().sort_values(ascending=False)
 for w, cnt in final_w.items():
     print(f"  {w}: {cnt} ({cnt / final_size * 100 if final_size else 0:.2f}%)")
+print_attribute_distribution(df_final, "__normalized_interaction", "after interaction")
+if BALANCE_PLACEMENT_OUTCOME:
+    print_attribute_distribution(df_final, "__normalized_placement_outcome", "after placement_outcome")
 
 if final_size > 0:
     worst_lbl = max(final_counts.items(), key=lambda x: x[1] / final_size)[0]
@@ -239,7 +350,7 @@ if final_size > 0:
 print(f"dropped: {data_len - final_size}")
 print(f"final size: {final_size} (was {data_len})")
 
-df_final.drop(columns=["__normalized_label", "__normalized_weight"], inplace=True)
+df_final.drop(columns=HELPER_COLUMNS, inplace=True)
 out_path = f"{csv_path.replace('.csv', '')}_thin_{N}pct.csv"
 df_final.to_csv(out_path, index=False)
 print(f"saved -> {out_path}")

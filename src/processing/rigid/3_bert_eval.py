@@ -4,8 +4,10 @@ import torch
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
-data_dir = "data/eval_04272026"
-save_dir = "data/eval_04272026/bert_emb"
+data_type = os.environ.get("DATA_TYPE", "eval_04272026")
+thin_pct = int(os.environ.get("THIN_PCT", "15"))
+data_dir = f"data/{data_type}"
+save_dir = f"{data_dir}/bert_emb"
 os.makedirs(save_dir, exist_ok=True)
 
 model_name = "sentence-transformers/all-mpnet-base-v2"
@@ -13,10 +15,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = SentenceTransformer(model_name, device=device)
 model.max_seq_length = 512
 
-csv_path = "data/eval_04272026/eval_04272026_thin_15pct.csv"
+csv_path = f"{data_dir}/{data_type}_thin_{thin_pct}pct.csv"
 df = pd.read_csv(csv_path)
 
-target_cols = ["label", "action", "weight", "interaction", "annotation"]
+target_cols = ["label", "action", "weight", "interaction", "placement_outcome", "annotation"]
 batch_size = 64
 
 def collect_unique(series: pd.Series) -> list[str]:
