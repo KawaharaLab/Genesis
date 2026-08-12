@@ -505,6 +505,32 @@ def test_implicit_sap_coupler_collide_sphere_box(show_viewer):
         assert_allclose(entity_center[2], init_height, tol=5e-3)
 
 
+@pytest.mark.required
+@pytest.mark.parametrize("precision", ["64"])
+def test_sap_rigid_fem_contact_without_fem_self_contact(show_viewer):
+    scene = gs.Scene(
+        sim_options=gs.options.SimOptions(dt=0.01, substeps=2),
+        fem_options=gs.options.FEMOptions(use_implicit_solver=True),
+        coupler_options=gs.options.SAPCouplerOptions(
+            fem_floor_contact_type="vert",
+            enable_fem_self_tet_contact=False,
+            rigid_floor_contact_type="none",
+            rigid_rigid_contact_type="none",
+        ),
+        show_viewer=show_viewer,
+    )
+    scene.add_entity(
+        morph=gs.morphs.Box(pos=(0.0, 0.0, 0.05), size=(0.05, 0.05, 0.05)),
+        material=gs.materials.FEM.Elastic(model="linear_corotated"),
+    )
+    scene.add_entity(
+        morph=gs.morphs.Box(pos=(0.0, 0.0, 0.15), size=(0.05, 0.05, 0.05)),
+        material=gs.materials.Rigid(),
+    )
+    scene.build()
+    scene.step()
+
+
 # This test cannot be flagged as required because it takes 400s to run on CPU.
 # @pytest.mark.required
 @pytest.mark.parametrize("precision", ["64"])

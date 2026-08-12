@@ -231,7 +231,11 @@ class SAPCoupler(RBC):
                     "SAPCoupler requires FEM to use implicit solver. "
                     "Please set `use_implicit_solver=True` in FEM options."
                 )
-            if self._fem_floor_contact_type == FEMFloorContactType.TET or self._enable_fem_self_tet_contact:
+            if (
+                self._fem_floor_contact_type == FEMFloorContactType.TET
+                or self._enable_fem_self_tet_contact
+                or self._enable_rigid_fem_contact
+            ):
                 init_tet_tables = True
                 self._init_hydroelastic_fem_fields_and_info()
 
@@ -405,7 +409,7 @@ class SAPCoupler(RBC):
                     grad[i_e] += grad_i * self.rigid_pressure_field[i_v0]
 
     def _init_bvh(self):
-        if self._enable_fem_self_tet_contact:
+        if self._enable_fem_self_tet_contact or self._enable_rigid_fem_contact:
             self.fem_surface_tet_aabb = AABB(self.fem_solver._B, self.fem_solver.n_surface_elements)
             self.fem_surface_tet_bvh = FEMSurfaceTetLBVH(
                 self.fem_solver, self.fem_surface_tet_aabb, max_n_query_result_per_aabb=MAX_N_QUERY_RESULT_PER_AABB
@@ -587,9 +591,12 @@ class SAPCoupler(RBC):
     def precompute(self, i_step):
         from genesis.engine.solvers.rigid.rigid_solver import kernel_update_all_verts
 
-        if self.fem_solver.is_active:
-            if qd.static(self._fem_floor_contact_type == FEMFloorContactType.TET or self._enable_fem_self_tet_contact):
-                self.fem_compute_pressure_gradient(i_step)
+        if self.fem_solver.is_active and qd.static(
+            self._fem_floor_contact_type == FEMFloorContactType.TET
+            or self._enable_fem_self_tet_contact
+            or self._enable_rigid_fem_contact
+        ):
+            self.fem_compute_pressure_gradient(i_step)
 
         if self.rigid_solver.is_active:
             kernel_update_all_verts(
@@ -683,7 +690,7 @@ class SAPCoupler(RBC):
     # ------------------------------------------------------------------------------------
 
     def update_bvh(self, i_step: qd.i32):
-        if self._enable_fem_self_tet_contact:
+        if self._enable_fem_self_tet_contact or self._enable_rigid_fem_contact:
             self.update_fem_surface_tet_bvh(i_step)
 
         if self._enable_rigid_fem_contact:
