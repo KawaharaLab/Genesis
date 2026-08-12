@@ -10,10 +10,6 @@ from OpenGL.GL import *
 import genesis as gs
 
 from .constants import RenderFlags
-from .shader_program import ShaderProgram
-
-
-MODULE_DIR = os.path.dirname(__file__)
 
 
 class OffscreenRenderer(object):
@@ -98,6 +94,10 @@ class OffscreenRenderer(object):
         self._platform.make_uncurrent()
         self._has_valid_context = False
 
+    def save_current_context(self):
+        """Capture the current GL context as a restore callable (see 'Platform.save_current_context')."""
+        return self._platform.save_current_context()
+
     def render(
         self,
         scene,
@@ -111,6 +111,7 @@ class OffscreenRenderer(object):
         shadow=False,
         plane_reflection=False,
         env_separate_rigid=False,
+        skip_markers=False,
     ):
         """Render a scene with the given set of flags.
 
@@ -155,6 +156,11 @@ class OffscreenRenderer(object):
         if env_separate_rigid:
             flags |= RenderFlags.ENV_SEPARATE
 
+        if skip_markers:
+            flags |= RenderFlags.SKIP_MARKERS
+        else:
+            flags |= RenderFlags.MARKER_XRAY
+
         if seg:
             seg_node_map = self._seg_node_map
             flags |= RenderFlags.SEG
@@ -164,6 +170,7 @@ class OffscreenRenderer(object):
         if depth:
             flags |= RenderFlags.RET_DEPTH
 
+        first_pass_done = False
         if rgb or depth or seg:
             if self._platform.supports_framebuffers():
                 flags |= RenderFlags.OFFSCREEN
@@ -189,38 +196,29 @@ class OffscreenRenderer(object):
                     color_arr = renderer.jit.read_color_buf(self.viewport_height, self.viewport_width, rgba=False)
                     color_arr = renderer._resize_image(color_arr, antialias=not seg)
                     retval = (color_arr, depth_arr) if depth else (color_arr,)
+            first_pass_done = True
         else:
             retval = ()
 
         if normal:
-
-            class CustomShaderCache:
-                def __init__(self):
-                    self.program = None
-
-                def get_program(self, vertex_shader, fragment_shader, geometry_shader=None, defines=None):
-                    if self.program is None:
-                        self.program = ShaderProgram(
-                            os.path.join(MODULE_DIR, "shaders/mesh_normal.vert"),
-                            os.path.join(MODULE_DIR, "shaders/mesh_normal.frag"),
-                            defines=defines,
-                        )
-                    return self.program
-
             old_cache = renderer._program_cache
-            renderer._program_cache = CustomShaderCache()
+            renderer._program_cache = renderer._normal_program_cache
 
             flags = RenderFlags.FLAT | RenderFlags.OFFSCREEN
             if env_separate_rigid:
                 flags |= RenderFlags.ENV_SEPARATE
+            if skip_markers:
+                flags |= RenderFlags.SKIP_MARKERS
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
             if self._platform.supports_framebuffers():
-                normal_arr, *_ = renderer.render(scene, flags, is_first_pass=False, force_skip_shadows=True)
+                normal_arr, *_ = renderer.render(
+                    scene, flags, is_first_pass=not first_pass_done, force_skip_shadows=True
+                )
             else:
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, 0)
                 glReadBuffer(GL_FRONT)
-                renderer.render(scene, flags, is_first_pass=False, force_skip_shadows=True)
+                renderer.render(scene, flags, is_first_pass=not first_pass_done, force_skip_shadows=True)
                 normal_arr = renderer.jit.read_color_buf(self.viewport_height, self.viewport_width, rgba=False)
                 normal_arr = renderer._resize_image(normal_arr, antialias=not seg)
 
@@ -235,7 +233,10 @@ class OffscreenRenderer(object):
 
     def delete(self):
         """Free all OpenGL resources."""
-        self._platform.make_current()
+        # Do not force this context current before deleting it. The platforms' current-context state is
+        # process/thread-global, so making it current here would clobber the context another renderer may be
+        # using (e.g. while it is mid-render, when this renderer is being torn down by garbage collection).
+        # 'delete_context' makes itself current only when the platform requires it.
         self._platform.delete_context()
         del self._platform
         self._platform = None

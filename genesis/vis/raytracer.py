@@ -154,19 +154,18 @@ class Raytracer:
         # light objects
         self.lights = []
         for light in options.lights:
-            light_intensity = light.get("intensity", 1.0)
             light_surface = gs.surfaces.Emission(
-                color=map(lambda x: x * light_intensity, light["color"]),
+                color=tuple(x * light.intensity for x in light.color),
             )
             light_surface.update_texture()
-            self.lights.append(SphereLight(radius=light["radius"], pos=light["pos"], surface=light_surface))
+            self.lights.append(SphereLight(radius=light.radius, pos=light.pos, surface=light_surface))
 
         # backend and device selection: aligning with genesis if possible
         backend = gs.backend.name
         device_index = options.device_index
         if device_index is None:
             # If no device index has been specified, use Torch GPU device ID if any, 0 otherwise
-            device_index = 0 if gs.device.type == "cpu" else gs.device.index
+            device_index = 0 if gs.device.type == "cpu" else (gs.device.index or 0)
         if backend == "amdgpu":
             # Luisa does not support HIP for AMD GPU: using DirectX on Windows, falling back to CPU otherwise
             if sys.platform == "win32":
@@ -174,6 +173,8 @@ class Raytracer:
             else:
                 backend = "cpu"
                 device_index = 0
+        elif sys.platform == "darwin":
+            backend = "metal"
         self.backend = backend
         self.device_index = device_index
 
@@ -246,9 +247,15 @@ class Raytracer:
             light.add_to_render(self)
 
         for entity in self.sim.entities:
-            if isinstance(entity, entities.RigidEntity):
-                for geom in entity.vgeoms + entity.geoms:
+            if isinstance(entity, entities.KinematicEntity):
+                for geom in entity.vgeoms:
                     self.add_surface(str(geom.uid), geom.surface)
+                if isinstance(entity, entities.RigidEntity):
+                    for geom in entity.geoms:
+                        self.add_surface(str(geom.uid), geom.surface)
+            elif isinstance(entity, entities.FEMEntity):
+                for vgeom in entity.vgeoms:
+                    self.add_surface(str(vgeom.uid), vgeom.surface)
             else:
                 self.add_surface(str(entity.uid), entity.surface)
 
@@ -276,6 +283,20 @@ class Raytracer:
                         mesh = geom.get_sdf_trimesh()
                     else:
                         mesh = geom.get_trimesh()
+                    self.add_rigid_batch(
+                        name=str(geom.uid),
+                        vertices=mesh.vertices,
+                        triangles=mesh.faces,
+                        normals=mesh.vertex_normals,
+                        uvs=np.array([]) if geom.uvs is None else geom.uvs,
+                    )
+
+        # kinematic entities
+        if self.sim.kinematic_solver.is_active:
+            for kinematic_entity in self.sim.kinematic_solver.entities:
+                assert kinematic_entity.surface.vis_mode == "visual"
+                for geom in kinematic_entity.vgeoms:
+                    mesh = geom.get_trimesh()
                     self.add_rigid_batch(
                         name=str(geom.uid),
                         vertices=mesh.vertices,
@@ -316,7 +337,8 @@ class Raytracer:
         if self.sim.fem_solver.is_active:
             for fem_entity in self.sim.fem_solver.entities:
                 if fem_entity.surface.vis_mode == "visual":
-                    self.add_deformable(str(fem_entity.uid))
+                    for vgeom in fem_entity.vgeoms:
+                        self.add_deformable(str(vgeom.uid))
 
     def get_transform(self, matrix):
         if matrix is None:
@@ -340,7 +362,7 @@ class Raytracer:
                     image_data=np.ascontiguousarray(image_array).tobytes(),
                     width=image_array.shape[1],
                     height=image_array.shape[0],
-                    channel=texture.channel(),
+                    channel=texture.channel,
                     scale=texture.image_color,
                     encoding=texture.encoding,
                 )
@@ -353,10 +375,10 @@ class Raytracer:
 
     def add_surface(self, shape_name, surface):
         # add emission
-        if surface.get_emission() is not None:
+        if surface.emission is not None:
             emission_luisa = LuisaRenderPy.Light(
                 name=f"emis_{shape_name}",
-                emission=self.get_texture(surface.get_emission()),
+                emission=self.get_texture(surface.emission),
                 two_sided=False if surface.double_sided is None else surface.double_sided,
                 beam_angle=surface.cutoff,
             )
@@ -653,15 +675,18 @@ class Raytracer:
                 T = gu.trans_quat_to_T(pos, quat)
                 self.update_rigid(str(tool_entity.uid), T)
 
-        # rigid entities
-        if self.sim.rigid_solver.is_active:
-            for rigid_entity in self.sim.rigid_solver.entities:
-                if rigid_entity.surface.vis_mode == "visual":
-                    geoms = rigid_entity.vgeoms
-                    geoms_T = self.sim.rigid_solver._vgeoms_render_T
+        # rigid-like entities (rigid + kinematic)
+        for solver in (self.sim.rigid_solver, self.sim.kinematic_solver):
+            if not solver.is_active:
+                continue
+
+            for entity in solver.entities:
+                if entity.surface.vis_mode == "visual":
+                    geoms = entity.vgeoms
+                    geoms_T = solver._vgeoms_render_T
                 else:
-                    geoms = rigid_entity.geoms
-                    geoms_T = self.sim.rigid_solver._geoms_render_T
+                    geoms = entity.geoms
+                    geoms_T = solver._geoms_render_T
 
                 for geom in geoms:
                     geom_T = geoms_T[geom.idx]  # TODO: support batching
@@ -760,27 +785,24 @@ class Raytracer:
 
         # FEM entities
         if self.sim.fem_solver.is_active:
-            vertices_all, triangles_all, uvs_qd = self.sim.fem_solver.get_state_render(self.sim.cur_substep_local)
-            vertices_all = vertices_all.to_numpy()[:, self.rendered_envs_idx[0]]
-            triangles_all = triangles_all.to_numpy().reshape((-1, 3))
-            uvs_all = uvs_qd.to_numpy()
+            vverts_pos, _, _ = self.sim.fem_solver.get_state_render(self.sim.cur_substep_local)
+            vverts_all = miscu.qd_to_numpy(vverts_pos, self.rendered_envs_idx[0], keepdim=False, transpose=True)
 
             for fem_entity in self.sim.fem_solver.entities:
-                if fem_entity.surface.vis_mode == "visual":
-                    vertices = vertices_all[fem_entity.v_start : fem_entity.v_start + fem_entity.n_vertices]
-                    triangles = (
-                        triangles_all[fem_entity.s_start : (fem_entity.s_start + fem_entity.n_surfaces)]
-                        - fem_entity.v_start
-                    )
-                    vertex_normals = trimesh.Trimesh(vertices=vertices, faces=triangles, process=False).vertex_normals
-                    uvs = uvs_all[fem_entity.v_start : fem_entity.v_start + fem_entity.n_vertices]
+                if fem_entity.surface.vis_mode != "visual":
+                    continue
 
+                for vgeom in fem_entity.vgeoms:
+                    render_verts = vverts_all[vgeom.vvert_start : vgeom.vvert_end]
+                    vertex_normals = trimesh.Trimesh(
+                        vertices=render_verts, faces=vgeom.vmesh.faces, process=False
+                    ).vertex_normals
                     self.update_deformable(
-                        str(fem_entity.uid),
-                        vertices,
-                        triangles,
+                        str(vgeom.uid),
+                        render_verts,
+                        vgeom.vmesh.faces,
                         vertex_normals,
-                        uvs,
+                        np.array([]) if vgeom.uvs is None else vgeom.uvs,
                     )
 
         # Flush the update buffer.

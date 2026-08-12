@@ -91,12 +91,10 @@ class ParticleEntity(Entity):
             self._surface = self._vmesh[0].surface
 
         elif isinstance(self._morph, (gs.options.morphs.Primitive, gs.options.morphs.Mesh)):
-            self._vmesh = gs.Mesh.from_morph_surface(self.morph, self.surface)
-            if isinstance(self._vmesh, list):
-                if len(self._vmesh) > 1:
-                    gs.raise_exception("Mesh file with multiple sub-meshes are not supported.")
-                else:
-                    self._vmesh = self._vmesh[0]
+            meshes = gs.Mesh.from_morph_surface(self.morph, self.surface)
+            if len(meshes) > 1:
+                gs.raise_exception("Mesh file with multiple sub-meshes are not supported.")
+            self._vmesh = meshes[0]
             self._surface = self._vmesh.surface
 
         else:
@@ -244,11 +242,11 @@ class ParticleEntity(Entity):
 
         if isinstance(self._morph, gs.options.morphs.MeshSet):
             particles = []
+            mesh_data = self._morph.model_dump()
+            del mesh_data["files"], mesh_data["poss"], mesh_data["eulers"], mesh_data["quat"]
             for i, file in enumerate(self._morph.files):
-                morph_i = self._morph.model_copy()
-                morph_i.file = file
-                morph_i.pos = morph_i.poss[i]
-                morph_i.euler = morph_i.eulers[i]
+                mesh_data.update(file=file, pos=self._morph.poss[i], euler=self._morph.eulers[i])
+                morph_i = gs.morphs.Mesh(**mesh_data)
                 mesh_i = morph_i.file.copy()
                 mesh_i.vertices = mesh_i.vertices * morph_i.scale
 
@@ -322,16 +320,16 @@ class ParticleEntity(Entity):
                 self._vfaces = np.zeros((0, 3), dtype=gs.np_int)
             origin = np.mean(self._morph.poss, dtype=gs.np_float)
         else:
-            # transform vmesh
-            pos = np.asarray(self._morph.pos, dtype=gs.np_float)
-            quat = np.asarray(self._morph.quat, dtype=gs.np_float)
+            # transform vmesh (the morph pose offset, e.g. an up-axis conversion, is composed onto the morph pose)
+            pos, quat = gu.transform_pos_quat_by_trans_quat(
+                np.array(self._morph.offset_pos, dtype=gs.np_float),
+                np.array(self._morph.offset_quat, dtype=gs.np_float),
+                np.array(self._morph.pos, dtype=gs.np_float),
+                np.array(self._morph.quat, dtype=gs.np_float),
+            )
             self._vmesh.apply_transform(gu.trans_quat_to_T(pos, quat))
             # transform particles
-            particles = gu.transform_by_trans_quat(
-                particles,
-                np.asarray(self._morph.pos, dtype=gs.np_float),
-                np.asarray(self._morph.quat, dtype=gs.np_float),
-            )
+            particles = gu.transform_by_trans_quat(particles, pos, quat)
 
             if not self._solver.boundary.is_inside(particles):
                 gs.raise_exception(
@@ -347,7 +345,7 @@ class ParticleEntity(Entity):
             else:
                 self._vverts = np.zeros((0, 3), dtype=gs.np_float)
                 self._vfaces = np.zeros((0, 3), dtype=gs.np_int)
-            origin = np.asarray(self._morph.pos, dtype=gs.np_float)
+            origin = pos
 
         self._particles = np.asarray(particles, dtype=gs.np_float, order="C")
         self._init_particles_offset = gs.tensor(self._particles) - gs.tensor(origin)
@@ -688,6 +686,7 @@ class ParticleEntity(Entity):
         """
         raise NotImplementedError
 
+    @gs.assert_built
     def get_mass(self, envs_idx=None):
         """
         Return the total mass of the entity.
@@ -695,7 +694,7 @@ class ParticleEntity(Entity):
         Parameters
         ----------
         envs_idx : None | int | array_like, shape (M,), optional
-            The indices of the environments to set. If None, all environments will be considered. Defaults to None.
+            The indices of the environments to query. If None, all environments will be considered. Defaults to None.
 
         Returns
         -------
@@ -703,8 +702,8 @@ class ParticleEntity(Entity):
             The computed total mass.
         """
         envs_idx = self._scene._sanitize_envs_idx(envs_idx)
-        mass = torch.empty((len(envs_idx),), dtype=gs.tc_float, device=gs.device)
-        self.solver._kernel_get_mass(mass, envs_idx)
+        mass = torch.zeros((len(envs_idx),), dtype=gs.tc_float, device=gs.device)
+        self.solver._kernel_get_mass(self._particle_start, self.n_particles, mass, envs_idx)
         return mass
 
     # ------------------------------------------------------------------------------------

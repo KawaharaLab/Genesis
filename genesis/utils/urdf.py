@@ -1,10 +1,11 @@
 import os
 import xml.etree.ElementTree as ET
-from itertools import chain
 from pathlib import Path
 
 import numpy as np
 import trimesh
+
+import xacro
 
 import genesis as gs
 import genesis.utils.gltf as gltf_utils
@@ -26,7 +27,7 @@ def get_robot_name(file_path):
     Parameters
     ----------
     file_path : str or Path
-        Path to the URDF file.
+        Path to the URDF file, or inline URDF XML content.
 
     Returns
     -------
@@ -38,9 +39,11 @@ def get_robot_name(file_path):
     ValueError
         If the robot name attribute is missing or empty.
     """
-    path = os.path.join(get_assets_dir(), file_path)
-    tree = ET.parse(path)
-    root = tree.getroot()
+    try:
+        # Inline XML content parses directly; a file path does not and falls back to reading from disk.
+        root = ET.fromstring(file_path)
+    except ET.ParseError:
+        root = ET.parse(os.path.join(get_assets_dir(), file_path)).getroot()
     if root.tag == "robot":
         name = root.attrib.get("name")
         if name:
@@ -49,8 +52,44 @@ def get_robot_name(file_path):
     raise ValueError(f"Invalid URDF file '{file_path}'. Missing <robot> root element.")
 
 
-def _order_links(l_infos, j_infos, links_g_infos=None):
-    # re-order links based on depth in the kinematic tree, so that parent links are always before child links
+def load_xacro(path, mappings):
+    """Load a XACRO file into a ``urdfpy.URDF`` object with absolute mesh paths.
+
+    Expands all xacro macros, properties, includes, and conditionals in-memory using the ``xacro`` package, then
+    parses the resulting URDF XML into a ``urdfpy.URDF`` object. All relative mesh filenames are resolved to absolute
+    paths so that downstream consumers do not need access to the original source directory.
+
+    Note
+    ----
+    ``$(find package_name)`` substitutions require ROS's ``ament_index_python`` package.
+
+    Parameters
+    ----------
+    path : str
+        Absolute path to the ``.xacro`` or ``.urdf.xacro`` file.
+    mappings : dict
+        Key-value pairs to override ``xacro:arg`` declarations.
+
+    Returns
+    -------
+    urdfpy.URDF
+        The parsed URDF with absolute mesh paths.
+    """
+    doc = xacro.process_file(path, mappings=dict(mappings))
+    node = ET.fromstring(doc.toxml())
+    source_dir = os.path.dirname(path)
+    robot = urdfpy.URDF._from_xml(node, node, source_dir)
+    for link in robot.links:
+        for geom_prop in (*link.collisions, *link.visuals):
+            if isinstance(geom_prop.geometry.geometry, urdfpy.Mesh):
+                geom_prop.geometry.geometry.filename = urdfpy.utils.get_filename(
+                    source_dir, geom_prop.geometry.geometry.filename
+                )
+    return robot
+
+
+def order_links_depth_first(l_infos, j_infos, links_g_infos=None):
+    # Re-order links depth-first so that each subtree occupies a contiguous range and parents precede their children.
     n_links = len(l_infos)
     dict_child = {k: [] for k in range(n_links)}
     for lc in range(n_links):
@@ -60,18 +99,17 @@ def _order_links(l_infos, j_infos, links_g_infos=None):
         if lp != -1:
             dict_child[lp].append(lc)
 
+    # Depth-first pre-order: a parent always precedes its children (required downstream), and each subtree occupies a
+    # contiguous index range, so a free body and all of its descendants get contiguous links and DOFs. Siblings keep
+    # their original relative order, and the result matches MuJoCo's body ordering. Contiguity lets the per-tree
+    # mass-matrix factorization stay block-local instead of spanning the whole (possibly multi-body) entity.
     ordered_links_idx = []
-    n_level = 0
-    stack_topology = [lc for lc in range(n_links) if l_infos[lc]["parent_idx"] == -1]
-    while len(stack_topology) > 0:
-        next_stack = []
-        ordered_links_idx.append([])
-        for link in stack_topology:
-            ordered_links_idx[n_level].append(link)
-            next_stack += dict_child[link]
-        n_level += 1
-        stack_topology = next_stack
-    ordered_links_idx = tuple(chain.from_iterable(ordered_links_idx))
+    stack_topology = [lc for lc in reversed(range(n_links)) if l_infos[lc]["parent_idx"] == -1]
+    while stack_topology:
+        link = stack_topology.pop()
+        ordered_links_idx.append(link)
+        stack_topology.extend(reversed(dict_child[link]))
+    ordered_links_idx = tuple(ordered_links_idx)
 
     if not ordered_links_idx:
         # avoid case with worldbody without any body (geom directly assigned to worldbody)
@@ -80,6 +118,8 @@ def _order_links(l_infos, j_infos, links_g_infos=None):
     for l_info in l_infos:
         if l_info["parent_idx"] >= 0:  # non-base link
             l_info["parent_idx"] = ordered_links_idx.index(l_info["parent_idx"])
+        if "root_idx" in l_info:
+            l_info["root_idx"] = ordered_links_idx.index(l_info["root_idx"])
 
     new_l_infos = [l_infos[i] for i in ordered_links_idx]
     new_j_infos = [j_infos[i] for i in ordered_links_idx]
@@ -92,9 +132,15 @@ def _order_links(l_infos, j_infos, links_g_infos=None):
 
 def parse_urdf(morph, surface):
     if isinstance(morph.file, (str, Path)):
-        path = os.path.join(get_assets_dir(), morph.file)
-        parent_dir = os.path.dirname(path)
-        robot = urdfpy.URDF.load(path)
+        # Inline XML content parses directly; a file path does not and falls back to reading from disk.
+        try:
+            node = ET.fromstring(morph.file)
+            parent_dir = os.getcwd()
+            robot = urdfpy.URDF._from_xml(node, node, parent_dir)
+        except (ET.ParseError, TypeError):
+            path = os.path.join(get_assets_dir(), morph.file)
+            parent_dir = os.path.dirname(path)
+            robot = urdfpy.URDF.load(path)
     else:
         parent_dir = os.getcwd()
         robot = morph.file
@@ -127,17 +173,18 @@ def parse_urdf(morph, surface):
         # we compute urdf's invweight later
         l_info["invweight"] = np.full((2,), fill_value=-1.0)
 
-        if link.inertial is None:
-            l_info["inertial_pos"] = gu.zero_pos()
-            l_info["inertial_quat"] = gu.identity_quat()
-            l_info["inertial_i"] = None
-            l_info["inertial_mass"] = None
-
-        else:
-            l_info["inertial_pos"] = link.inertial.origin[:3, 3]
-            l_info["inertial_quat"] = gu.R_to_quat(link.inertial.origin[:3, :3])
-            l_info["inertial_i"] = link.inertial.inertia
-            l_info["inertial_mass"] = link.inertial.mass
+        l_info["inertial_pos"] = None
+        l_info["inertial_quat"] = gu.identity_quat()
+        l_info["inertial_i"] = None
+        l_info["inertial_mass"] = None
+        if link.inertial is not None:
+            if link.inertial.origin is not None:
+                l_info["inertial_pos"] = link.inertial.origin[:3, 3]
+                l_info["inertial_quat"] = gu.R_to_quat(link.inertial.origin[:3, :3])
+            if link.inertial.inertia is not None:
+                l_info["inertial_i"] = link.inertial.inertia
+            if link.inertial.mass is not None:
+                l_info["inertial_mass"] = link.inertial.mass
 
         for geom_prop in (*link.collisions, *link.visuals):
             geometry = geom_prop.geometry.geometry
@@ -200,7 +247,7 @@ def parse_urdf(morph, surface):
                 if geom_is_col:
                     geom_surface = gs.surfaces.Collision()
                 elif (
-                    surface.color is None
+                    surface.texture is None
                     and getattr(geom_prop, "material") is not None
                     and geom_prop.material.color is not None
                     and (morph.prioritize_urdf_material or not tmesh.visual.defined)
@@ -333,13 +380,15 @@ def parse_urdf(morph, surface):
         if joint.joint_type not in ("floating", "fixed") and morph.default_armature is not None:
             j_info["dofs_armature"] = np.full((j_info["n_dofs"],), morph.default_armature)
 
-        j_info["dofs_kp"] = gu.default_dofs_kp(j_info["n_dofs"])
-        j_info["dofs_kv"] = gu.default_dofs_kv(j_info["n_dofs"])
+        kp = gu.default_dofs_kp(j_info["n_dofs"])
+        kv = gu.default_dofs_kv(j_info["n_dofs"])
         if joint.safety_controller is not None:
             if joint.safety_controller.k_position is not None:
-                j_info["dofs_kp"] = np.tile(joint.safety_controller.k_position, j_info["n_dofs"])
+                kp = np.tile(joint.safety_controller.k_position, j_info["n_dofs"])
             if joint.safety_controller.k_velocity is not None:
-                j_info["dofs_kv"] = np.tile(joint.safety_controller.k_velocity, j_info["n_dofs"])
+                kv = np.tile(joint.safety_controller.k_velocity, j_info["n_dofs"])
+        j_info["dofs_act_gain"] = kp
+        j_info["dofs_act_bias"] = np.column_stack([np.zeros_like(kp), -kp, -kv])
 
         j_info["dofs_force_range"] = np.tile([-np.inf, np.inf], (j_info["n_dofs"], 1))
         if joint.limit is not None and joint.limit.effort is not None:
@@ -348,21 +397,19 @@ def parse_urdf(morph, surface):
     # Apply scaling factor
     for l_info, link_j_infos, link_g_infos in zip(l_infos, links_j_infos, links_g_infos):
         l_info["pos"] *= morph.scale
-        l_info["inertial_pos"] *= morph.scale
-
+        if l_info["inertial_pos"] is not None:
+            l_info["inertial_pos"] *= morph.scale
         if l_info["inertial_mass"] is not None:
             l_info["inertial_mass"] *= morph.scale**3
         if l_info["inertial_i"] is not None:
             l_info["inertial_i"] *= morph.scale**5
-
         for j_info in link_j_infos:
             j_info["pos"] *= morph.scale
-
         for g_info in link_g_infos:
             g_info["pos"] *= morph.scale
 
     # Re-order kinematic tree info
-    l_infos, links_j_infos, links_g_infos, _ = _order_links(l_infos, links_j_infos, links_g_infos)
+    l_infos, links_j_infos, links_g_infos, _ = order_links_depth_first(l_infos, links_j_infos, links_g_infos)
 
     eqs_info = parse_equalities(robot, morph)
 
@@ -447,6 +494,63 @@ def rotate_inertia(I, R):
     return R @ I @ R.T
 
 
+def principal_axes_rot(I, tol=1e-3):
+    """Return rotation matrix R whose columns are the (unsorted) principal axes of inertia I."""
+    I = 0.5 * (I + I.T)
+    eigvals, eigvecs = np.linalg.eigh(I)
+
+    if 1.0 - np.mean(np.abs(eigvecs).max(axis=1)) < tol:
+        return np.eye(3)
+
+    # Find degenerate groups
+    groups, i = [], 0
+    while i < 3:
+        j = i + 1
+        while j < 3 and eigvals[j] - eigvals[i] < tol * eigvals[-1]:
+            j += 1
+        groups.append(list(range(i, j)))
+        i = j
+
+    # Assign unique eigenvectors to their closest coordinate axis first
+    out_cols = [None, None, None]
+    used_axes = set()
+    for g in groups:
+        if len(g) == 1:
+            col = g[0]
+            for ax in np.argsort(np.abs(eigvecs[:, col]))[::-1]:
+                if ax not in used_axes:
+                    out_cols[ax] = col
+                    used_axes.add(ax)
+                    break
+
+    # Fill remaining axes with degenerate group columns
+    remaining_axes = [ax for ax in range(3) if ax not in used_axes]
+    remaining_cols = [c for g in groups if len(g) > 1 for c in g]
+    for ax, col in zip(remaining_axes, remaining_cols):
+        out_cols[ax] = col
+
+    R = eigvecs[:, out_cols]
+
+    # Procrustes on the degenerate axes (which may be non-contiguous after reordering)
+    if remaining_axes:
+        U = R[:, remaining_axes]
+        T = np.eye(3)[:, remaining_axes]
+        Usvd, _, Vt = np.linalg.svd(U.T @ T)
+        Q = Usvd @ Vt
+        if np.linalg.det(Q) < 0:
+            Usvd[:, -1] *= -1
+            Q = Usvd @ Vt
+        R[:, remaining_axes] = U @ Q
+
+    # Canonicalize sign: largest-magnitude element of each column should be positive
+    R *= np.sign(R[np.argmax(np.abs(R), axis=0), np.arange(3)])
+
+    # Make sure the matrix is a pure rotation
+    if np.linalg.det(R) < 0:
+        R[:, 0] = -R[:, 0]
+    return R
+
+
 def compose_inertial_properties(mass1, com1, inertia1, mass2, com2, inertia2):
     """
     Compose inertial properties of two bodies.
@@ -478,22 +582,23 @@ def merge_inertia(link1, link2):
     """Combine two links with fixed joint."""
     if link2.inertial is None:
         return
+    elif link2.inertial.origin is None:
+        link2.inertial.origin = np.eye(4, dtype=np.float64)
 
     if link1.inertial is None:
         link1.inertial = link2.inertial
         return
+    elif link1.inertial.origin is None:
+        link1.inertial.origin = np.eye(4, dtype=np.float64)
 
     m1 = link1.inertial.mass
     m2 = link2.inertial.mass
 
-    com1 = link1.inertial.origin[:3, 3]
-    com2 = link2.inertial.origin[:3, 3]
-
-    R1 = link1.inertial.origin[:3, :3]
-    R2 = link2.inertial.origin[:3, :3]
+    com1, R1 = link1.inertial.origin[:3, 3], link1.inertial.origin[:3, :3]
+    com2, R2 = link2.inertial.origin[:3, 3], link2.inertial.origin[:3, :3]
 
     combined_mass = m1 + m2
-    if combined_mass > 0:
+    if combined_mass > gs.EPS:
         combined_com = (m1 * com1 + m2 * com2) / combined_mass
     else:
         combined_com = com1
@@ -533,12 +638,12 @@ def update_subtree(links, joints, root_name, transform):
 
     # Apply the transformation to the current link
     if current_link.inertial is not None:
-        current_link.inertial.origin = transform @ current_link.inertial.origin
+        if current_link.inertial.origin is None:
+            current_link.inertial.origin = transform
+        else:
+            current_link.inertial.origin = transform @ current_link.inertial.origin
 
-    for geom in current_link.visuals:
-        geom.origin = transform @ geom.origin
-
-    for geom in current_link.collisions:
+    for geom in (*current_link.visuals, *current_link.collisions):
         geom.origin = transform @ geom.origin
 
     for joint in joints:

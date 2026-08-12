@@ -52,8 +52,8 @@ def as_grayscale_image(
 
     # Normalize values between 0.0 and 1.0
     data_delta = data_max - data_min
-    data_rel = data_float - data_min if black_to_white else data_max - data_float
-    data_normalized = np.divide(data_rel, data_delta, where=data_delta > gs.EPS)
+    data_normalized = data_float - data_min if black_to_white else data_max - data_float
+    np.divide(data_normalized, data_delta, where=data_delta > gs.EPS, out=data_normalized)
 
     # Discretize as unsigned int8
     return (data_normalized * 255.0).astype(np.uint8)
@@ -145,7 +145,7 @@ class FrameImageExporter:
         executor: Executor | None = None,
     ):
         """
-        Export multiple frames from a single camera but different environments in parrallel as PNG files.
+        Export multiple frames from a single camera but different environments in parallel as PNG files.
 
         Parameters
         ----------
@@ -209,7 +209,7 @@ class FrameImageExporter:
                 imgs_data = as_grayscale_image(
                     imgs_data, self.depth_clip_max, self.enable_depth_log_scale, black_to_white=False
                 )
-            elif img_type == IMAGE_TYPE.SEGMENTATION:
+            elif img_type == IMAGE_TYPE.SEGMENTATION and imgs_data.ndim == 3:
                 imgs_data = as_grayscale_image(imgs_data, None, enable_log_scale=False, black_to_white=True)
             imgs_data = imgs_data.astype(np.uint8)
 

@@ -1,8 +1,16 @@
-import genesis as gs
-from genesis.repr_base import RBC
+from typing import TYPE_CHECKING, Generic, TypeVar
+
+from pydantic import StrictBool
+
+from genesis.options.options import Options
+
+if TYPE_CHECKING:
+    from genesis.engine.entities.base_entity import Entity
+
+EntityT = TypeVar("EntityT", bound="Entity")
 
 
-class Material(RBC):
+class Material(Options, Generic[EntityT]):
     """
     The base class of materials.
 
@@ -11,13 +19,4 @@ class Material(RBC):
     This class should *not* be instantiated directly.
     """
 
-    def __init__(self):
-        self._uid = gs.UID()
-
-    @property
-    def uid(self):
-        return self._uid
-
-    @classmethod
-    def _repr_type(cls):
-        return f"<gs.{cls.__module__.split('.')[-2]}.{cls.__name__}>"
+    use_visual_raycasting: StrictBool = False

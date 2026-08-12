@@ -8,9 +8,12 @@ import numbers
 import os
 import random
 import sys
+from collections import OrderedDict
+from collections.abc import Callable, Mapping
 from dataclasses import field
+from importlib import import_module
 from itertools import combinations
-from typing import Any, NoReturn, Optional, Type, Sequence
+from typing import Any, NoReturn, Optional, Sequence
 
 import cpuinfo
 import quadrants as qd
@@ -19,18 +22,12 @@ import psutil
 import pyglet
 import torch
 
-from quadrants.lang.util import to_pytorch_type, to_numpy_type
-from quadrants._kernels import tensor_to_ext_arr, matrix_to_ext_arr, ndarray_to_ext_arr, ndarray_matrix_to_ext_arr
 
 import genesis as gs
+from genesis.typing import is_sequence
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-# FIXME: qd.Field does not support zero-copy on Metal for 'torch<=2.9.1'.
-# See: https://github.com/pytorch/pytorch/pull/168193
-TORCH_MPS_SUPPORT_DLPACK_FIELD = tuple(map(int, torch.__version__.replace("+", ".").split(".")[:3])) > (2, 9, 1)
 
 
 class DeprecationError(Exception):
@@ -61,7 +58,7 @@ class redirect_libc_stderr:
     def __enter__(self):
         try:
             self.stderr_fileno = sys.stderr.fileno()
-        except io.UnsupportedOperation:
+        except (io.UnsupportedOperation, AttributeError):
             # Do nothing is not a real OS-level file descriptor but rather some IO buffer
             return self
 
@@ -150,6 +147,17 @@ def assert_built(method):
     return wrapper
 
 
+def with_lock(method):
+    """Acquire ``self._lock`` before running the wrapped method."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 def set_random_seed(seed):
     # Note: we don't set seed for quadrants, since Quadrants doesn't support stochastic operations in gradient computation.
     # Therefore, we only allow deterministic Quadrants operations.
@@ -201,6 +209,32 @@ def get_device(backend: gs.constants.backend, device_idx: Optional[int] = None):
     return device, device_name, total_mem, backend
 
 
+def get_gpu_core_count() -> int:
+    """Return the number of GPU compute cores for the active device.
+
+    This is the env count above which one-thread-per-env already saturates the GPU, so cooperative or tiled kernels
+    stop being worthwhile. NVIDIA reports 128 CUDA cores per SM and AMD/ROCm 64 stream processors per CU; for backends
+    where the driver cannot be queried (Metal, or a GPU without a torch.cuda device) an upper-bound estimate is used.
+    """
+    if torch.cuda.is_available():
+        gpu_props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        cores_per_unit = 64 if torch.version.hip else 128
+        return gpu_props.multi_processor_count * cores_per_unit
+    if gs.backend == gs.metal:
+        # Upper-bound estimate for Apple Silicon: 40 GPU cores * 128 ALUs.
+        return 5120
+    # Fallback for other GPU backends (e.g. Vulkan), using AMD MI350X (256 CUs * 64 cores) as a baseline.
+    return 16384
+
+
+def fits_in_gpu_shared_memory(*dims: int) -> bool:
+    """Whether a dense ``gs.qd_float`` array of shape ``dims`` fits in one block's GPU shared memory."""
+    if gs.backend == gs.cpu:
+        gs.raise_exception("CPU backend not supported by this method.")
+    itemsize = 4 if gs.qd_float == qd.f32 else 8
+    return math.prod(dims) * itemsize <= qd.lang.impl.get_max_shared_memory_bytes(is_lowerbound_ok=True)
+
+
 def get_src_dir():
     return os.path.dirname(gs.__file__)
 
@@ -243,6 +277,10 @@ def get_ptc_cache_dir():
     return os.path.join(get_cache_dir(), "ptc")
 
 
+def get_fps_pc_cache_dir():
+    return os.path.join(get_cache_dir(), "fps_pc")
+
+
 def get_tet_cache_dir():
     return os.path.join(get_cache_dir(), "tet")
 
@@ -255,12 +293,83 @@ def get_remesh_cache_dir():
     return os.path.join(get_cache_dir(), "rm")
 
 
+def get_wt_cache_dir():
+    return os.path.join(get_cache_dir(), "wt")
+
+
+def get_wth_cache_dir():
+    return os.path.join(get_cache_dir(), "wth")
+
+
 def get_exr_cache_dir():
     return os.path.join(get_cache_dir(), "exr")
 
 
 def get_usd_cache_dir():
     return os.path.join(get_cache_dir(), "usd")
+
+
+_CLEARABLE_CACHES: list[Callable[[], None]] = []
+
+
+def register_cache_clear(cache_clear: Callable[[], None]) -> None:
+    """Register a callback that drops a module-level cache, invoked by clear_caches on genesis teardown.
+
+    Pass the cache's own clearing method, e.g. the cache_clear of a functools.lru_cache or the clear of a manual dict
+    cache. This lets module-level asset caches (parsed meshes, baked textures, ...) release the large arrays they hold
+    for destroyed scenes without the teardown path having to know about each one.
+    """
+    _CLEARABLE_CACHES.append(cache_clear)
+
+
+def clear_caches() -> None:
+    """Drop every cache registered through register_cache_clear."""
+    for cache_clear in _CLEARABLE_CACHES:
+        cache_clear()
+
+
+class SizeCappedCache:
+    """An LRU cache bounded by the total byte footprint of its values rather than by their count.
+
+    Each value is stored together with an explicit size in bytes; once the running total exceeds max_bytes the
+    least-recently-used entries are evicted until it fits again (the most-recent entry is always kept). This suits
+    caching a handful of large, scene-independent arrays - such as processed collision geometry - where the number of
+    distinct entries is a poor proxy for the memory actually held. An optional max_entries also caps the entry count,
+    so values whose reported size is small or zero (e.g. flat-color textures) cannot accumulate without bound. It
+    registers itself with register_cache_clear so it is dropped together with the other asset caches on genesis
+    teardown.
+    """
+
+    def __init__(self, max_bytes: int, max_entries: "int | None" = None) -> None:
+        self._max_bytes = max_bytes
+        self._max_entries = max_entries
+        self._store: "OrderedDict[Any, tuple[Any, int]]" = OrderedDict()
+        self._total_bytes = 0
+        register_cache_clear(self.clear)
+
+    def get(self, key: Any) -> Any:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        self._store.move_to_end(key)
+        return entry[0]
+
+    def put(self, key: Any, value: Any, n_bytes: int) -> None:
+        previous = self._store.pop(key, None)
+        if previous is not None:
+            self._total_bytes -= previous[1]
+        self._store[key] = (value, n_bytes)
+        self._total_bytes += n_bytes
+        while len(self._store) > 1 and (
+            self._total_bytes > self._max_bytes
+            or (self._max_entries is not None and len(self._store) > self._max_entries)
+        ):
+            _, (_, evicted_bytes) = self._store.popitem(last=False)
+            self._total_bytes -= evicted_bytes
+
+    def clear(self) -> None:
+        self._store.clear()
+        self._total_bytes = 0
 
 
 def geometric_mean(a, b):
@@ -300,12 +409,52 @@ def tensor_to_cpu(x):
     return x
 
 
-def tensor_to_array(x: torch.Tensor, dtype: Type[np.generic] | None = None) -> np.ndarray:
+def tensor_to_array(x: torch.Tensor, dtype: type[np.generic] | None = None) -> np.ndarray:
     return np.asarray(tensor_to_cpu(x), dtype=dtype)
+
+
+def data_to_array(data):
+    """Recursively move any GPU tensor nested in ``data`` to a CPU numpy array, preserving container structure."""
+    if isinstance(data, torch.Tensor):
+        return tensor_to_array(data)
+    if isinstance(data, np.ndarray):
+        return data
+    if isinstance(data, Mapping):
+        return {k: data_to_array(v) for k, v in data.items()}
+    if is_sequence(data):
+        return type(data)(data_to_array(v) for v in data)
+    return data
 
 
 def is_approx_multiple(a, b, tol=1e-7):
     return abs(a % b) < tol or abs(b - (a % b)) < tol
+
+
+def gaussian_crosstalk_kernel(n_rows: int, n_cols: int, sigma: float, spacing: float | tuple[float, float] = 1.0):
+    """
+    Build an L1-normalized 2D Gaussian convolution kernel for spatial tactile crosstalk.
+
+    The kernel is a discrete isotropic Gaussian ``exp(-(d / sigma)**2 / 2)`` sampled on an ``n_rows x n_cols`` grid
+    centered on the self taxel, then normalized to sum 1 (so a uniform field passes through unchanged). Pass the
+    result as a sensor's ``crosstalk_kernel`` to spread each taxel's signal onto its neighbors.
+
+    ``n_rows`` and ``n_cols`` must be odd so the kernel has a center tap (the self weight). ``spacing`` is the taxel
+    pitch in the same units as ``sigma`` (a scalar, or ``(row_spacing, col_spacing)`` for an anisotropic grid);
+    default ``1.0`` measures ``sigma`` in taxel cells.
+    """
+    if n_rows % 2 == 0 or n_cols % 2 == 0:
+        raise_exception(
+            f"gaussian_crosstalk_kernel requires odd n_rows, n_cols (center tap); got ({n_rows}, {n_cols})."
+        )
+    if sigma <= 0.0:
+        raise_exception(f"gaussian_crosstalk_kernel requires sigma > 0; got {sigma}.")
+    s_row, s_col = (spacing, spacing) if isinstance(spacing, numbers.Number) else spacing
+    rows = (np.arange(n_rows, dtype=float) - n_rows // 2) * s_row
+    cols = (np.arange(n_cols, dtype=float) - n_cols // 2) * s_col
+    g_row = np.exp(-(rows**2) / (2.0 * sigma * sigma))
+    g_col = np.exp(-(cols**2) / (2.0 * sigma * sigma))
+    kernel = np.outer(g_row, g_col)
+    return kernel / kernel.sum()
 
 
 def concat_with_tensor(
@@ -328,11 +477,13 @@ def concat_with_tensor(
         and all(e_1 == e_2 for i, (e_1, e_2) in enumerate(zip(tensor.shape, value.shape)) if e_1 > 0 and i != dim)
     )
     if tensor.numel() == 0:
-        return value
+        # 'expand' leaves a zero stride on the broadcast dimensions, so materialize to get a real table supporting
+        # in-place writes on a subset of the rows and usable as a kernel argument
+        return value.contiguous()
     return torch.cat([tensor, value], dim=dim)
 
 
-def make_tensor_field(shape: tuple[int, ...] = (), dtype: torch.dtype | None = None):
+def make_tensor_field(shape: tuple[int, ...] = (), dtype_factory: Callable[[], torch.dtype] | None = None):
     """
     Helper method to create a tensor field for dataclasses.
 
@@ -340,14 +491,16 @@ def make_tensor_field(shape: tuple[int, ...] = (), dtype: torch.dtype | None = N
     ----------
     shape : tuple
         The shape of the tensor field. It must have zero elements, otherwise it will trigger an exception.
-    dtype : torch.dtype, optional
-        Data type of the tensor field. Default is gs.tc_float.
+    dtype_factory : Callable[[], torch.dtype], optional
+        The factory function to create the dtype of the tensor field. Default is gs.tc_float.
+        A factory is used because gs types may not be available at the time of field creation.
     """
     assert not shape or math.prod(shape) == 0
 
     def _default_factory():
-        nonlocal shape, dtype
-        return torch.empty(shape, dtype=dtype or gs.tc_float, device=gs.device)
+        nonlocal shape, dtype_factory
+        dtype = dtype_factory() if dtype_factory is not None else gs.tc_float
+        return torch.empty(shape, dtype=dtype, device=gs.device)
 
     return field(default_factory=_default_factory)
 
@@ -367,19 +520,38 @@ def try_get_display_size() -> tuple[int | None, int | None, float | None]:
     screen_scale : float | None
         The scale of the screen.
     """
+    # Resolve pyglet's native display backend directly (under 'pyglet.canvas' before 2.0, 'pyglet.display' from 2.0 on),
+    # never the placeholder headless one whose finalizer calls eglTerminate on the EGL display the offscreen renderers
+    # share. A headless process then raises here, reported as no display - the fallback to a default size is the
+    # viewer's concern. Reuse a display pyglet already has open if any (the isinstance check skips a headless one).
+    native = {
+        "darwin": ("cocoa", "CocoaDisplay"),
+        "win32": ("win32", "Win32Display"),
+        "cygwin": ("win32", "Win32Display"),
+        "linux": ("xlib", "XlibDisplay"),
+    }.get(pyglet.compat_platform)
+    if native is None:
+        raise NotImplementedError(f"No display interface available for platform '{pyglet.compat_platform}'.")
+    # The backend submodule depends on the platform and pyglet version, and a foreign-platform one fails to import
+    # (e.g. 'win32' off Windows needs Windows-only ctypes), so it cannot be a top-level import; resolving it by
+    # computed name avoids a platform-by-version tree of local imports.
     if pyglet.version < "2.0":
-        display = pyglet.canvas.Display()
-        screen = display.get_default_screen()
+        Display = getattr(import_module(f"pyglet.canvas.{native[0]}"), native[1])
+        display = next((d for d in pyglet.canvas._displays if isinstance(d, Display)), None)
+    else:
+        Display = getattr(import_module(f"pyglet.display.{native[0]}"), native[1])
+        display = next((d for d in pyglet.display._displays if isinstance(d, Display)), None)
+    if display is None:
+        display = Display()
+
+    screen = display.get_default_screen()
+    if pyglet.version < "2.0":
         screen_scale = 1.0
     else:
-        display = pyglet.display.get_display()
-        screen = display.get_default_screen()
         try:
             screen_scale = screen.get_scale()
         except NotImplementedError:
-            # Probably some headless screen
             screen_scale = 1.0
-
     return screen.height, screen.width, screen_scale
 
 
@@ -392,140 +564,6 @@ def has_display() -> bool:
         return True
     except Exception:
         return False
-
-
-# -------------------------------------- QUADRANTS SPECIALIZATION --------------------------------------
-
-_to_torch_type_fast = functools.lru_cache(maxsize=None)(to_pytorch_type)
-_to_numpy_type_fast = functools.lru_cache(maxsize=None)(to_numpy_type)
-
-TO_EXT_ARR_FAST_MAP = dict(
-    (
-        (qd.ScalarField, tensor_to_ext_arr),
-        (qd.MatrixField, matrix_to_ext_arr),
-        (qd.ScalarNdarray, ndarray_to_ext_arr),
-        (qd.MatrixNdarray, ndarray_matrix_to_ext_arr),
-    )
-)
-
-
-def qd_to_python(
-    value: qd.Field | qd.Ndarray,
-    transpose: bool = False,
-    copy: bool | None = None,
-    to_torch: bool = True,
-) -> torch.Tensor | np.ndarray:
-    """Converts a Quadrants field / ndarray instance to a PyTorch tensor / Numpy array.
-
-    Args:
-        value (qd.Field | qd.Ndarray): Field or Ndarray to be converted.
-        transpose (bool, optional): Whether to move the last batch dimension in front. Defaults to False.
-        copy (bool, optional): Wether to enforce returning a copy no matter what. None to avoid copy if possible
-        without raising an exception if not.
-        to_torch (bool): Whether to convert to Torch tensor or Numpy array. Defaults to True.
-    """
-    # Get batch size if possible
-    try:
-        batch_shape = value.shape
-    except AttributeError:
-        if isinstance(value, qd.Matrix):
-            raise ValueError("Tensor of type 'qd.Vector', 'qd.Matrix' not supported.")
-        raise
-
-    # Check if copy mode is supported while setting default mode if not specified.
-    # FIXME: Torch>2.9.1 still does not support bytes_offset for 0-dim dlpack.
-    data_type = type(value)
-    is_field = issubclass(data_type, qd.Field)
-    use_zerocopy = gs.use_zerocopy and (
-        (TORCH_MPS_SUPPORT_DLPACK_FIELD or gs.backend != gs.metal or not is_field)
-        and (batch_shape or not issubclass(data_type, qd.ScalarField))
-    )
-    if not use_zerocopy or (not to_torch and gs.backend != gs.cpu):
-        if copy is False:
-            gs.raise_exception(
-                "Specifying 'copy=False' is not supported if 'gs.use_zerocopy=False' or ('to_torch=False' and "
-                "'gs.backend != gs.cpu')."
-            )
-        copy = True
-    elif copy is None:
-        copy = False
-
-    # Leverage zero-copy if enabled
-    if use_zerocopy:
-        while True:
-            try:
-                if to_torch or gs.backend != gs.cpu:
-                    out = value._T_tc if transpose else value._tc
-                else:
-                    out = value._T_np if transpose else value._np
-                break
-            except AttributeError:
-                # "Cache" no-owning python-side views of the original Quadrants memory buffer as a hidden attribute
-                value_tc = torch.utils.dlpack.from_dlpack(value.to_dlpack())
-                if issubclass(data_type, qd.MatrixField) and value.m == 1:
-                    value_tc = value_tc.reshape((*batch_shape, value.n))
-                value._tc = value_tc
-                value._T_tc = value_tc.movedim(batch_ndim - 1, 0) if (batch_ndim := len(batch_shape)) > 1 else value_tc
-                if gs.backend == gs.cpu:
-                    value._np = value_tc.numpy()
-                    value._T_np = value._T_tc.numpy()
-
-        # FIXME: DLPack may return old values on Apple Metal for field if sync is not systematically called manually
-        if is_field and gs.backend == gs.metal:
-            qd.sync()
-
-        if copy:
-            if to_torch:
-                out = out.clone()
-            elif gs.backend != gs.cpu:
-                out = tensor_to_array(out)
-            else:
-                out = out.copy()
-        return out
-
-    # Extract value as a whole.
-    # Note that this is usually much faster than using a custom kernel to extract a slice.
-    # The implementation is based on `quadrants.lang.(ScalarField | MatrixField).to_torch`.
-    is_metal = gs.device.type == "mps"
-    out_dtype = _to_torch_type_fast(value.dtype) if to_torch else _to_numpy_type_fast(value.dtype)
-    if issubclass(data_type, (qd.ScalarField, qd.ScalarNdarray)):
-        if to_torch:
-            out = torch.zeros(batch_shape, dtype=out_dtype, device="cpu" if is_metal else gs.device)
-        else:
-            out = np.zeros(batch_shape, dtype=out_dtype)
-        TO_EXT_ARR_FAST_MAP[data_type](value, out)
-    elif issubclass(data_type, qd.MatrixField):
-        as_vector = value.m == 1
-        shape_ext = (value.n,) if as_vector else (value.n, value.m)
-        if to_torch:
-            out = torch.empty(batch_shape + shape_ext, dtype=out_dtype, device="cpu" if is_metal else gs.device)
-        else:
-            out = np.zeros(batch_shape + shape_ext, dtype=out_dtype)
-        TO_EXT_ARR_FAST_MAP[data_type](value, out, as_vector)
-    elif issubclass(data_type, (qd.VectorNdarray, qd.MatrixNdarray)):
-        layout_is_aos = 1
-        as_vector = issubclass(data_type, qd.VectorNdarray)
-        shape_ext = (value.n,) if as_vector else (value.n, value.m)
-        if to_torch:
-            out = torch.empty(batch_shape + shape_ext, dtype=out_dtype, device="cpu" if is_metal else gs.device)
-        else:
-            out = np.zeros(batch_shape + shape_ext, dtype=out_dtype)
-        TO_EXT_ARR_FAST_MAP[qd.MatrixNdarray](value, out, layout_is_aos, as_vector)
-    else:
-        gs.raise_exception(f"Unsupported type '{type(value)}'.")
-    if to_torch and is_metal:
-        out = out.to(gs.device)
-
-    # Transpose if necessary and requested.
-    # Note that it is worth transposing here before slicing, as it preserve row-major memory alignment in case of
-    # advanced masking, which would spare computation later on if expected from the user.
-    if transpose and (batch_ndim := len(batch_shape)) > 1:
-        if to_torch:
-            out = out.movedim(batch_ndim - 1, 0)
-        else:
-            out = np.moveaxis(out, batch_ndim - 1, 0)
-
-    return out
 
 
 def indices_to_mask(
@@ -609,8 +647,38 @@ def indices_to_mask(
     return tuple(mask)
 
 
+def _maybe_transpose(tc, value, transpose):
+    if not transpose or len(value.shape) <= 1:
+        return tc
+    return tc.movedim(len(value.shape) - 1, 0)
+
+
+def _maybe_transpose_np(arr, value, transpose):
+    if not transpose or len(value.shape) <= 1:
+        return arr
+    return np.moveaxis(arr, len(value.shape) - 1, 0)
+
+
+def _apply_masks(out, value, row_mask, col_mask, keepdim, copy, *, to_torch):
+    if row_mask is None and col_mask is None:
+        return out
+    raise_if_fancy = copy is False
+    if len(value.shape) < 2:
+        if row_mask is not None and col_mask is not None:
+            gs.raise_exception("Cannot specify both row and column masks for tensor with 1D batch.")
+        mask = indices_to_mask(
+            row_mask if col_mask is None else col_mask,
+            to_torch=to_torch,
+            keepdim=keepdim,
+            raise_if_fancy=raise_if_fancy,
+        )
+    else:
+        mask = indices_to_mask(row_mask, col_mask, to_torch=to_torch, keepdim=keepdim, raise_if_fancy=raise_if_fancy)
+    return out[mask]
+
+
 def qd_to_torch(
-    value: qd.Field | qd.Ndarray,
+    value: qd.Tensor | qd.Field | qd.Ndarray,
     row_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
     col_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
     keepdim: bool = True,
@@ -629,38 +697,52 @@ def qd_to_torch(
         copy (bool, optional): Wether to enforce returning a copy no matter what. None to avoid copy if possible
         without raising an exception if not.
     """
+    if isinstance(value, qd.Tensor):
+        value = value._unwrap()
+
     # Try efficient shortcut first and only fallback to standard branching if necessary.
     # FIXME: Ideally one should detect if slicing would require a copy to avoid enforcing copy here.
-    if gs.use_zerocopy:
+    is_copy = False
+    if not gs.use_zerocopy:
+        # Transpose if necessary and requested.
+        # Note that it is worth transposing here before slicing, as it preserve row-major memory alignment in case of
+        # advanced masking, which would spare computation later on if expected from the user.
+        if copy is False:
+            gs.raise_exception("Specifying 'copy=False' is not supported by this method if 'gs.use_zerocopy=False'.")
+        tensor = _maybe_transpose(value.to_torch(), value, transpose)
+        is_copy = True
+    else:
         try:
             tensor = value._T_tc if transpose else value._tc
-            # FIXME: DLPack may return old values on Apple Metal for field if sync is not systematically called manually
-            if isinstance(value, qd.Field) and gs.backend == gs.metal:
-                qd.sync()
-            if copy:
-                tensor = tensor.clone()
+            is_copy = False
         except AttributeError:
-            tensor = qd_to_python(value, transpose, copy=copy, to_torch=True)
-    else:
-        tensor = qd_to_python(value, transpose, copy=copy, to_torch=True)
+            try:
+                tc = value.to_torch(copy=False)
+            except (ValueError, RuntimeError, TypeError):
+                if copy is False:
+                    raise
+                tensor = _maybe_transpose(value.to_torch(), value, transpose)
+                is_copy = True
+            else:
+                value._tc = tc
+                value._T_tc = _maybe_transpose(tc, value, True)
+                tensor = value._T_tc if transpose else value._tc
+                is_copy = False
 
-    if row_mask is None and col_mask is None:
-        return tensor
+    if not is_copy:
+        # FIXME: DLPack may return old values on Apple Metal if sync is not systematically called manually
+        if gs.backend == gs.metal:
+            qd.sync()
+        if copy:
+            tensor = tensor.clone()
+            if gs.backend == gs.metal:
+                torch.mps.synchronize()
 
-    raise_if_fancy = copy is False
-    if len(value.shape) < 2:
-        if row_mask is not None and col_mask is not None:
-            gs.raise_exception("Cannot specify both row and column masks for tensor with 1D batch.")
-        mask = indices_to_mask(
-            row_mask if col_mask is None else col_mask, to_torch=True, keepdim=keepdim, raise_if_fancy=raise_if_fancy
-        )
-    else:
-        mask = indices_to_mask(row_mask, col_mask, to_torch=True, keepdim=keepdim, raise_if_fancy=raise_if_fancy)
-    return tensor[mask]
+    return _apply_masks(tensor, value, row_mask, col_mask, keepdim, copy, to_torch=True)
 
 
 def qd_to_numpy(
-    value: qd.Field | qd.Ndarray,
+    value: qd.Tensor | qd.Field | qd.Ndarray,
     row_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
     col_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
     keepdim: bool = True,
@@ -679,20 +761,89 @@ def qd_to_numpy(
         copy (bool, optional): Wether to enforce returning a copy no matter what. None to avoid copy if possible
         without raising an exception if not.
     """
-    tensor = qd_to_python(value, transpose, copy=copy, to_torch=False)
-    if row_mask is None and col_mask is None:
-        return tensor
+    if isinstance(value, qd.Tensor):
+        value = value._unwrap()
 
-    raise_if_fancy = copy is False
-    if len(value.shape) < 2:
-        if row_mask is not None and col_mask is not None:
-            gs.raise_exception("Cannot specify both row and column masks for tensor with 1D batch.")
-        mask = indices_to_mask(
-            row_mask if col_mask is None else col_mask, to_torch=False, keepdim=keepdim, raise_if_fancy=raise_if_fancy
-        )
+    # Try efficient shortcut first and only fallback to standard branching if necessary.
+    # FIXME: Ideally one should detect if slicing would require a copy to avoid enforcing copy here.
+    if not gs.use_zerocopy:
+        # Transpose if necessary and requested.
+        # Note that it is worth transposing here before slicing, as it preserve row-major memory alignment in case of
+        # advanced masking, which would spare computation later on if expected from the user.
+        if copy is False:
+            gs.raise_exception("Specifying 'copy=False' is not supported if 'gs.use_zerocopy=False'.")
+        array = _maybe_transpose_np(value.to_numpy(), value, transpose)
+        is_copy = True
+    elif gs.backend != gs.cpu:
+        if copy is False:
+            gs.raise_exception("Specifying 'copy=False' is not supported by this method if 'gs.backend != gs.cpu'.")
+        array = tensor_to_array(qd_to_torch(value, transpose=transpose))
+        is_copy = True
     else:
-        mask = indices_to_mask(row_mask, col_mask, to_torch=False, keepdim=keepdim, raise_if_fancy=raise_if_fancy)
-    return tensor[mask]
+        try:
+            array = value._T_np if transpose else value._np
+            is_copy = False
+        except AttributeError:
+            try:
+                tc = value.to_torch(copy=False)
+            except (RuntimeError, TypeError, ValueError):
+                if copy is False:
+                    raise
+                array = _maybe_transpose_np(value.to_numpy(), value, transpose)
+                is_copy = True
+            else:
+                value._np = tc.numpy()
+                value._T_np = _maybe_transpose(tc, value, True).numpy()
+                array = value._T_np if transpose else value._np
+                is_copy = False
+
+    if copy and not is_copy:
+        array = array.copy()
+
+    return _apply_masks(array, value, row_mask, col_mask, keepdim, copy, to_torch=False)
+
+
+def qd_zero_grad(value) -> None:
+    """Zero the `.grad` buffers of a Quadrants field/ndarray, or every grad-bearing slot of a `dataclass` /
+    `@qd.data_oriented` struct-of-arrays.
+
+    Reverse-mode accumulation in Genesis writes through `qd.atomic_add`, so adjoint buffers must start at zero between
+    consecutive `loss.backward()` calls. Solvers call this from `reset_grad` to clear all owned adjoint storage without
+    enumerating fields by name. Zeroing goes through an in-place `zero_()` on the zero-copy torch view of each grad
+    buffer, a contiguous memset on the underlying device memory. The writes are left unsynchronized so a caller can
+    batch many calls under a single flush: on Metal, call `torch.mps.synchronize()` after the batch and before the
+    next quadrants kernel reads the buffers (see set_base_links_quat).
+    """
+    if value is None:
+        return
+
+    if isinstance(value, (qd.Tensor, qd.Field, qd.Ndarray)):
+        if value.has_grad():
+            grad = value.grad
+            if gs.use_zerocopy:
+                try:
+                    grad_view = qd_to_torch(grad, copy=False)
+                    grad_view.zero_()
+                except ValueError:
+                    # No zero-copy view for this buffer (e.g. an interleaved AOS struct member, or a field whose
+                    # in-tree byte offset the installed torch cannot carry through DLPack); fill it in place through
+                    # quadrants instead.
+                    grad.fill(0.0)
+            else:
+                grad.fill(0.0)
+        return
+
+    cls = type(value)
+    try:
+        annotations = cls.__dict__["__annotations__"]
+    except KeyError as err:
+        raise_exception_from(
+            f"qd_zero_grad: expected `qd.Field`, `qd.Ndarray`, or a `dataclass` / `@qd.data_oriented` "
+            f"struct-of-arrays; got `{cls.__name__}`.",
+            cause=err,
+        )
+    for attr_name in annotations:
+        qd_zero_grad(getattr(value, attr_name, None))
 
 
 def sanitize_index(

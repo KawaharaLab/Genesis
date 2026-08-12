@@ -5,6 +5,7 @@ import atexit
 import logging as _logging
 import traceback
 import weakref
+from typing import Callable
 from warnings import warn
 from contextlib import redirect_stdout
 
@@ -41,12 +42,12 @@ if _IS_OLD_TORCH:
 # Global state
 _initialized: bool = False
 _scene_registry: list[weakref.ReferenceType["Scene"]] = []
+_module_registry: set[tuple[Callable[[], None], Callable[[], None]]] = set()
 _theme: str | None = None
 logger: Logger | None = None
 device: torch.device | None = None
 backend: _gs_backend | None = None
 use_ndarray: bool | None = None
-use_fastcache: bool | None = None
 use_zerocopy: bool | None = None
 EPS: float | None = None
 
@@ -81,32 +82,6 @@ def init(
     if precision not in ("32", "64"):
         raise_exception(f"Unsupported precision type: ~~<{precision}>~~")
 
-    # Get device and backend
-    global device
-    if backend is None and debug:
-        backend_candidates = [_gs_backend.cpu]
-    elif backend is None or backend == _gs_backend.gpu:
-        backend_candidates = [_gs_backend.cuda, _gs_backend.amdgpu, _gs_backend.metal, _gs_backend.cpu]
-    else:
-        backend_candidates = [backend]
-    while backend_candidates:
-        _backend = backend_candidates.pop(0)
-        if os.environ.get(f"QD_ENABLE_{_backend.name.upper()}", "1") == "0":
-            continue
-        try:
-            device, device_name, total_mem, _backend = get_device(_backend)
-            is_cpu_fallback = backend == _gs_backend.gpu and _backend == _gs_backend.cpu
-            backend = _backend
-            break
-        except GenesisException as e:
-            if not backend_candidates:
-                raise_exception_from(f"Backend ~~<{_backend}>~~ not available on this machine.", e)
-    globals()["backend"] = backend
-
-    # Fallback to Torch CPU device if requested
-    if backend != _gs_backend.cpu and os.environ.get("GS_TORCH_FORCE_CPU_DEVICE") == "1":
-        device, device_name, total_mem, _backend = get_device(_gs_backend.cpu)
-
     # Initialize the logger and print greeting message
     global logger
     if logging_level is None:
@@ -127,28 +102,38 @@ def init(
     logger.info(f"~<│{wave}>~ ~~~~<Genesis>~~~~ ~<{wave}│>~")
     logger.info(f"~<╰{'─' * (bar_width)}╯>~")
 
-    if is_cpu_fallback:
-        logger.warning("Backend ~~<{backend}>~~ not available on this machine. Falling back to CPU.")
+    # Get device and backend
+    global device
+    if backend is None and debug:
+        backend_candidates = [_gs_backend.cpu]
+    elif backend is None or backend == _gs_backend.gpu:
+        backend_candidates = [_gs_backend.cuda, _gs_backend.amdgpu, _gs_backend.metal, _gs_backend.cpu]
+    else:
+        backend_candidates = [backend]
+    while backend_candidates:
+        _backend = backend_candidates.pop(0)
+        if os.environ.get(f"QD_ENABLE_{_backend.name.upper()}", "1") == "0":
+            continue
+        try:
+            device, device_name, total_mem, _backend = get_device(_backend)
+            if backend == _gs_backend.gpu and _backend == _gs_backend.cpu:
+                logger.warning(f"Backend ~~<{backend}>~~ not available on this machine. Falling back to CPU.")
+            backend = _backend
+            break
+        except GenesisException as e:
+            if not backend_candidates:
+                raise_exception_from(f"Backend ~~<{_backend}>~~ not available on this machine.", e)
+    globals()["backend"] = backend
+
+    # Fallback to Torch CPU device if requested
+    if backend != _gs_backend.cpu and os.environ.get("GS_TORCH_FORCE_CPU_DEVICE") == "1":
+        device, device_name, total_mem, _backend = get_device(_gs_backend.cpu)
 
     # Configure Quadrants fast cache and array type
-    global use_ndarray, use_fastcache, use_zerocopy
-    is_ndarray_disabled = (os.environ.get("GS_ENABLE_NDARRAY") or ("0" if backend == _gs_backend.metal else "1")) == "0"
-    if use_ndarray is None:
-        _use_ndarray = not (is_ndarray_disabled or performance_mode)
-    else:
-        _use_ndarray = use_ndarray
-        if _use_ndarray and is_ndarray_disabled:
-            raise_exception("Genesis previous initialized. Quadrants dynamic array mode cannot be disabled anymore.")
-    if _use_ndarray and backend == _gs_backend.metal:
-        raise_exception("Quadrants dynamic array mode is not supported on Apple Metal GPU backend.")
-    is_fastcache_disabled = os.environ.get("GS_ENABLE_FASTCACHE", "1") == "0"
-    if use_fastcache is None:
-        _use_fastcache = not is_fastcache_disabled and _use_ndarray
-    else:
-        _use_fastcache = use_fastcache
-        if use_fastcache and is_fastcache_disabled:
-            raise_exception("Genesis previous initialized. Quadrants fast cache mode cannot be disabled anymore.")
-    use_ndarray, use_fastcache = _use_ndarray, _use_fastcache
+    global use_ndarray, use_zerocopy
+    is_ndarray_disabled = os.environ.get("GS_ENABLE_NDARRAY", "1") == "0"
+    _use_ndarray = not (is_ndarray_disabled or performance_mode)
+    use_ndarray = _use_ndarray
 
     # Unlike dynamic vs static array mode, and fastcache, zero-copy can be toggle on/off between init without issue
     _use_zerocopy = bool(int(os.environ["GS_ENABLE_ZEROCOPY"])) if "GS_ENABLE_ZEROCOPY" in os.environ else None
@@ -289,7 +274,10 @@ def init(
             fast_math=not debug,
             default_ip=qd_int,
             default_fp=qd_float,
-            unrolling_limit=100,  # This threshold needs to be increased to accommodate gradient computation
+            # This feature is necessary to support auto-diff with non-static for-loop:
+            # * Up to 500MiB static upper-bound mem alloc per kernel before switching to tight runtime-based bound
+            ad_stack_sparse_threshold_bytes=200_000_000,
+            ad_stack_experimental_enabled=True,
             **qd_init_kwargs,
         )
 
@@ -317,8 +305,6 @@ def init(
         setattr(qd._logging, qd_name, getattr(logger, gs_name))
 
     # Dealing with default backend
-    if use_fastcache:
-        logger.debug("[Quadrants] Enabling pure kernels for fast cache mode.")
     if use_ndarray:
         logger.debug("[Quadrants] Enabling Quadrants dynamic array type to avoid scene-specific compilation.")
     if backend == _gs_backend.amdgpu:
@@ -340,9 +326,9 @@ def init(
             ("🔖 version", __version__),
             ("🎨 theme", theme),
             ("🌱 seed", seed),
-            ("🐛 debug", debug),
+            ("🐛 debug", bool(debug)),
             ("📏 precision", precision),
-            ("🔥 performance", performance_mode),
+            ("🔥 performance", bool(performance_mode)),
             ("💬 verbose", _logging.getLevelName(logger.level)),
         )
     )
@@ -356,6 +342,10 @@ def init(
 
     atexit.register(destroy)
     _initialized = True
+
+    # Initialize all externally registered modules
+    for init_fun, _destroy_fun in _module_registry:
+        init_fun()
 
 
 ########################## destroy ##########################
@@ -385,12 +375,21 @@ def destroy():
     if logger:
         logger.info("💤 Exiting Genesis and caching compiled kernels...")
 
-    # Destroy all scenes
+    # Destroy all scenes. A weakref that no longer resolves means the scene was already garbage-collected (and its
+    # resources released), so there is nothing left to destroy - skip it rather than asserting.
     global _scene_registry
     for scene_ref in _scene_registry.copy():
-        if scene_ref:
-            scene = scene_ref()
+        scene = scene_ref()
+        if scene is not None:
             scene.destroy()
+
+    # Release every module-level asset cache (parsed meshes, baked RGBA textures, ...) so the large arrays they hold
+    # for destroyed scenes are not retained globally.
+    _clear_caches()
+
+    # Destroy all externally registered modules
+    for _init_fun, destroy_fun in _module_registry:
+        destroy_fun()
 
     # Reset Quadrants
     qd.reset()
@@ -416,6 +415,23 @@ def destroy():
     device = None
     backend = None
     EPS = None
+
+
+####################### External module registration hook #######################
+
+
+def register_external_module(init_fun: Callable[[], None], destroy_fun: Callable[[], None]) -> None:
+    assert isinstance(init_fun, Callable) and isinstance(destroy_fun, Callable)
+    _module_registry.add((init_fun, destroy_fun))
+
+    # Call init right away if Genesis is already initialized
+    if gs._initialized:
+        init_fun()
+
+
+def unregister_external_module(init_fun: Callable[[], None], destroy_fun: Callable[[], None]) -> None:
+    assert isinstance(init_fun, Callable) and isinstance(destroy_fun, Callable)
+    _module_registry.remove((init_fun, destroy_fun))
 
 
 ########################## Exception and exit handling ##########################
@@ -444,13 +460,21 @@ sys.excepthook = _custom_excepthook
 
 from .ext import _trimesh_patch
 from .utils.misc import get_src_dir as _get_src_dir
+from .utils.misc import clear_caches as _clear_caches
 
+# Eagerly load native extensions under redirected stderr to silence dlopen-time noise (e.g. macOS
+# objc duplicate-class warnings when several libraries ship their own copy of GLFW).
 with open(os.devnull, "w") as stderr, redirect_libc_stderr(stderr):
     try:
         from pygel3d import graph, hmesh
     except OSError as e:
         # Import may fail because of missing system dependencies (libGLU.so.1).
         # This is not blocking because it is only an issue for hybrid entities.
+        pass
+
+    try:
+        import imgui_bundle  # noqa: F401
+    except ImportError:
         pass
 
     try:
@@ -470,6 +494,9 @@ from .constants import (
     INACTIVE,
     integrator,
     constraint_solver,
+    friction_cone,
+    contact_resolution,
+    broadphase_traversal,
 )
 
 from .utils.uid import UID

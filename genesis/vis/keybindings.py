@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Callable, Any
+from typing import Any, Callable
+
+import genesis as gs
 
 
 class LabeledIntEnum(IntEnum):
@@ -239,6 +241,12 @@ class KeyMod(LabeledIntEnum):
 
 
 class KeyAction(LabeledIntEnum):
+    """
+    PRESS is triggered once when the key is initially pressed down.
+    HOLD is triggered repeatedly while the key is held down.
+    RELEASE is triggered once when the key is released.
+    """
+
     PRESS = 0, "press"
     HOLD = 1, "hold"
     RELEASE = 2, "release"
@@ -291,15 +299,24 @@ class Keybind:
         Positional arguments to pass to the callback.
     kwargs : dict
         Keyword arguments to pass to the callback.
+    protected : bool
+        Whether this keybind can be overwritten without being deleted first.
+    allow_overload : bool
+        Whether this key can be shared with keybinds of a different action type (e.g. PRESS
+        and RELEASE on the same key). When False, any other keybind using the same key is
+        treated as a conflict: replaced if ``overwrite=True`` and the other keybind is not
+        protected, otherwise an error is raised.
     """
 
     name: str
     key: Key
-    key_action: KeyAction = KeyAction.PRESS
+    key_action: KeyAction = KeyAction.RELEASE
     key_mods: tuple[KeyMod] | None = None
     callback: Callable[..., None] | None = None
     args: tuple[Any, ...] = ()
     kwargs: dict = field(default_factory=dict)
+    protected: bool = False
+    allow_overload: bool = True
 
     _modifiers: int | None = field(default=None, init=False, repr=False)
 
@@ -311,37 +328,48 @@ class Keybind:
         if self.kwargs is None:
             self.kwargs = {}
 
-    def key_hash(self) -> int:
+    def __hash__(self) -> int:
         """Generate a unique hash for the keybind based on key code and modifiers."""
         return get_key_hash(self.key, self._modifiers, self.key_action)
 
 
 class Keybindings:
-    def __init__(self, keybinds: tuple[Keybind] = ()):
-        self._keybinds_map: dict[int, Keybind] = {}
-        self._name_to_hash: dict[str, int] = {}
+    def __init__(self, keybinds: tuple[Keybind, ...] = ()):
+        self._keybinds: dict[str, Keybind] = {}
         for kb in keybinds:
-            key_hash = kb.key_hash()
-            self._keybinds_map[key_hash] = kb
-            self._name_to_hash[kb.name] = key_hash
+            self._keybinds[kb.name] = kb
 
-    def register(self, keybind: Keybind) -> None:
-        key_hash = keybind.key_hash()
-        if key_hash in self._keybinds_map:
-            existing_kb = self._keybinds_map[key_hash]
-            raise ValueError(f"Key [{keybind.key}] is already assigned to '{existing_kb.name}'.")
-        if keybind.name and keybind.name in self._name_to_hash:
-            raise ValueError(f"Name '{keybind.name}' is already assigned to another keybind.")
-
-        self._keybinds_map[key_hash] = keybind
-        self._name_to_hash[keybind.name] = key_hash
+    def register(self, keybind: Keybind, overwrite: bool) -> None:
+        for name, other_keybind in list(self._keybinds.items()):
+            if hash(keybind) == hash(other_keybind):
+                msg = (
+                    f"Key '{keybind.key}' already assigned to '{other_keybind.name}' with overlapping action "
+                    f"'{other_keybind.key_action}'."
+                )
+            elif (not keybind.allow_overload or not other_keybind.allow_overload) and keybind.key == other_keybind.key:
+                msg = (
+                    f"Key '{keybind.key}' already assigned to '{other_keybind.name}' with action "
+                    f"'{other_keybind.key_action}'."
+                )
+            elif keybind.name == name:
+                msg = (
+                    f"Name '{name}' is already assigned to another key '{other_keybind.key}' with action "
+                    f"'{other_keybind.key_action}'."
+                )
+            else:
+                continue
+            if not overwrite or other_keybind.protected:
+                if other_keybind.protected:
+                    msg = f"{msg} This keybind is protected and cannot be overwritten."
+                raise ValueError(msg)
+            gs.logger.warning(f"{msg}. Overwriting keybind.")
+            self.remove(name)
+        self._keybinds[keybind.name] = keybind
 
     def remove(self, name: str) -> None:
-        if name not in self._name_to_hash:
+        if name not in self._keybinds:
             raise ValueError(f"No keybind found with name '{name}'.")
-        key_hash = self._name_to_hash[name]
-        del self._keybinds_map[key_hash]
-        del self._name_to_hash[name]
+        self._keybinds.pop(name)
 
     def rebind(
         self,
@@ -350,11 +378,10 @@ class Keybindings:
         new_key_mods: tuple[KeyMod] | None,
         new_key_action: KeyAction | None = None,
     ) -> None:
-        if name not in self._name_to_hash:
+        if name not in self._keybinds:
             raise ValueError(f"No keybind found with name '{name}'.")
-        old_hash = self._name_to_hash[name]
-        kb = self._keybinds_map[old_hash]
-        new_kb = Keybind(
+        kb = self._keybinds[name]
+        self._keybinds[name] = Keybind(
             name=kb.name,
             key=new_key or kb.key,
             key_action=new_key_action or kb.key_action,
@@ -363,34 +390,28 @@ class Keybindings:
             args=kb.args,
             kwargs=kb.kwargs,
         )
-        del self._keybinds_map[old_hash]
-        new_hash = new_kb.key_hash()
-        print("new_kb", new_kb)
-        self._keybinds_map[new_hash] = new_kb
-        self._name_to_hash[name] = new_hash
 
     def get(self, key: int, modifiers: int, key_action: KeyAction) -> Keybind | None:
         key_hash = get_key_hash(key, modifiers, key_action)
-        if key_hash in self._keybinds_map:
-            return self._keybinds_map[key_hash]
+        for keybind in self._keybinds.values():
+            if hash(keybind) == key_hash:
+                return keybind
 
         # Try ignoring modifiers (for keybinds where modifiers=None)
         key_hash_no_mods = get_key_hash(key, None, key_action)
-        if key_hash_no_mods in self._keybinds_map:
-            return self._keybinds_map[key_hash_no_mods]
+        for keybind in self._keybinds.values():
+            if hash(keybind) == key_hash_no_mods:
+                return keybind
 
         return None
 
     def get_by_name(self, name: str) -> Keybind | None:
-        if name in self._name_to_hash:
-            key_hash = self._name_to_hash[name]
-            return self._keybinds_map[key_hash]
-        return None
+        return self._keybinds.get(name)
 
     def __len__(self) -> int:
-        return len(self._keybinds_map)
+        return len(self._keybinds)
 
     @property
-    def keybinds(self) -> tuple[Keybind]:
+    def keybinds(self) -> tuple[Keybind, ...]:
         """Return a tuple of all registered Keybinds."""
-        return tuple(self._keybinds_map.values())
+        return tuple(self._keybinds.values())

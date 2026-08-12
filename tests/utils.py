@@ -1,11 +1,15 @@
+import base64
 import io
+import json
 import numbers
 import os
 import platform
 import re
 import subprocess
+import tempfile
 import time
 import uuid
+import webbrowser
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,15 +18,18 @@ from functools import cache
 from itertools import chain
 from pathlib import Path
 from types import GeneratorType
-from typing import Literal, Sequence
+from typing import Literal, NamedTuple, Sequence
 
 import cpuinfo
+import igl
 import mujoco
+import pytest
 import numpy as np
 import torch
 from httpcore import TimeoutException as HTTPTimeoutException
 from httpx import HTTPError as HTTPXError
 from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
 from PIL import Image, UnidentifiedImageError
 from requests.exceptions import HTTPError
 
@@ -36,11 +43,15 @@ from genesis.utils.misc import tensor_to_array
 REPOSITY_URL = "Genesis-Embodied-AI/Genesis"
 DEFAULT_BRANCH_NAME = "main"
 
-HUGGINGFACE_ASSETS_REVISION = "0f5098c4c4e00c161180d25446c4b65114a2b3f4"
-HUGGINGFACE_SNAPSHOT_REVISION = "63afb805efb70350a983dcafee27fbd74a7a9286"
+HUGGINGFACE_ASSETS_REVISION = "990a727788f11e34ad006c69bf769303b20cb11c"
+HUGGINGFACE_SNAPSHOT_REVISION = "afeaad9ab5f8d221b2cd96977feafb340c5b67af"
 
 MESH_EXTENSIONS = (".mtl", *MESH_FORMATS, *GLTF_FORMATS, *USD_FORMATS)
 IMAGE_EXTENSIONS = (".png", ".jpg")
+
+IMG_STD_ERR_THR = 1.0
+IMG_NUM_ERR_THR = 0.001
+IMG_BLUR_KERNEL_SIZE = 1  # Size of the blur kernel (must be odd)
 
 
 # Get repository "root" path (actually test dir is good enough)
@@ -238,7 +249,7 @@ def get_hf_dataset(
 
             if not has_files:
                 raise HTTPError("No file downloaded.")
-        except (HTTPTimeoutException, HTTPXError, HTTPError, FileNotFoundError, RuntimeError):
+        except (HTTPTimeoutException, HTTPXError, HTTPError, LocalEntryNotFoundError, FileNotFoundError, RuntimeError):
             if i == num_retry - 1:
                 raise
             print(f"Failed to download assets from HuggingFace dataset. Trying again in {retry_delay}s...")
@@ -290,6 +301,68 @@ def assert_equal(actual, desired, *, err_msg=None):
     assert_allclose(actual, desired, atol=0.0, rtol=0.0, err_msg=err_msg)
 
 
+def assert_pixel_match(
+    img_a: np.ndarray,
+    img_b: np.ndarray,
+    *,
+    err_msg: str = "Images do not match",
+    verbose: bool = True,
+    std_err_threshold: float = IMG_STD_ERR_THR,
+    ratio_err_threshold: float = IMG_NUM_ERR_THR,
+    blurred_kernel_size: int = IMG_BLUR_KERNEL_SIZE,
+) -> None:
+    """Assert two RGB image arrays match.
+
+    The images match unless the per-channel standard deviation of their blurred difference exceeds
+    ``std_err_threshold`` AND the number of differing pixels exceeds ``ratio_err_threshold`` of the total size.
+    This tolerates the few-pixel jitter that software renderers produce on any platform while still catching a
+    real difference. On mismatch, raise ``AssertionError``; unless ``verbose`` is False, also print the error
+    metrics and a base64-encoded PNG of the per-pixel delta (so the failing frame can be recovered from CI logs).
+    """
+    img_a = np.atleast_3d(np.asarray(img_a)).astype(np.float32)
+    img_b = np.atleast_3d(np.asarray(img_b)).astype(np.float32)
+    if img_a.shape != img_b.shape:
+        raise AssertionError(f"{err_msg} (shape {img_a.shape} != {img_b.shape})")
+
+    # Blur both images with a normalized box kernel to smooth anti-aliasing edges before comparing.
+    blurred = []
+    for img_arr in (img_a, img_b):
+        if blurred_kernel_size == 1:
+            blurred.append(img_arr)
+            continue
+        pad_size = blurred_kernel_size // 2
+        h, w = img_arr.shape[:2]
+        padded = np.pad(img_arr, ((pad_size, pad_size), (pad_size, pad_size), (0, 0)), mode="edge")
+        # A box kernel is separable, so the window sum accumulates one row shift at a time, then one column shift at a
+        # time over that, which costs a handful of whole-array additions instead of a pass per pixel.
+        rows = np.zeros((h, padded.shape[1], img_arr.shape[-1]), dtype=np.float32)
+        for i in range(blurred_kernel_size):
+            rows += padded[i : i + h]
+        window_sum = np.zeros_like(img_arr, dtype=np.float32)
+        for j in range(blurred_kernel_size):
+            window_sum += rows[:, j : j + w]
+        blurred.append(window_sum / blurred_kernel_size**2)
+
+    img_err = np.minimum(np.abs(blurred[1] - blurred[0]), 255).astype(np.uint8)
+    std_err = float(np.max(np.std(img_err.reshape((-1, img_err.shape[-1])), axis=0)))
+    ratio_err = int((np.abs(img_err) > np.finfo(np.float32).eps).sum())
+    if not (std_err > std_err_threshold and ratio_err > ratio_err_threshold * img_err.size):
+        return
+
+    if verbose:
+        print(
+            f"Image mismatch [std_err={std_err:.2f} (thr={std_err_threshold:.2f}), "
+            f"ratio_err={ratio_err} (thr={ratio_err_threshold * img_err.size})]:"
+        )
+        raw_bytes = io.BytesIO()
+        img_delta = np.minimum(np.abs(img_b - img_a), 255).astype(np.uint8)
+        img_obj = Image.fromarray(img_delta.squeeze(-1) if img_delta.shape[-1] == 1 else img_delta)
+        img_obj.save(raw_bytes, "PNG")
+        raw_bytes.seek(0)
+        print(base64.b64encode(raw_bytes.read()))
+    raise AssertionError(err_msg)
+
+
 def init_simulators(gs_sim, mj_sim=None, qpos=None, qvel=None):
     if mj_sim is not None:
         _, (_, _, mj_qs_idx, mj_dofs_idx, _, _) = _get_model_mappings(gs_sim, mj_sim)
@@ -302,7 +375,7 @@ def init_simulators(gs_sim, mj_sim=None, qpos=None, qvel=None):
     if qvel is not None:
         gs_robot.set_dofs_velocity(qvel)
 
-    gs_sim.rigid_solver.dofs_state.qf_constraint.fill(0.0)
+    gs_sim.rigid_solver.dyn_state.dofs.qf_constraint.fill(0.0)
     gs_sim.rigid_solver._func_forward_dynamics()
     gs_sim.rigid_solver._func_constraint_force()
     gs_sim.rigid_solver._func_update_acc()
@@ -313,7 +386,7 @@ def init_simulators(gs_sim, mj_sim=None, qpos=None, qvel=None):
     if mj_sim is not None:
         mujoco.mj_resetData(mj_sim.model, mj_sim.data)
         mj_sim.data.qpos[mj_qs_idx] = gs_sim.rigid_solver.qpos.to_numpy()[:, 0]
-        mj_sim.data.qvel[mj_dofs_idx] = gs_sim.rigid_solver.dofs_state.vel.to_numpy()[:, 0]
+        mj_sim.data.qvel[mj_dofs_idx] = gs_sim.rigid_solver.dyn_state.dofs.vel.to_numpy()[:, 0]
         mujoco.mj_forward(mj_sim.model, mj_sim.data)
 
 
@@ -477,8 +550,8 @@ def _get_model_mappings(
             if mj_geom.contype or mj_geom.conaffinity:
                 mj_geoms_idx.append(mj_geom.id)
 
-    (gs_joints_idx, gs_q_idx, gs_dofs_idx) = _gs_search_by_joints_name(gs_sim.scene, joints_name)
-    (_, _, gs_motors_idx) = _gs_search_by_joints_name(gs_sim.scene, motors_name)
+    gs_joints_idx, gs_q_idx, gs_dofs_idx = _gs_search_by_joints_name(gs_sim.scene, joints_name)
+    _, _, gs_motors_idx = _gs_search_by_joints_name(gs_sim.scene, motors_name)
 
     gs_bodies_idx = _gs_search_by_links_name(gs_sim.scene, bodies_name)
     gs_geoms_idx: list[int] = []
@@ -492,7 +565,15 @@ def _get_model_mappings(
 
 
 def build_mujoco_sim(
-    xml_path, gs_solver, gs_integrator, merge_fixed_links, multi_contact, adjacent_collision, dof_damping, native_ccd
+    xml_path,
+    gs_solver,
+    gs_integrator,
+    merge_fixed_links,
+    multi_contact,
+    adjacent_collision,
+    native_ccd,
+    *,
+    friction_cone,
 ):
     if gs_solver == gs.constraint_solver.CG:
         mj_solver = mujoco.mjtSolver.mjSOL_CG
@@ -518,19 +599,29 @@ def build_mujoco_sim(
 
     model.opt.solver = mj_solver
     model.opt.integrator = mj_integrator
-    model.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+    if friction_cone == gs.friction_cone.elliptic:
+        model.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+    else:
+        model.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
     model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_ISLAND
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_REFSAFE)
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_GRAVITY)
+    # Keep midpoint integration of standalone free bodies enabled on the MuJoCo side: Genesis implements it under
+    # the implicitfast integrator, and the consistency tests are its test coverage.
+    model.opt.enableflags &= ~np.uint32(mujoco.mjtEnableBit.mjENBL_INVDISCRETE)
+    # MuJoCo's mesh processing leaves sub-epsilon center-of-mass residuals in body_ipos while Genesis re-centers
+    # meshes exactly. Midpoint integration branches on an exact ipos == 0 test, so the residuals would silently
+    # route the two engines through different update rules; canonicalize the dust to zero.
+    model.body_ipos[np.abs(model.body_ipos) < 1e-12] = 0.0
     if native_ccd:
         model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_NATIVECCD)
     else:
         model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_NATIVECCD
     if multi_contact:
-        model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+        model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
     else:
-        model.opt.enableflags &= ~np.uint32(mujoco.mjtEnableBit.mjENBL_MULTICCD)
+        model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
     if adjacent_collision:
         model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
     else:
@@ -538,6 +629,52 @@ def build_mujoco_sim(
     data = mujoco.MjData(model)
 
     return MjSim(model, data)
+
+
+def get_mujoco_midpoint_dofs_mask(mj_sim):
+    """Boolean mask over MuJoCo DOFs whose qacc / qvel are overwritten by midpoint integration this step.
+
+    Mirrors MuJoCo's eligibility test: implicitfast without invdiscrete, zero medium density/viscosity, and per
+    joint a standalone unconstrained free body. Rotational DOFs are always overwritten for eligible bodies; linear
+    DOFs only when the center of mass is off the joint origin.
+    """
+    model, data = mj_sim.model, mj_sim.data
+    mask = np.zeros(model.nv, dtype=np.bool_)
+    if (
+        model.opt.integrator != mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+        or model.opt.enableflags & mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+        or model.opt.density != 0.0
+        or model.opt.viscosity != 0.0
+    ):
+        return mask
+    for i_j in range(model.njnt):
+        if model.jnt_type[i_j] != mujoco.mjtJoint.mjJNT_FREE:
+            continue
+        i_b = model.jnt_bodyid[i_j]
+        if model.body_parentid[i_b] != 0 or model.body_subtreemass[i_b] != model.body_mass[i_b]:
+            continue
+        is_constrained = False
+        for i_c in range(data.ncon):
+            geom_a, geom_b = data.contact.geom[i_c]
+            if (geom_a >= 0 and model.geom_bodyid[geom_a] == i_b) or (geom_b >= 0 and model.geom_bodyid[geom_b] == i_b):
+                is_constrained = True
+        for i_e in range(model.neq):
+            if not data.eq_active[i_e] or model.eq_type[i_e] not in (
+                mujoco.mjtEq.mjEQ_CONNECT,
+                mujoco.mjtEq.mjEQ_WELD,
+            ):
+                continue
+            obj1, obj2 = model.eq_obj1id[i_e], model.eq_obj2id[i_e]
+            if model.eq_objtype[i_e] == mujoco.mjtObj.mjOBJ_SITE:
+                obj1, obj2 = model.site_bodyid[obj1], model.site_bodyid[obj2]
+            if obj1 == i_b or obj2 == i_b:
+                is_constrained = True
+        if is_constrained:
+            continue
+        adr = model.jnt_dofadr[i_j]
+        start = 3 if (model.body_ipos[i_b] == 0.0).all() else 0
+        mask[adr + start : adr + 6] = True
+    return mask
 
 
 def build_genesis_sim(
@@ -551,6 +688,10 @@ def build_genesis_sim(
     gjk_collision,
     show_viewer,
     mj_sim,
+    *,
+    friction_cone,
+    friction_torsional,
+    friction_rolling,
 ):
     scene = gs.Scene(
         viewer_options=gs.options.ViewerOptions(
@@ -558,17 +699,19 @@ def build_genesis_sim(
             camera_lookat=(0.0, 0.0, 0.5),
             camera_fov=30,
             res=(960, 640),
-            max_FPS=60,
         ),
         sim_options=gs.options.SimOptions(
             dt=mj_sim.model.opt.timestep,
             substeps=1,
-            gravity=mj_sim.model.opt.gravity.tolist(),
+            gravity=mj_sim.model.opt.gravity,
         ),
         rigid_options=gs.options.RigidOptions(
             integrator=gs_integrator,
             constraint_solver=gs_solver,
             enable_mujoco_compatibility=mujoco_compatibility,
+            friction_cone=friction_cone,
+            enable_torsional_friction=friction_torsional,
+            enable_rolling_friction=friction_rolling,
             box_box_detection=True,
             enable_self_collision=True,
             enable_adjacent_collision=adjacent_collision,
@@ -592,7 +735,7 @@ def build_genesis_sim(
         file=file,
         convexify=True,
         decompose_robot_error_threshold=float("inf"),
-        default_armature=None,
+        align=False,
     )
     if xml_path.endswith(".xml"):
         morph = gs.morphs.MJCF(**morph_kwargs)
@@ -620,6 +763,10 @@ def build_genesis_sim(
     for joint in scene.rigid_solver.joints:
         joint.dofs_invweight[:] = -1
 
+    # Canonicalize mesh center-of-mass dust to zero: see the matching body_ipos normalization in build_mujoco_sim.
+    for link in scene.rigid_solver.links:
+        link.inertial_pos[np.abs(link.inertial_pos) < 1e-12] = 0.0
+
     scene.build()
 
     return gs_sim
@@ -638,8 +785,8 @@ def check_mujoco_model_consistency(
 
     # Get mapping between Mujoco and Genesis
     gs_maps, mj_maps = _get_model_mappings(gs_sim, mj_sim, joints_name, bodies_name)
-    (gs_bodies_idx, gs_joints_idx, gs_q_idx, gs_dofs_idx, gs_geoms_idx, gs_motors_idx) = gs_maps
-    (mj_bodies_idx, mj_joints_idx, mj_qs_idx, mj_dofs_idx, mj_geoms_idx, mj_motors_idx) = mj_maps
+    gs_bodies_idx, gs_joints_idx, gs_q_idx, gs_dofs_idx, gs_geoms_idx, gs_motors_idx = gs_maps
+    mj_bodies_idx, mj_joints_idx, mj_qs_idx, mj_dofs_idx, mj_geoms_idx, mj_motors_idx = mj_maps
 
     # solver
     gs_gravity = gs_sim.rigid_solver.scene.gravity
@@ -683,63 +830,72 @@ def check_mujoco_model_consistency(
 
     mj_cone = mujoco.mjtCone(mj_sim.model.opt.cone)
     if mj_cone.name == "mjCONE_ELLIPTIC":
-        assert False
+        assert gs_sim.rigid_solver._options.friction_cone == gs.friction_cone.elliptic
+        assert_allclose(gs_sim.rigid_solver._options.impratio, mj_sim.model.opt.impratio, tol=tol)
     elif mj_cone.name == "mjCONE_PYRAMIDAL":
-        assert True
+        assert gs_sim.rigid_solver._options.friction_cone == gs.friction_cone.pyramidal
     else:
         assert False
 
     gs_roots_name = sorted(
         gs_sim.rigid_solver.links[i].name
-        for i in set(gs_sim.rigid_solver.links_info.root_idx.to_numpy()[gs_bodies_idx])
+        for i in set(gs_sim.rigid_solver.dyn_info.links.root_idx.to_numpy()[gs_bodies_idx])
     )
     mj_roots_name = sorted(mj_sim.model.body(i).name for i in set(mj_sim.model.body_rootid[mj_bodies_idx]))
     assert gs_roots_name == mj_roots_name
 
     # body
     for gs_i, mj_i in zip(gs_bodies_idx, mj_bodies_idx):
-        gs_invweight_i = gs_sim.rigid_solver.links_info.invweight.to_numpy()[gs_i]
+        gs_invweight_i = gs_sim.rigid_solver.dyn_info.links.invweight.to_numpy()[gs_i]
         mj_invweight_i = mj_sim.model.body(mj_i).invweight0
-        assert_allclose(gs_invweight_i, mj_invweight_i, tol=tol)
-        gs_inertia_i = gs_sim.rigid_solver.links_info.inertial_i.to_numpy()[gs_i, [0, 1, 2], [0, 1, 2]]
+        try:
+            assert_allclose(gs_invweight_i, mj_invweight_i, tol=tol)
+        except AssertionError:
+            if tuple(int(x) for x in mujoco.__version__.split(".")[:2]) < (3, 5):
+                pytest.skip(
+                    "MuJoCo < 3.5 lacks the degenerate invweight fix. "
+                    "See https://github.com/google-deepmind/mujoco/commit/1cda1e7a"
+                )
+            raise
+        gs_inertia_i = gs_sim.rigid_solver.dyn_info.links.inertial_i.to_numpy()[gs_i, [0, 1, 2], [0, 1, 2]]
         mj_inertia_i = mj_sim.model.body(mj_i).inertia
         assert_allclose(gs_inertia_i, mj_inertia_i, tol=tol)
-        gs_ipos_i = gs_sim.rigid_solver.links_info.inertial_pos.to_numpy()[gs_i]
+        gs_ipos_i = gs_sim.rigid_solver.dyn_info.links.inertial_pos.to_numpy()[gs_i]
         mj_ipos_i = mj_sim.model.body(mj_i).ipos
         assert_allclose(gs_ipos_i, mj_ipos_i, tol=tol)
-        gs_iquat_i = gs_sim.rigid_solver.links_info.inertial_quat.to_numpy()[gs_i]
+        gs_iquat_i = gs_sim.rigid_solver.dyn_info.links.inertial_quat.to_numpy()[gs_i]
         mj_iquat_i = mj_sim.model.body(mj_i).iquat
         assert_allclose(gs_iquat_i, mj_iquat_i, tol=tol)
-        gs_pos_i = gs_sim.rigid_solver.links_info.pos.to_numpy()[gs_i]
+        gs_pos_i = gs_sim.rigid_solver.dyn_info.links.pos.to_numpy()[gs_i]
         mj_pos_i = mj_sim.model.body(mj_i).pos
         assert_allclose(gs_pos_i, mj_pos_i, tol=tol)
-        gs_quat_i = gs_sim.rigid_solver.links_info.quat.to_numpy()[gs_i]
+        gs_quat_i = gs_sim.rigid_solver.dyn_info.links.quat.to_numpy()[gs_i]
         mj_quat_i = mj_sim.model.body(mj_i).quat
         assert_allclose(gs_quat_i, mj_quat_i, tol=tol)
-        gs_mass_i = gs_sim.rigid_solver.links_info.inertial_mass.to_numpy()[gs_i]
+        gs_mass_i = gs_sim.rigid_solver.dyn_info.links.inertial_mass.to_numpy()[gs_i]
         mj_mass_i = mj_sim.model.body(mj_i).mass
         assert_allclose(gs_mass_i, mj_mass_i, tol=tol)
 
     # dof / joints
-    gs_dof_damping = gs_sim.rigid_solver.dofs_info.damping.to_numpy()
+    gs_dof_damping = gs_sim.rigid_solver.dyn_info.dofs.damping.to_numpy()
     mj_dof_damping = mj_sim.model.dof_damping
     assert_allclose(gs_dof_damping[gs_dofs_idx], mj_dof_damping[mj_dofs_idx], tol=tol)
 
-    gs_dof_armature = gs_sim.rigid_solver.dofs_info.armature.to_numpy()
+    gs_dof_armature = gs_sim.rigid_solver.dyn_info.dofs.armature.to_numpy()
     mj_dof_armature = mj_sim.model.dof_armature
     assert_allclose(gs_dof_armature[gs_dofs_idx], mj_dof_armature[mj_dofs_idx], tol=tol)
 
     # TODO: 1 stiffness per joint in Mujoco, 1 stiffness per DoF in Genesis
-    gs_dof_stiffness = gs_sim.rigid_solver.dofs_info.stiffness.to_numpy()
+    gs_dof_stiffness = gs_sim.rigid_solver.dyn_info.dofs.stiffness.to_numpy()
     mj_dof_stiffness = mj_sim.model.jnt_stiffness
     if all(joint.n_dofs == 1 for joint in gs_sim.rigid_solver.joints):
         assert_allclose(gs_dof_stiffness[gs_dofs_idx], mj_dof_stiffness[mj_joints_idx], tol=tol)
 
-    gs_dof_invweight0 = gs_sim.rigid_solver.dofs_info.invweight.to_numpy()
+    gs_dof_invweight0 = gs_sim.rigid_solver.dyn_info.dofs.invweight.to_numpy()
     mj_dof_invweight0 = mj_sim.model.dof_invweight0
     assert_allclose(gs_dof_invweight0[gs_dofs_idx], mj_dof_invweight0[mj_dofs_idx], tol=tol)
 
-    gs_dof_dof_frictionloss = gs_sim.rigid_solver.dofs_info.frictionloss.to_numpy()
+    gs_dof_dof_frictionloss = gs_sim.rigid_solver.dyn_info.dofs.frictionloss.to_numpy()
     mj_dof_dof_frictionloss = mj_sim.model.dof_frictionloss
     assert_allclose(gs_dof_dof_frictionloss[gs_dofs_idx], mj_dof_dof_frictionloss[mj_dofs_idx], tol=tol)
 
@@ -768,7 +924,7 @@ def check_mujoco_model_consistency(
     assert_allclose(mj_sim.model.jnt_margin, 0, tol=tol)
     gs_joint_range = np.stack(
         [
-            gs_sim.rigid_solver.dofs_info.limit[gs_sim.rigid_solver.joints_info.dof_start[i]].to_numpy()
+            gs_sim.rigid_solver.dyn_info.dofs.limit[gs_sim.rigid_solver.dyn_info.joints.dof_start[i]].to_numpy()
             for i in gs_joints_idx
         ],
         axis=0,
@@ -784,13 +940,14 @@ def check_mujoco_model_consistency(
     for v in mj_sim.model.actuator_biastype:
         assert v in (mujoco.mjtBias.mjBIAS_AFFINE, mujoco.mjtBias.mjBIAS_NONE)
 
-    # NOTE: not considering gear
-    gs_kp = gs_sim.rigid_solver.dofs_info.kp.to_numpy()
-    gs_kv = gs_sim.rigid_solver.dofs_info.kv.to_numpy()
-    mj_kp = -mj_sim.model.actuator_biasprm[:, 1]
-    mj_kv = -mj_sim.model.actuator_biasprm[:, 2]
-    assert_allclose(gs_kp[gs_motors_idx], mj_kp[mj_motors_idx], tol=tol)
-    assert_allclose(gs_kv[gs_motors_idx], mj_kv[mj_motors_idx], tol=tol)
+    # NOTE: not considering gear for biasprm (only relevant for AFFINE actuators where gear=1 in practice).
+    gs_act_gain = gs_sim.rigid_solver.dyn_info.dofs.act_gain.to_numpy()
+    gs_act_bias = gs_sim.rigid_solver.dyn_info.dofs.act_bias.to_numpy()
+    mj_gear = mj_sim.model.actuator_gear[:, 0]
+    mj_gainprm = mj_sim.model.actuator_gainprm[:, 0] * mj_gear
+    mj_biasprm = mj_sim.model.actuator_biasprm[:, :3] * mj_gear[:, None]
+    assert_allclose(gs_act_gain[gs_motors_idx], mj_gainprm[mj_motors_idx], tol=tol)
+    assert_allclose(gs_act_bias[gs_motors_idx], mj_biasprm[mj_motors_idx], tol=tol)
 
 
 def check_mujoco_data_consistency(
@@ -805,25 +962,25 @@ def check_mujoco_data_consistency(
 ):
     # Get mapping between Mujoco and Genesis
     gs_maps, mj_maps = _get_model_mappings(gs_sim, mj_sim, joints_name, bodies_name)
-    (gs_bodies_idx, _, gs_q_idx, gs_dofs_idx, _, _) = gs_maps
-    (mj_bodies_idx, _, mj_qs_idx, mj_dofs_idx, _, _) = mj_maps
+    gs_bodies_idx, _, gs_q_idx, gs_dofs_idx, _, _ = gs_maps
+    mj_bodies_idx, _, mj_qs_idx, mj_dofs_idx, _, _ = mj_maps
 
     # crb
-    gs_crb_inertial = gs_sim.rigid_solver.links_state.crb_inertial.to_numpy()[:, 0].reshape([-1, 9])[
+    gs_crb_inertial = gs_sim.rigid_solver.dyn_state.links.crb_inertial.to_numpy()[:, 0].reshape([-1, 9])[
         :, [0, 4, 8, 1, 2, 5]
     ]
     mj_crb_inertial = mj_sim.data.crb[:, :6]  # upper-triangular part
     assert_allclose(gs_crb_inertial[gs_bodies_idx], mj_crb_inertial[mj_bodies_idx], tol=tol)
-    gs_crb_pos = gs_sim.rigid_solver.links_state.crb_pos.to_numpy()[:, 0]
+    gs_crb_pos = gs_sim.rigid_solver.dyn_state.links.crb_pos.to_numpy()[:, 0]
     mj_crb_pos = mj_sim.data.crb[:, 6:9]
     assert_allclose(gs_crb_pos[gs_bodies_idx], mj_crb_pos[mj_bodies_idx], tol=tol)
-    gs_crb_mass = gs_sim.rigid_solver.links_state.crb_mass.to_numpy()[:, 0]
+    gs_crb_mass = gs_sim.rigid_solver.dyn_state.links.crb_mass.to_numpy()[:, 0]
     mj_crb_mass = mj_sim.data.crb[:, 9]
     assert_allclose(gs_crb_mass[gs_bodies_idx], mj_crb_mass[mj_bodies_idx], tol=tol)
 
     gs_mass_mat = gs_sim.rigid_solver.mass_mat.to_numpy()[:, :, 0]
     mj_mass_mat = np.zeros((mj_sim.model.nv, mj_sim.model.nv))
-    mujoco.mj_fullM(mj_sim.model, mj_mass_mat, mj_sim.data.qM)
+    mujoco.mj_fullM(mj_sim.model, mj_sim.data, mj_mass_mat)
     assert_allclose(gs_mass_mat[gs_dofs_idx][:, gs_dofs_idx], mj_mass_mat[mj_dofs_idx][:, mj_dofs_idx], tol=tol)
 
     gs_meaninertia = gs_sim.rigid_solver.meaninertia.to_numpy()[0]
@@ -831,13 +988,13 @@ def check_mujoco_data_consistency(
     assert_allclose(gs_meaninertia, mj_meaninertia, tol=tol)
 
     # Pre-constraint so-called bias forces in configuration space
-    gs_qfrc_bias = gs_sim.rigid_solver.dofs_state.qf_bias.to_numpy()[:, 0]
+    gs_qfrc_bias = gs_sim.rigid_solver.dyn_state.dofs.qf_bias.to_numpy()[:, 0]
     mj_qfrc_bias = mj_sim.data.qfrc_bias
     assert_allclose(gs_qfrc_bias, mj_qfrc_bias[mj_dofs_idx], tol=tol)
-    gs_qfrc_passive = gs_sim.rigid_solver.dofs_state.qf_passive.to_numpy()[:, 0]
+    gs_qfrc_passive = gs_sim.rigid_solver.dyn_state.dofs.qf_passive.to_numpy()[:, 0]
     mj_qfrc_passive = mj_sim.data.qfrc_passive
     assert_allclose(gs_qfrc_passive, mj_qfrc_passive[mj_dofs_idx], tol=tol)
-    gs_qfrc_actuator = gs_sim.rigid_solver.dofs_state.qf_applied.to_numpy()[:, 0]
+    gs_qfrc_actuator = gs_sim.rigid_solver.dyn_state.dofs.qf_applied.to_numpy()[:, 0]
     mj_qfrc_actuator = mj_sim.data.qfrc_actuator
     assert_allclose(gs_qfrc_actuator, mj_qfrc_actuator[mj_dofs_idx], tol=tol)
 
@@ -920,17 +1077,30 @@ def check_mujoco_data_consistency(
             )
             mj_gradient = mj_sim.data.solver.gradient[mj_iter]
             assert_allclose(gs_gradient, mj_gradient, tol=tol)
-            gs_improvement = gs_scale * (
-                gs_sim.rigid_solver.constraint_solver.prev_cost[0] - gs_sim.rigid_solver.constraint_solver.cost[0]
-            )
+            gs_improvement = gs_scale * gs_sim.rigid_solver.constraint_solver.ls_improvement[0]
             mj_improvement = mj_sim.data.solver.improvement[mj_iter]
 
             # Note that 'constraint_solver.active' refers to whether the quadratic part of a constraint is active,
             # unlike Mujoco that defines 'nactive' as the number of active constraints regardless of its type.
-            # In practice, this only makes a difference if frictionloss is enabled.
-            gs_nactive = sum(gs_sim.rigid_solver.constraint_solver.active.to_numpy()[:gs_n_constraints, 0])
+            # In practice, this only makes a difference if frictionloss is enabled. Middle-zone (slipping) elliptic
+            # cone rows are excluded from the per-row quadratic (handled as a coupled block) yet count as active in
+            # Mujoco's stat, which engages a cone as a whole; counting every row of a cone that carries any force
+            # translates Genesis's convention into Mujoco's.
+            gs_counted = gs_sim.rigid_solver.constraint_solver.active.to_numpy()[:gs_n_constraints, 0].copy()
+            gs_n_cone = gs_sim.rigid_solver.constraint_solver.n_constraints_cone.to_numpy()[0]
+            if gs_n_cone:
+                gs_nef = (
+                    gs_sim.rigid_solver.constraint_solver.n_constraints_equality.to_numpy()[0]
+                    + gs_sim.rigid_solver.constraint_solver.n_constraints_frictionloss.to_numpy()[0]
+                )
+                rows_per_contact = gs_sim.rigid_solver.rigid_config.rows_per_contact
+                gs_cone_rows = slice(gs_nef, gs_nef + gs_n_cone)
+                gs_cone_rows_counted = gs_counted[gs_cone_rows] | (np.abs(gs_efc_force[gs_cone_rows]) > 0.0)
+                gs_cones_counted = gs_cone_rows_counted.reshape(-1, rows_per_contact).any(axis=1)
+                gs_counted[gs_cone_rows] = np.repeat(gs_cones_counted, rows_per_contact)
+            gs_nactive = gs_counted.sum()
             mj_native = mj_sim.data.solver.nactive[mj_iter]
-            if not (gs_sim.rigid_solver.dofs_info.frictionloss.to_numpy() > gs.EPS).any():
+            if not (gs_sim.rigid_solver.dyn_info.dofs.frictionloss.to_numpy() > gs.EPS).any():
                 assert mj_native == gs_nactive
 
             # FIXME: For some reason, mujoco is sometimes (seemingful) wrongly reporting 0...
@@ -943,32 +1113,36 @@ def check_mujoco_data_consistency(
             mj_efc_vel = mj_sim.data.efc_vel
             assert_allclose(gs_efc_vel[gs_sidx], mj_efc_vel[mj_sidx], tol=tol)
 
-    gs_qfrc_constraint = gs_sim.rigid_solver.dofs_state.qf_constraint.to_numpy()[:, 0]
+    gs_qfrc_constraint = gs_sim.rigid_solver.dyn_state.dofs.qf_constraint.to_numpy()[:, 0]
     mj_qfrc_constraint = mj_sim.data.qfrc_constraint
     assert_allclose(gs_qfrc_constraint[gs_dofs_idx], mj_qfrc_constraint[mj_dofs_idx], tol=tol)
 
-    gs_qfrc_all = gs_sim.rigid_solver.dofs_state.force.to_numpy()[:, 0]
+    gs_qfrc_all = gs_sim.rigid_solver.dyn_state.dofs.force.to_numpy()[:, 0]
     mj_qfrc_all = mj_sim.data.qfrc_smooth + mj_sim.data.qfrc_constraint
     assert_allclose(gs_qfrc_all[gs_dofs_idx], mj_qfrc_all[mj_dofs_idx], tol=tol)
 
-    gs_qfrc_smooth = gs_sim.rigid_solver.dofs_state.qf_smooth.to_numpy()[:, 0]
+    gs_qfrc_smooth = gs_sim.rigid_solver.dyn_state.dofs.qf_smooth.to_numpy()[:, 0]
     mj_qfrc_smooth = mj_sim.data.qfrc_smooth
     assert_allclose(gs_qfrc_smooth[gs_dofs_idx], mj_qfrc_smooth[mj_dofs_idx], tol=tol)
 
-    gs_qacc_smooth = gs_sim.rigid_solver.dofs_state.acc_smooth.to_numpy()[:, 0]
+    gs_qacc_smooth = gs_sim.rigid_solver.dyn_state.dofs.acc_smooth.to_numpy()[:, 0]
     mj_qacc_smooth = mj_sim.data.qacc_smooth
     assert_allclose(gs_qacc_smooth[gs_dofs_idx], mj_qacc_smooth[mj_dofs_idx], tol=tol)
 
-    # Acceleration pre- VS post-implicit damping
-    # gs_qacc_post = gs_sim.rigid_solver.dofs_state.acc.to_numpy()[:, 0]
+    # Acceleration pre- VS post-implicit damping gs_qacc_post = gs_sim.rigid_solver.dyn_state.dofs.acc.to_numpy()[:, 0]
     if gs_n_constraints:
         gs_qacc_pre = gs_sim.rigid_solver.constraint_solver.qacc.to_numpy()[:, 0]
     else:
         gs_qacc_pre = gs_qacc_smooth
     mj_qacc_pre = mj_sim.data.qacc
-    assert_allclose(gs_qacc_pre[gs_dofs_idx], mj_qacc_pre[mj_dofs_idx], tol=tol)
+    # Midpoint-integrated DOFs hold the realized acceleration (qvel_new - qvel_old) / h in both engines, which
+    # Genesis mirrors in dofs.acc; the smooth+constraint acceleration is only observable on the remaining DOFs.
+    midpoint_mask = get_mujoco_midpoint_dofs_mask(mj_sim)[mj_dofs_idx]
+    gs_qacc_post = gs_sim.rigid_solver.dyn_state.dofs.acc.to_numpy()[:, 0]
+    assert_allclose(gs_qacc_pre[gs_dofs_idx][~midpoint_mask], mj_qacc_pre[mj_dofs_idx][~midpoint_mask], tol=tol)
+    assert_allclose(gs_qacc_post[gs_dofs_idx][midpoint_mask], mj_qacc_pre[mj_dofs_idx][midpoint_mask], tol=tol)
 
-    gs_qvel = gs_sim.rigid_solver.dofs_state.vel.to_numpy()[:, 0]
+    gs_qvel = gs_sim.rigid_solver.dyn_state.dofs.vel.to_numpy()[:, 0]
     mj_qvel = mj_sim.data.qvel
     assert_allclose(gs_qvel[gs_dofs_idx], mj_qvel[mj_dofs_idx], tol=tol)
     gs_qpos = gs_sim.rigid_solver.qpos.to_numpy()[:, 0]
@@ -977,57 +1151,57 @@ def check_mujoco_data_consistency(
 
     # ------------------------------------------------------------------------
 
-    gs_com = gs_sim.rigid_solver.links_state.root_COM.to_numpy()[:, 0]
-    gs_root_idx = np.unique(gs_sim.rigid_solver.links_info.root_idx.to_numpy()[gs_bodies_idx])
+    gs_com = gs_sim.rigid_solver.dyn_state.links.root_COM.to_numpy()[:, 0]
+    gs_root_idx = np.unique(gs_sim.rigid_solver.dyn_info.links.root_idx.to_numpy()[gs_bodies_idx])
     mj_com = mj_sim.data.subtree_com
     mj_root_idx = np.unique(mj_sim.model.body_rootid[mj_bodies_idx])
     assert_allclose(gs_com[gs_root_idx], mj_com[mj_root_idx], tol=tol)
 
-    gs_xipos = gs_sim.rigid_solver.links_state.i_pos.to_numpy()[:, 0]
+    gs_xipos = gs_sim.rigid_solver.dyn_state.links.i_pos.to_numpy()[:, 0]
     mj_xipos = mj_sim.data.xipos - mj_sim.data.subtree_com[mj_sim.model.body_rootid]
     assert_allclose(gs_xipos[gs_bodies_idx], mj_xipos[mj_bodies_idx], tol=tol)
 
-    gs_xpos = gs_sim.rigid_solver.links_state.pos.to_numpy()[:, 0]
+    gs_xpos = gs_sim.rigid_solver.dyn_state.links.pos.to_numpy()[:, 0]
     mj_xpos = mj_sim.data.xpos
     assert_allclose(gs_xpos[gs_bodies_idx], mj_xpos[mj_bodies_idx], tol=tol)
 
-    gs_xquat = gs_sim.rigid_solver.links_state.quat.to_numpy()[:, 0]
+    gs_xquat = gs_sim.rigid_solver.dyn_state.links.quat.to_numpy()[:, 0]
     gs_xmat = gu.quat_to_R(gs_xquat).reshape([-1, 9])
     mj_xmat = mj_sim.data.xmat
     assert_allclose(gs_xmat[gs_bodies_idx], mj_xmat[mj_bodies_idx], tol=tol)
 
-    gs_cd_vel = gs_sim.rigid_solver.links_state.cd_vel.to_numpy()[:, 0]
+    gs_cd_vel = gs_sim.rigid_solver.dyn_state.links.cd_vel.to_numpy()[:, 0]
     mj_cd_vel = mj_sim.data.cvel[:, 3:]
     assert_allclose(gs_cd_vel[gs_bodies_idx], mj_cd_vel[mj_bodies_idx], tol=tol)
-    gs_cd_ang = gs_sim.rigid_solver.links_state.cd_ang.to_numpy()[:, 0]
+    gs_cd_ang = gs_sim.rigid_solver.dyn_state.links.cd_ang.to_numpy()[:, 0]
     mj_cd_ang = mj_sim.data.cvel[:, :3]
     assert_allclose(gs_cd_ang[gs_bodies_idx], mj_cd_ang[mj_bodies_idx], tol=tol)
 
-    gs_cdof_vel = gs_sim.rigid_solver.dofs_state.cdof_vel.to_numpy()[:, 0]
+    gs_cdof_vel = gs_sim.rigid_solver.dyn_state.dofs.cdof_vel.to_numpy()[:, 0]
     mj_cdof_vel = mj_sim.data.cdof[:, 3:]
     assert_allclose(gs_cdof_vel[gs_dofs_idx], mj_cdof_vel[mj_dofs_idx], tol=tol)
-    gs_cdof_ang = gs_sim.rigid_solver.dofs_state.cdof_ang.to_numpy()[:, 0]
+    gs_cdof_ang = gs_sim.rigid_solver.dyn_state.dofs.cdof_ang.to_numpy()[:, 0]
     mj_cdof_ang = mj_sim.data.cdof[:, :3]
     assert_allclose(gs_cdof_ang[gs_dofs_idx], mj_cdof_ang[mj_dofs_idx], tol=tol)
 
     mj_cdof_dot_ang = mj_sim.data.cdof_dot[:, :3]
-    gs_cdof_dot_ang = gs_sim.rigid_solver.dofs_state.cdofd_ang.to_numpy()[:, 0]
+    gs_cdof_dot_ang = gs_sim.rigid_solver.dyn_state.dofs.cdofd_ang.to_numpy()[:, 0]
     assert_allclose(gs_cdof_dot_ang[gs_dofs_idx], mj_cdof_dot_ang[mj_dofs_idx], tol=tol)
 
     mj_cdof_dot_vel = mj_sim.data.cdof_dot[:, 3:]
-    gs_cdof_dot_vel = gs_sim.rigid_solver.dofs_state.cdofd_vel.to_numpy()[:, 0]
+    gs_cdof_dot_vel = gs_sim.rigid_solver.dyn_state.dofs.cdofd_vel.to_numpy()[:, 0]
     assert_allclose(gs_cdof_dot_vel[gs_dofs_idx], mj_cdof_dot_vel[mj_dofs_idx], tol=tol)
 
     # cinr
-    gs_cinr_inertial = gs_sim.rigid_solver.links_state.cinr_inertial.to_numpy()[:, 0].reshape([-1, 9])[
+    gs_cinr_inertial = gs_sim.rigid_solver.dyn_state.links.cinr_inertial.to_numpy()[:, 0].reshape([-1, 9])[
         :, [0, 4, 8, 1, 2, 5]
     ]
     mj_cinr_inertial = mj_sim.data.cinert[:, :6]  # upper-triangular part
     assert_allclose(gs_cinr_inertial[gs_bodies_idx], mj_cinr_inertial[mj_bodies_idx], tol=tol)
-    gs_cinr_pos = gs_sim.rigid_solver.links_state.cinr_pos.to_numpy()[:, 0]
+    gs_cinr_pos = gs_sim.rigid_solver.dyn_state.links.cinr_pos.to_numpy()[:, 0]
     mj_cinr_pos = mj_sim.data.cinert[:, 6:9]
     assert_allclose(gs_cinr_pos[gs_bodies_idx], mj_cinr_pos[mj_bodies_idx], tol=tol)
-    gs_cinr_mass = gs_sim.rigid_solver.links_state.cinr_mass.to_numpy()[:, 0]
+    gs_cinr_mass = gs_sim.rigid_solver.dyn_state.links.cinr_mass.to_numpy()[:, 0]
     mj_cinr_mass = mj_sim.data.cinert[:, 9]
     assert_allclose(gs_cinr_mass[gs_bodies_idx], mj_cinr_mass[mj_bodies_idx], tol=tol)
 
@@ -1055,12 +1229,12 @@ def simulate_and_check_mujoco_consistency(
 
         # Keep Mujoco and Genesis simulation in sync to avoid drift over time
         mj_sim.data.qpos[mj_qs_idx] = gs_sim.rigid_solver.qpos.to_numpy()[:, 0]
-        mj_sim.data.qvel[mj_dofs_idx] = gs_sim.rigid_solver.dofs_state.vel.to_numpy()[:, 0]
+        mj_sim.data.qvel[mj_dofs_idx] = gs_sim.rigid_solver.dyn_state.dofs.vel.to_numpy()[:, 0]
         mj_sim.data.qacc_warmstart[mj_dofs_idx] = gs_sim.rigid_solver.constraint_solver.qacc_ws.to_numpy()[:, 0]
-        mj_sim.data.qacc_smooth[mj_dofs_idx] = gs_sim.rigid_solver.dofs_state.acc_smooth.to_numpy()[:, 0]
+        mj_sim.data.qacc_smooth[mj_dofs_idx] = gs_sim.rigid_solver.dyn_state.dofs.acc_smooth.to_numpy()[:, 0]
 
         # Backup current velocity
-        qvel_prev = gs_sim.rigid_solver.dofs_state.vel.to_numpy()[:, 0]
+        qvel_prev = gs_sim.rigid_solver.dyn_state.dofs.vel.to_numpy()[:, 0]
 
         # Do a single simulation step (eventually with substeps for Genesis)
         mujoco.mj_step(mj_sim.model, mj_sim.data)
@@ -1074,6 +1248,390 @@ def rgb_array_to_png_bytes(rgb_arr: np.ndarray | torch.Tensor) -> bytes:
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+class Crossing(NamedTuple):
+    """A genuinely-interpenetrating pair of links among those passed to `get_genuine_interpenetration`."""
+
+    link_a: int
+    link_b: int
+    depth: float  # separating translation for a crossing, deepest incursion for jammed/contact pairs (metres)
+
+
+def get_genuine_interpenetration(links, cross_tol=1e-3, n_dir=40, n_bisect=9, is_exact=True):
+    """Measure the deepest genuine interpenetration over all link pairs among `links` (each a list of
+    `(verts, faces)` collision geoms), as the penetration-depth ground truth a collision algorithm is
+    expected to resolve.
+
+    Pairs overlapping within `cross_tol` are contacts reporting their incursion; a crossing pair reads, by
+    structure:
+
+    - FULL CONTAINMENT (every vert of one link inside the other): the separation - a swallowed body has no
+      free surface to heal toward, so only the extraction resolves (an engulfed sphere reads R + r).
+    - PARTIAL ENCLOSURE (a quarter or more of one link's verts buried): min(burial incursion, separation) -
+      an oversized apple jammed in a cup reads the wall burial, and a hyper-inflated one enclosing the whole
+      cup reads the cheaper translation that slides it off.
+    - DENT (the breach touches a single face of each wall): the separation when the breach normal is
+      coherent (a directional press retracts by its press depth - the unsigned incursion would escape
+      through the far face of a thin wall), min(incursion, separation) when it cancels (a sphere seated all
+      around a donut hole reads its 2 mm seat; unseating it is no resolution).
+    - PIERCE (some wall carries penetrating verts on both of its faces): the separation, which retracts the
+      press or backs the rod out. When separating costs an order of magnitude more than the incursion - a
+      bore-fit body poking through its container's wall, where the separation is extraction-scale - the
+      resolution is instead the push-back heal: the material protrusion past the pierced wall, marched from
+      the antipodal-pair verts along the breach normal (the mean normal of the intruder's penetrating verts,
+      coherent only for one-faced breaches), floored by the incursion and capped by the separation.
+
+    Separation means zero material overlap, not unlinked: chain-linked donuts pressed together separate by
+    the press depth. Insideness is vertex-sampled via generalized winding numbers (exact on the overlapping
+    closed components of convex decompositions, where pseudonormal signed distances break), so each mesh
+    must be tessellated finer than its partner's thinnest dimension. Searches run `n_dir` Fibonacci
+    directions, bracketed on a geometric ladder and bisected `n_bisect` times.
+
+    Returns `(max_depth, crossings)`: `max_depth` is the largest depth over ALL overlapping pairs, and
+    `crossings` lists the pairs deeper than `cross_tol`, deepest first.
+
+    `is_exact` gates the insideness of the ground-truth `overlap` on the exact `igl.winding_number`; set it
+    False to use the faster tree approximation, whose platform-dependent error can shift `overlap` on
+    borderline geometry (see `inside_of`).
+    """
+    # Geoms may arrive as torch tensors (verts) or numpy arrays (faces); igl needs float64 verts and int64 faces.
+    links = [
+        [(tensor_to_array(verts, dtype=np.float64), tensor_to_array(faces, dtype=np.int64)) for verts, faces in geoms]
+        for geoms in links
+    ]
+
+    # Broad-phase AABB per link, from the full-resolution geoms. A link with no collision geom (e.g. a free-joint
+    # base link) gets an inverted AABB so it is rejected against every other link, keeping the link indexing aligned
+    # with the caller's list so the returned crossings stay valid indices.
+    links_aabb = [
+        (
+            (np.concatenate([verts for verts, _ in geoms]).min(0), np.concatenate([verts for verts, _ in geoms]).max(0))
+            if geoms
+            else (np.full(3, np.inf), np.full(3, -np.inf))
+        )
+        for geoms in links
+    ]
+
+    # One concatenated full-resolution mesh per link.
+    merged = []
+    for geoms in links:
+        verts_all, faces_all, offset = [], [], 0
+        for verts, faces in geoms:
+            verts_all.append(verts)
+            faces_all.append(faces + offset)
+            offset += len(verts)
+        merged.append(
+            (np.concatenate(verts_all), np.concatenate(faces_all))
+            if verts_all
+            else (np.empty((0, 3)), np.empty((0, 3), dtype=np.int64))
+        )
+
+    def inside_of(points, verts_other, faces_other, lo_other, hi_other, is_exact=False):
+        # Winding-number insideness with an AABB prefilter: a point outside the partner's box can't be inside.
+        # `igl.fast_winding_number` is a tree approximation whose error is platform-dependent (BLAS order),
+        # not float noise, so it can flip a vertex's insideness across platforms. `is_exact` uses the exact
+        # `igl.winding_number` for the one-shot calls that set `overlap`'s ground truth; the hot `separated_at`
+        # search keeps the fast one, where a wrong result only costs an extra bisection step.
+        is_inside = np.zeros(len(points), dtype=bool)
+        is_in_box = ((points >= lo_other) & (points <= hi_other)).all(1)
+        if is_in_box.any():
+            winding_number = igl.winding_number if is_exact else igl.fast_winding_number
+            is_inside[is_in_box] = np.abs(winding_number(verts_other, faces_other, points[is_in_box])) > 0.5
+        return is_inside
+
+    # Fibonacci direction sphere and the shift grid (each direction times each probe distance).
+    golden = 0.5 * (1.0 + 5.0**0.5)
+    i_dir = np.arange(n_dir)
+    z_dir = 1.0 - 2.0 * (i_dir + 0.5) / n_dir
+    r_dir = np.sqrt(1.0 - z_dir * z_dir)
+    azimuth = 2.0 * np.pi * i_dir / golden
+    dirs = np.stack([r_dir * np.cos(azimuth), r_dir * np.sin(azimuth), z_dir], axis=1)
+    probe = np.array([1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 4e-2, 8e-2, 1.2e-1])
+
+    max_depth = 0.0
+    crossings = []
+    for i_la, geoms_a in enumerate(links):
+        lo_a, hi_a = links_aabb[i_la]
+        for i_lb in range(i_la + 1, len(links)):
+            # Broad-phase reject via AABB.
+            lo_b, hi_b = links_aabb[i_lb]
+            if (lo_a > hi_b).any() or (lo_b > hi_a).any():
+                continue
+            va, fa = merged[i_la]
+            vb, fb = merged[i_lb]
+
+            # Incursion magnitudes from unsigned distances gated by winding-number insideness: the
+            # pseudonormal sign of igl.signed_distance is unreliable on the overlapping closed components of
+            # convex decompositions, while the generalized winding number stays exact.
+            is_inside_a0 = inside_of(va, vb, fb, lo_b, hi_b, is_exact=is_exact)
+            is_inside_b0 = inside_of(vb, va, fa, lo_a, hi_a, is_exact=is_exact)
+            dist_a0, faces_near_a = igl.signed_distance(va, vb, fb)[:2]
+            dist_b0, faces_near_b = igl.signed_distance(vb, va, fa)[:2]
+            dist_a0 = np.abs(dist_a0)
+            dist_b0 = np.abs(dist_b0)
+            depth_a0 = np.where(is_inside_a0, dist_a0, 0.0)
+            depth_b0 = np.where(is_inside_b0, dist_b0, 0.0)
+            overlap = max(depth_a0.max(), depth_b0.max())
+            if overlap <= cross_tol:
+                # Contact (or cavity containment touching lightly): report the overlap directly.
+                max_depth = max(max_depth, overlap)
+                continue
+
+            # Dent-vs-pierce classification: a pierced wall carries penetrating verts on BOTH of its
+            # faces - a close pair with near-opposite outward normals whose offset is aligned with them
+            # (opposite-normal verts offset sideways sit across a breach rim or a hole, not through a
+            # wall). Pair distance is capped: beyond ~12 mm two opposite-normal verts belong to opposite
+            # sides of a body, not one wall. Near-touching verts count as penetrating here, since a
+            # crossing exactly as deep as the wall leaves the far-face verts ON the partner's surface.
+            r_pair = min(3.0 * overlap, 12e-3) + 1e-3
+
+            def antipodal_pairs(pen_pts, pen_normals):
+                pairs = [np.empty((0, 2), dtype=np.int64)]
+                for i_lo in range(0, len(pen_pts), 256):
+                    chunk = slice(i_lo, i_lo + 256)
+                    diff = pen_pts[None] - pen_pts[chunk, None]
+                    dist2 = (diff**2).sum(-1)
+                    dots = pen_normals[chunk] @ pen_normals.T
+                    is_aligned = np.abs(np.einsum("knj,kj->kn", diff, pen_normals[chunk])) > 0.7 * np.sqrt(dist2)
+                    i_v, j_v = np.nonzero((dist2 <= r_pair**2) & (dots < -0.5) & is_aligned)
+                    pairs.append(np.stack([i_v + i_lo, j_v], axis=1))
+                return np.concatenate(pairs)
+
+            normals_a = igl.per_vertex_normals(va, fa)
+            normals_b = igl.per_vertex_normals(vb, fb)
+            normals_faces_a = np.cross(va[fa[:, 1]] - va[fa[:, 0]], va[fa[:, 2]] - va[fa[:, 0]])
+            normals_faces_a /= np.maximum(np.linalg.norm(normals_faces_a, axis=1)[:, None], 1e-30)
+            normals_faces_b = np.cross(vb[fb[:, 1]] - vb[fb[:, 0]], vb[fb[:, 2]] - vb[fb[:, 0]])
+            normals_faces_b /= np.maximum(np.linalg.norm(normals_faces_b, axis=1)[:, None], 1e-30)
+            is_pen_a = is_inside_a0 | (dist_a0 <= 0.6e-3)
+            is_pen_b = is_inside_b0 | (dist_b0 <= 0.6e-3)
+            pairs_a = antipodal_pairs(va[is_pen_a], normals_a[is_pen_a])
+            pairs_b = antipodal_pairs(vb[is_pen_b], normals_b[is_pen_b])
+            has_pierce = bool(len(pairs_a)) or bool(len(pairs_b))
+
+            def separated_at(offsets):
+                # A shift separates the pair when no vert of one link samples inside the other. Deeply
+                # overlapping shifts are decided by a strided 1/8 vert subsample first (any hit proves
+                # overlap); only the undecided shifts pay the full queries, so the result is exact.
+                offsets = np.atleast_2d(offsets)
+                is_separated = np.ones(len(offsets), dtype=bool)
+                for verts_query, sign, verts_other, faces_other, lo_other, hi_other in (
+                    (va[::8], 1.0, vb, fb, lo_b, hi_b),
+                    (vb[::8], -1.0, va, fa, lo_a, hi_a),
+                    (va, 1.0, vb, fb, lo_b, hi_b),
+                    (vb, -1.0, va, fa, lo_a, hi_a),
+                ):
+                    idx = np.flatnonzero(is_separated)
+                    if not len(idx):
+                        break
+                    points = (verts_query[None] + sign * offsets[idx, None]).reshape(-1, 3)
+                    is_inside = inside_of(points, verts_other, faces_other, lo_other, hi_other)
+                    is_separated[idx[is_inside.reshape(len(idx), -1).any(1)]] = False
+                return is_separated
+
+            # Per-side informed escape directions: a side's coherent mean penetrating normal (a one-faced
+            # press or bulge) and the local wall axes of its crossings - the normals of the partner faces
+            # nearest its antipodal-pair verts, i.e. the faces of the crossed walls themselves. Wall axes
+            # carry a pierce whose own vert normals cancel (a stem's ring verts point radially around the
+            # stem, and its antipodal-pair axes span the stem's cross-section - both perpendicular to the
+            # through-wall direction), and being face-based they survive sparse vert sampling. The axes are
+            # clustered (sign-invariant, folded onto each cluster's dominant eigenvector) because one side
+            # may cross several walls at once, and each crossing owns its axis and its witness verts - a
+            # dominant unrelated contact would otherwise steer the push-back parallel to the pierced wall.
+            # Appended to the Fibonacci grid the directions also remove the direction-grid tilt from the
+            # separation.
+            dirs_informed_sides = []
+            is_press_sides = []
+            press_probes = []
+            clusters_sides = []
+            has_press_normal = False
+            for normals_pen, verts_pen, faces_near_pen, normals_faces_other, pairs_side, depths_pen in (
+                (normals_a[is_inside_a0], va[is_pen_a], faces_near_a[is_pen_a], normals_faces_b, pairs_a, depth_a0),
+                (normals_b[is_inside_b0], vb[is_pen_b], faces_near_b[is_pen_b], normals_faces_a, pairs_b, depth_b0),
+            ):
+                side_dirs = []
+                side_is_press = []
+                side_clusters = []
+                press_probes.append(None)
+                if len(normals_pen):
+                    normal_mean = normals_pen.mean(0)
+                    norm = np.linalg.norm(normal_mean)
+                    if norm > 0.5:
+                        side_dirs.append(np.outer([1.0, -1.0], normal_mean / norm))
+                        side_is_press += [True, True]
+                        has_press_normal = True
+                        press_probes[-1] = (verts_pen[depths_pen[depths_pen > 0.0].argmax()], normal_mean / norm)
+                if len(pairs_side):
+                    verts_idx = np.unique(pairs_side)
+                    axes_pairs = normals_faces_other[faces_near_pen[verts_idx]]
+                    remaining = np.ones(len(axes_pairs), dtype=bool)
+                    for _ in range(3):
+                        if remaining.sum() < 4:
+                            break
+                        axes_rem = axes_pairs[remaining]
+                        axis_dominant = np.linalg.eigh((axes_rem[:, :, None] * axes_rem[:, None, :]).mean(0))[1][:, -1]
+                        in_cluster = remaining & (np.abs(axes_pairs @ axis_dominant) > 0.8)
+                        if in_cluster.sum() >= 4:
+                            axes_cluster = axes_pairs[in_cluster].copy()
+                            axes_cluster[axes_cluster @ axis_dominant < 0.0] *= -1.0
+                            axis_mean = axes_cluster.mean(0)
+                            axis_mean /= np.linalg.norm(axis_mean)
+                            side_dirs.append(np.outer([1.0, -1.0], axis_mean))
+                            side_is_press += [False, False]
+                            side_clusters.append((axis_mean, verts_pen[verts_idx[in_cluster]]))
+                        remaining &= ~in_cluster
+                dirs_informed_sides.append(np.concatenate(side_dirs) if side_dirs else np.empty((0, 3)))
+                is_press_sides.append(np.array(side_is_press, dtype=bool))
+                clusters_sides.append(side_clusters)
+            dirs_search = np.concatenate([dirs, *dirs_informed_sides])
+            is_press_dir = np.concatenate([np.zeros(len(dirs), dtype=bool), *is_press_sides])
+
+            # Smallest separating translation: bracket each direction's transition on the geometric ladder,
+            # then bisect in lockstep; np.inf when no direction separates within the ladder.
+            i_first = np.full(len(dirs_search), -1)
+            is_active = np.ones(len(dirs_search), dtype=bool)
+            for i_r in range(len(probe)):
+                if not is_active.any():
+                    break
+                idx = np.flatnonzero(is_active)
+                is_separated = separated_at(dirs_search[idx] * probe[i_r])
+                i_first[idx[is_separated]] = i_r
+                is_active[idx[is_separated]] = False
+            seps_dir = np.full(len(dirs_search), np.inf)
+            idx = np.flatnonzero(i_first >= 0)
+            if len(idx):
+                lo = np.where(i_first[idx] > 0, probe[np.maximum(i_first[idx] - 1, 0)], 0.0)
+                hi = probe[i_first[idx]]
+                for _ in range(n_bisect):
+                    mid = 0.5 * (lo + hi)
+                    is_separated = separated_at(dirs_search[idx] * mid[:, None])
+                    lo = np.where(is_separated, lo, mid)
+                    hi = np.where(is_separated, mid, hi)
+                seps_dir[idx] = hi
+            separation = seps_dir.min() if len(seps_dir) else np.inf
+            seps_press_sides = []
+            i_dir = len(dirs)
+            for is_press_side in is_press_sides:
+                n_side = len(is_press_side)
+                seps_side = seps_dir[i_dir : i_dir + n_side][is_press_side]
+                seps_press_sides.append(seps_side.min() if len(seps_side) else np.inf)
+                i_dir += n_side
+
+            if is_inside_a0.all() or is_inside_b0.all():
+                # Full containment: a body with every vert inside the partner has no free surface to heal
+                # toward - burial is meaningless and only the extraction resolves (an engulfed sphere reads
+                # R + r, however deep it is buried).
+                depth = separation if np.isfinite(separation) else overlap
+            elif max(is_inside_a0.mean(), is_inside_b0.mean()) >= 0.25:
+                # Partial enclosure: unseating or extracting resolves nothing a solver would report - the
+                # depth is the burial incursion, unless plainly separating is cheaper.
+                depth = min(overlap, separation)
+            elif not has_pierce:
+                # Dent with a coherent breach normal: a directional press, resolved by retracting along
+                # that normal - the separation RESTRICTED to the press directions, not the global minimum
+                # (for a presser inside its container the global minimum is the extraction through the
+                # mouth, which resolves nothing a solver would report). The retraction is only a press
+                # resolution while it fits the wall it presses: a press that produced no pierce cannot run
+                # deeper than the local wall thickness, so a larger directional separation means the
+                # retraction is blocked (a body wedged inside its container escaping diagonally through
+                # the mouth) and the depth is the incursion, as for an incoherent all-around seat.
+                depth_press = np.inf
+                s_probe = np.arange(1, 121) * 1e-3
+                for press_probe, sep_press, (verts_other, faces_other, lo_other, hi_other) in zip(
+                    press_probes,
+                    seps_press_sides,
+                    ((vb, fb, lo_b, hi_b), (va, fa, lo_a, hi_a)),
+                ):
+                    if press_probe is None or not np.isfinite(sep_press):
+                        continue
+                    vert_deep, normal_press = press_probe
+                    thickness = 0.0
+                    for sign in (1.0, -1.0):
+                        pts = vert_deep[None] + sign * normal_press * s_probe[:, None]
+                        is_inside_probe = inside_of(pts, verts_other, faces_other, lo_other, hi_other)
+                        thickness += s_probe[-1] if is_inside_probe.all() else s_probe[np.argmin(is_inside_probe)]
+                    if sep_press <= thickness + 2e-3:
+                        depth_press = min(depth_press, sep_press)
+                depth = depth_press if np.isfinite(depth_press) else min(overlap, separation)
+            elif separation <= 10.0 * overlap:
+                # Ordinary pierce: presses, rods, beams - the separation IS the resolution (it retracts the
+                # press or backs the rod out; the breach normals of fully-crossed walls cancel anyway).
+                depth = separation
+            else:
+                # Extraction-scale containment (separating costs an order of magnitude more than the
+                # incursion: a bore-fit body poking through its container's wall): the resolution is the
+                # push-back heal - the retreat along the wall axis that brings all of the crossing link's
+                # material back through the pierced wall entirely. Projection onto the axis gives it
+                # exactly: the retreat for a sign is the span from the wall's far face (the cluster's
+                # extreme projection against that sign, so walls stacked along one axis - a beam through
+                # both tube walls - are cleared together) to the link's farthest material (its stem tip - a
+                # compact nub; a crossed plate measures its own half-extent instead and defers to the
+                # separation via the near-parity gate below); the cheaper sign is the side to push back
+                # through. Rigid translation feasibility is no
+                # yardstick here: a bore-fit body cannot actually translate (any push re-presses the far
+                # side of the bore), yet the wall crossing is still healed by exactly the protrusion.
+                protrusions = []
+                for i_side, side_clusters in enumerate(clusters_sides):
+                    if not side_clusters:
+                        continue
+                    verts_side = (va, vb)[i_side]
+                    heal_side = 0.0
+                    for axis, verts_cluster in side_clusters:
+                        proj_cluster = verts_cluster @ axis
+                        proj_side = verts_side @ axis
+                        retreat = min(proj_side.max() - proj_cluster.min(), proj_cluster.max() - proj_side.min())
+                        heal_side = max(heal_side, retreat)
+                    protrusions.append(heal_side)
+                if not protrusions:
+                    # No side has a coherent escape direction: crossings pressed from every side, a
+                    # seat-family jam whose extraction resolves nothing a solver would report.
+                    depth = min(overlap, separation)
+                else:
+                    heal = max(overlap, min(protrusions))
+                    if heal < 0.8 * separation:
+                        depth = heal
+                    else:
+                        # Near-parity means the crossing genuinely resolves by sliding out; the separation
+                        # is the exact value while the marched heal carries the 1 mm grid quantization.
+                        depth = separation
+                if not np.isfinite(depth):
+                    depth = overlap
+            max_depth = max(max_depth, depth)
+            if depth > cross_tol:
+                crossings.append(Crossing(i_la, i_lb, depth))
+
+    crossings.sort(key=lambda crossing: crossing.depth, reverse=True)
+    return max_depth, crossings
+
+
+def display_collision_pairs(pairs):
+    """Open a self-contained interactive 3D viewer of colliding link pairs in the default browser.
+
+    Each entry of `pairs` is `(geoms_a, geoms_b, label)`, where each `geoms` is a list of `(verts, faces)`
+    collision meshes (torch or numpy); the geoms of a link are merged and the two links drawn blue and red,
+    with a dropdown to switch between pairs. Each bead in the hover overlay marks a surface the cursor ray
+    crosses (coloured by link, back walls flagged with a cross); a digit key (numpad or top row) picks the
+    N-th surface directly, shift+scroll steps to enclosed surfaces, and clicking two beads reads their
+    distance in millimetres.
+    """
+    data = []
+    for geoms_a, geoms_b, label in pairs:
+        entry = {"label": label}
+        for key, geoms in (("a", geoms_a), ("b", geoms_b)):
+            verts_all, faces_all, offset = [], [], 0
+            for verts, faces in geoms:
+                verts = tensor_to_array(verts, dtype=np.float64)
+                faces = tensor_to_array(faces, dtype=np.int64)
+                verts_all.append(verts)
+                faces_all.append(faces + offset)
+                offset += len(verts)
+            entry[key] = {"v": np.concatenate(verts_all).tolist(), "f": np.concatenate(faces_all).tolist()}
+        data.append(entry)
+    template = (Path(__file__).parent / "mesh_pairs_viewer.html").read_text()
+    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as file:
+        file.write(template.replace("__DATA__", json.dumps(data)))
+    webbrowser.open(f"file://{file.name}")
 
 
 def pprint_oneline(data, delimiter, digits=None):

@@ -166,6 +166,7 @@ def parse_terrain(morph: Terrain, surface):
             with open(gnd_file_path, "wb") as file:
                 pkl.dump(heightfield, file)
 
+    heightfield = np.asarray(heightfield, dtype=gs.np_float)
     need_uvs = getattr(surface, "diffuse_texture", None) is not None
     tmesh, sdf_tmesh = convert_heightfield_to_watertight_trimesh(
         heightfield,
@@ -283,10 +284,13 @@ def convert_heightfield_to_watertight_trimesh(
         ind3 = ind2 + 1
         start = 2 * i * (num_cols - 1)
         stop = start + 2 * (num_cols - 1)
+        # Triangulate along the diagonal (i+1,j)<->(i,j+1) to match the collision mesh built by func_contact_mpr_terrain
+        # in narrowphase.py. The opposite diagonal would surface up to one vertical_scale of mismatch between the
+        # rendered terrain and the contact surface.
         triangles_top[start:stop:2, 0] = ind0
-        triangles_top[start:stop:2, 1] = ind3
+        triangles_top[start:stop:2, 1] = ind2
         triangles_top[start:stop:2, 2] = ind1
-        triangles_top[start + 1 : stop : 2, 0] = ind0
+        triangles_top[start + 1 : stop : 2, 0] = ind1
         triangles_top[start + 1 : stop : 2, 1] = ind2
         triangles_top[start + 1 : stop : 2, 2] = ind3
 

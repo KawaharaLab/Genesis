@@ -1,5 +1,7 @@
 # pylint: disable=no-value-for-parameter
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import igl
 import quadrants as qd
@@ -14,6 +16,9 @@ from genesis.utils.misc import qd_to_torch
 from genesis.utils.geom import qd_transform_by_quat, qd_transform_quat_by_quat
 
 from .base_solver import Solver
+
+if TYPE_CHECKING:
+    from genesis.engine.entities import FEMEntity
 
 
 @qd.data_oriented
@@ -203,7 +208,6 @@ class FEMSolver(Solver):
         )
 
     def init_surface_fields(self):
-        n_vertices_max = self.n_vertices
         n_surfaces_max = self.n_surfaces
 
         # surface info (for coupling)
@@ -213,35 +217,37 @@ class FEMSolver(Solver):
             active=gs.qd_bool,
         )
 
-        # for rendering (this is more of a surface)
-        surface_state_render_v = qd.types.struct(
-            vertices=gs.qd_vec3,
-        )
-
-        surface_state_render_f = qd.types.struct(
-            indices=gs.qd_int,
-        )
-
-        # construct field
         self.surface = surface_state.field(
             shape=(n_surfaces_max),
             needs_grad=False,
             layout=qd.Layout.SOA,
         )
 
-        self.surface_render_v = surface_state_render_v.field(
-            shape=(n_vertices_max, self._B),
-            needs_grad=False,
-            layout=qd.Layout.SOA,
+    def init_vvert_fields(self):
+        """Allocate the render geometry of every visual geom of every entity, laid out back-to-back.
+
+        Several vverts may stand for a single simulated vertex, so each one carries its own UVs and gathers its
+        position through 'vert_idx' (see 'FEMVisGeom'). A contiguous layout lets a renderer consume positions, UVs and
+        topology as three flat arrays.
+        """
+        struct_vvert_info = qd.types.struct(
+            vert_idx=gs.qd_int,  # simulated vertex standing for this vvert
         )
-        self.surface_render_f = surface_state_render_f.field(
-            shape=(n_surfaces_max * 3),
-            needs_grad=False,
-            layout=qd.Layout.SOA,
+        self.vverts_info = struct_vvert_info.field(shape=(max(self._n_vverts, 1),), layout=qd.Layout.SOA)
+
+        # environment-offset vvert positions
+        struct_vvert_state_render = qd.types.struct(
+            pos=gs.qd_vec3,
+        )
+        self.vverts_render = struct_vvert_state_render.field(
+            shape=(max(self._n_vverts, 1), self._B), layout=qd.Layout.SOA
         )
 
-        # UV coordinates for rendering (per-vertex UVs, initialized to zeros)
-        self.surface_render_uvs = qd.field(dtype=gs.qd_vec2, shape=(max(n_vertices_max, 1),), needs_grad=False)
+        # static, shared across all batch envs
+        self.vverts_uvs = qd.field(dtype=gs.qd_vec2, shape=(max(self._n_vverts, 1),))
+
+        # static, in the solver's global vvert space
+        self.vfaces_indices = qd.field(dtype=gs.qd_ivec3, shape=(max(self._n_vfaces, 1),))
 
     def _init_surface_info(self):
         self.vertices_on_surface = qd.field(dtype=gs.qd_bool, shape=(self.n_vertices,))
@@ -315,6 +321,7 @@ class FEMSolver(Solver):
             link_init_quat=gs.qd_vec4,  # offset rotation of link
         )
 
+        # FIXME: AOS, which does not match other Genesis structs. Old, untested code. We prefer not to touch for now.
         self.vertex_constraints = vertex_constraint_info.field(
             shape=(self.n_vertices, self._B), needs_grad=False, layout=qd.Layout.AOS
         )
@@ -346,9 +353,12 @@ class FEMSolver(Solver):
         # elements and bodies
         self._n_elements_max = self.n_elements
         self._n_vertices_max = self.n_vertices
+        self._n_vverts = self.n_vverts
+        self._n_vfaces = self.n_vfaces
         if self.n_elements_max > 0:
             self.init_element_fields()
             self.init_surface_fields()
+            self.init_vvert_fields()
             self.init_ckpt()
 
             for entity in self._entities:
@@ -368,7 +378,7 @@ class FEMSolver(Solver):
         if self.n_vertices_max > 0 and self._enable_vertex_constraints and not self._constraints_initialized:
             self.init_constraints()
 
-        # Overwrite gravity because only field is supported for now
+        # FIXME: _gravity must be a raw qd.field() — see comment in mpm_solver.py
         if self._gravity is not None:
             gravity = self._gravity.to_numpy()
             self._gravity = qd.field(dtype=gs.qd_vec3, shape=(self._B,))
@@ -378,18 +388,18 @@ class FEMSolver(Solver):
     def is_active(self):
         return self.n_elements_max > 0
 
-    def add_entity(self, idx, material, morph, surface, name: str | None = None):
+    def add_entity(self, idx, material, morph, surface, name: str | None = None) -> "FEMEntity":
         # add material's update methods if not matching any existing material
         exist = False
         for mat in self._mats:
             if material == mat:
-                material._idx = mat._idx
+                material.idx = mat.idx
                 exist = True
                 break
         self._mats.append(material)
         if not exist:
-            material._idx = len(self._mats_idx)
-            self._mats_idx.append(material._idx)
+            material.idx = len(self._mats_idx)
+            self._mats_idx.append(material.idx)
             self._mats_update_stress.append(material.update_stress)
             self._mats_compute_energy_gradient_hessian.append(material.compute_energy_gradient_hessian)
             self._mats_compute_energy.append(material.compute_energy)
@@ -405,6 +415,8 @@ class FEMSolver(Solver):
             v_start=self.n_vertices,
             el_start=self.n_elements,
             s_start=self.n_surfaces,
+            vvert_start=self.n_vverts,
+            vface_start=self.n_vfaces,
             name=name,
         )
 
@@ -538,7 +550,7 @@ class FEMSolver(Solver):
 
             for mat_idx in qd.static(self._mats_idx):
                 if self.elements_i[i_e].mat_idx == mat_idx:
-                    if self._mats[mat_idx].hessian_ready:
+                    if self._mats[mat_idx]._hessian_ready:
                         (
                             self.elements_el_energy[i_b, i_e].energy,
                             self.elements_el_energy[i_b, i_e].gradient,
@@ -930,7 +942,7 @@ class FEMSolver(Solver):
             # If the hessian is invariant, we only need to compute it once
             for mat_idx in self._mats_idx:
                 if self._mats[mat_idx].hessian_invariant:
-                    self._mats[mat_idx].hessian_ready = True
+                    self._mats[mat_idx]._hessian_ready = True
 
             # accumulate vertex force and preconditioner
             self.accumulate_vertex_force_preconditioner(f)
@@ -1097,12 +1109,20 @@ class FEMSolver(Solver):
         return state
 
     def get_state_render(self, f):
-        self.get_state_render_kernel(f)
-        vertices = self.surface_render_v.vertices
-        indices = self.surface_render_f.indices
-        uvs = self.surface_render_uvs
+        """
+        Refresh and return the render geometry of every visual geom, laid out contiguously.
 
-        return vertices, indices, uvs
+        Returns
+        -------
+        tuple
+            (vverts_pos, vverts_uvs, vfaces_indices) - environment-offset render vertex positions with shape
+            (n_vverts, B), their UV coordinates, and the render triangles in global render vertex space.
+        """
+        if not self.is_active or self._n_vverts == 0:
+            return None, None, None
+
+        self._kernel_get_state_render(f)
+        return self.vverts_render.pos, self.vverts_uvs, self.vfaces_indices
 
     def get_forces(self):
         """
@@ -1125,7 +1145,6 @@ class FEMSolver(Solver):
         mat_lam: qd.f32,
         mat_rho: qd.f32,
         mat_friction_mu: qd.f32,
-        n_surfaces: qd.i32,
         v_start: qd.i32,
         el_start: qd.i32,
         s_start: qd.i32,
@@ -1133,7 +1152,6 @@ class FEMSolver(Solver):
         elems: qd.types.ndarray(),
         tri2v: qd.types.ndarray(),
         tri2el: qd.types.ndarray(),
-        uvs: qd.types.ndarray(),
     ):
         n_verts_local = verts.shape[0]
         for i_v, i_b in qd.ndrange(n_verts_local, self._B):
@@ -1141,12 +1159,6 @@ class FEMSolver(Solver):
             for j in qd.static(range(3)):
                 self.elements_v[f, i_global, i_b].pos[j] = verts[i_v, j]
             self.elements_v[f, i_global, i_b].vel = qd.Vector.zero(gs.qd_float, 3)
-
-        # Copy UVs to solver field (skip if no UVs provided)
-        n_uvs = uvs.shape[0]
-        for i_v in range(n_uvs):
-            i_global = i_v + v_start
-            self.surface_render_uvs[i_global] = qd.Vector([uvs[i_v, 0], uvs[i_v, 1]])
 
         for i_v in range(n_verts_local):
             i_global = i_v + v_start
@@ -1197,7 +1209,7 @@ class FEMSolver(Solver):
             self.elements_el[f, i_global, i_b].actu = 0.0
             self.elements_el_ng[f, i_global, i_b].active = True
 
-        for i_s in range(n_surfaces):
+        for i_s in range(tri2v.shape[0]):
             i_global = i_s + s_start
             for j in qd.static(range(3)):
                 self.surface[i_global].tri2v[j] = tri2v[i_s, j] + v_start
@@ -1205,21 +1217,20 @@ class FEMSolver(Solver):
             self.surface[i_global].active = True
 
     @qd.kernel
-    def _kernel_add_cloth_for_rendering(
+    def _kernel_add_cloth(
         self,
         f: qd.i32,
-        n_surfaces: qd.i32,
         v_start: qd.i32,
         s_start: qd.i32,
         verts: qd.types.ndarray(),
         tri2v: qd.types.ndarray(),
-        uvs: qd.types.ndarray(),
     ):
         """
-        Add cloth vertices and surfaces for rendering only (no physics computation).
-        Cloth is simulated by IPC, but needs to be in FEM solver's rendering pipeline.
+        Add cloth vertices and surface triangles to the solver, for position tracking and coupling only.
+
+        Cloth elements and mass are owned by the IPC coupler, so the vertex info holds placeholder values and each
+        surface triangle references itself as element.
         """
-        # Add vertices for rendering
         n_verts_local = verts.shape[0]
         for i_v, i_b in qd.ndrange(n_verts_local, self._B):
             i_global = i_v + v_start
@@ -1227,25 +1238,16 @@ class FEMSolver(Solver):
                 self.elements_v[f, i_global, i_b].pos[j] = verts[i_v, j]
             self.elements_v[f, i_global, i_b].vel = qd.Vector.zero(gs.qd_float, 3)
 
-        # Copy UVs to solver field (skip if no UVs provided)
-        n_uvs = uvs.shape[0]
-        for i_v in range(n_uvs):
-            i_global = i_v + v_start
-            self.surface_render_uvs[i_global] = qd.Vector([uvs[i_v, 0], uvs[i_v, 1]])
-
-        # Initialize vertex info (mass will be managed by IPC, set to dummy value)
         for i_v in range(n_verts_local):
             i_global = i_v + v_start
-            self.elements_v_info[i_global].mass = 1.0  # Dummy value, not used for cloth
+            self.elements_v_info[i_global].mass = 1.0
             self.elements_v_info[i_global].mass_over_dt2 = 0.0
             self.elements_v_info[i_global].friction_mu = 0.0
 
-        # Add surface triangles for rendering
-        for i_s in range(n_surfaces):
+        for i_s in range(tri2v.shape[0]):
             i_global = i_s + s_start
             for j in qd.static(range(3)):
                 self.surface[i_global].tri2v[j] = tri2v[i_s, j] + v_start
-            # For cloth, tri2el points to itself (no tetrahedral element)
             self.surface[i_global].tri2el = i_global
             self.surface[i_global].active = True
 
@@ -1391,16 +1393,34 @@ class FEMSolver(Solver):
             active[i_b, i_e] = self.elements_el_ng[f, i_e, i_b].active
 
     @qd.kernel
-    def get_state_render_kernel(self, f: qd.i32):
-        for i_v, i_b in qd.ndrange(self.n_vertices, self._B):
+    def _kernel_get_state_render(self, f: qd.i32):
+        for i_vv, i_b in qd.ndrange(self._n_vverts, self._B):
+            i_v = self.vverts_info[i_vv].vert_idx
             for j in qd.static(range(3)):
                 pos_j = qd.cast(self.elements_v[f, i_v, i_b].pos[j], qd.f32)
-                self.surface_render_v[i_v, i_b].vertices[j] = pos_j + self.envs_offset[i_b][j]
+                self.vverts_render[i_vv, i_b].pos[j] = pos_j + self.envs_offset[i_b][j]
 
-        # Fill triangle indices (flat array, 3 ints per triangle)
-        for i_s in range(self.n_surfaces):
-            for j in qd.static(range(3)):
-                self.surface_render_f[i_s * 3 + j].indices = qd.cast(self.surface[i_s].tri2v[j], qd.i32)
+    @qd.kernel
+    def _kernel_add_vverts(
+        self,
+        vvert_start: qd.i32,
+        vface_start: qd.i32,
+        v_start: qd.i32,
+        verts_idx: qd.types.ndarray(),
+        uvs: qd.types.ndarray(element_dim=1),
+        vfaces: qd.types.ndarray(element_dim=1),
+    ):
+        n_vverts_local = verts_idx.shape[0]
+        for i_vv_ in range(n_vverts_local):
+            self.vverts_info[i_vv_ + vvert_start].vert_idx = verts_idx[i_vv_] + v_start
+
+        n_uvs = uvs.shape[0]
+        for i_vv_ in range(n_uvs):
+            self.vverts_uvs[i_vv_ + vvert_start] = uvs[i_vv_]
+
+        n_vfaces_local = vfaces.shape[0]
+        for i_vf_ in range(n_vfaces_local):
+            self.vfaces_indices[i_vf_ + vface_start] = vfaces[i_vf_] + vvert_start
 
     @qd.kernel
     def _kernel_set_state(
@@ -1453,6 +1473,14 @@ class FEMSolver(Solver):
     @property
     def n_surfaces(self):
         return sum([entity.n_surfaces for entity in self.entities])
+
+    @property
+    def n_vverts(self):
+        return sum([entity.n_vverts for entity in self._entities])
+
+    @property
+    def n_vfaces(self):
+        return sum([entity.n_vfaces for entity in self._entities])
 
     @property
     def n_vertices_max(self):

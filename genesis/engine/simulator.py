@@ -5,6 +5,7 @@ import numpy as np
 import genesis as gs
 from genesis.options.morphs import Morph
 from genesis.options.solvers import (
+    KinematicOptions,
     BaseCouplerOptions,
     IPCCouplerOptions,
     LegacyCouplerOptions,
@@ -22,6 +23,7 @@ from genesis.repr_base import RBC
 
 from .entities import HybridEntity
 from .solvers import (
+    KinematicSolver,
     FEMSolver,
     MPMSolver,
     PBDSolver,
@@ -80,6 +82,7 @@ class Simulator(RBC):
         coupler_options: BaseCouplerOptions,
         tool_options: ToolOptions,
         rigid_options: RigidOptions,
+        kinematic_options: KinematicOptions,
         mpm_options: MPMOptions,
         sph_options: SPHOptions,
         fem_options: FEMOptions,
@@ -93,6 +96,7 @@ class Simulator(RBC):
         self.coupler_options = coupler_options
         self.tool_options = tool_options
         self.rigid_options = rigid_options
+        self.kinematic_options = kinematic_options
         self.mpm_options = mpm_options
         self.sph_options = sph_options
         self.fem_options = fem_options
@@ -112,6 +116,7 @@ class Simulator(RBC):
         # solvers
         self.tool_solver = ToolSolver(self.scene, self, self.tool_options)
         self.rigid_solver = RigidSolver(self.scene, self, self.rigid_options)
+        self.kinematic_solver = KinematicSolver(self.scene, self, self.kinematic_options)
         self.mpm_solver = MPMSolver(self.scene, self, self.mpm_options)
         self.sph_solver = SPHSolver(self.scene, self, self.sph_options)
         self.pbd_solver = PBDSolver(self.scene, self, self.pbd_options)
@@ -122,6 +127,7 @@ class Simulator(RBC):
             [
                 self.tool_solver,
                 self.rigid_solver,
+                self.kinematic_solver,
                 self.mpm_solver,
                 self.sph_solver,
                 self.pbd_solver,
@@ -159,6 +165,10 @@ class Simulator(RBC):
         elif isinstance(material, gs.materials.Rigid):
             entity = self.rigid_solver.add_entity(
                 self.n_entities, material, morph, surface, visualize_contact, name=name
+            )
+        elif isinstance(material, gs.materials.Kinematic):
+            entity = self.kinematic_solver.add_entity(
+                self.n_entities, material, morph, surface, visualize_contact=False, name=name
             )
         elif isinstance(material, gs.materials.MPM.Base):
             entity = self.mpm_solver.add_entity(self.n_entities, material, morph, surface, name=name)
@@ -407,6 +417,16 @@ class Simulator(RBC):
             f_local=self.cur_substep_local,
             solvers=self._solvers,
         )
+
+        # `SimState.__init__` calls `solver.get_state` on every solver, and solvers that maintain a per-solver queue
+        # (kinematic/rigid) push the returned state there as a within-step cache. The SimState itself is registered just
+        # below for grad collection at the simulator level, so the per-solver entry would cause `collect_output_grads`
+        # to dispatch `kernel_get_state_grad` twice on the same state and double the adjoint via atomic_add. Lift those
+        # entries here. Solvers without solver-state registration (mpm, fem, sph, pbd, sf, tool) leave their queue
+        # empty, so `discard` is a no-op for them.
+        for solver, solver_state in zip(self._solvers, state.solvers_state):
+            if solver_state is not None:
+                solver._queried_states.discard(solver_state)
 
         # store all queried states to track gradient flow
         self._queried_states.append(state)

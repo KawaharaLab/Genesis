@@ -3,8 +3,9 @@ import os
 import pickle
 import sys
 import time
+import trimesh
 import weakref
-from typing import TYPE_CHECKING, Callable, Iterable, Literal
+from typing import TYPE_CHECKING, Callable, Iterable, Literal, overload
 
 import numpy as np
 import torch
@@ -13,10 +14,12 @@ from quadrants.lang import impl
 
 import genesis as gs
 import genesis.utils.geom as gu
+import genesis.utils.mesh as mu
 from genesis.engine.force_fields import ForceField
-from genesis.engine.materials.base import Material
+from genesis.engine.materials.base import EntityT, Material
 from genesis.engine.states.solvers import SimState
 from genesis.options import (
+    KinematicOptions,
     BaseCouplerOptions,
     LegacyCouplerOptions,
     FEMOptions,
@@ -44,8 +47,10 @@ from genesis.utils.warnings import warn_once
 
 if TYPE_CHECKING:
     from genesis.engine.entities.base_entity import Entity
+    from genesis.engine.entities.rigid_entity import RigidEntity
+    from genesis.engine.sensors.base_sensor import Sensor
     from genesis.recorders import Recorder
-    from genesis.options.sensors import SensorOptions
+    from genesis.options.sensors.options import SensorOptions, SensorT
 
 
 @gs.assert_initialized
@@ -92,6 +97,7 @@ class Scene(RBC):
         coupler_options: BaseCouplerOptions | None = None,
         tool_options: ToolOptions | None = None,
         rigid_options: RigidOptions | None = None,
+        kinematic_options: KinematicOptions | None = None,
         mpm_options: MPMOptions | None = None,
         sph_options: SPHOptions | None = None,
         fem_options: FEMOptions | None = None,
@@ -112,6 +118,7 @@ class Scene(RBC):
         coupler_options = coupler_options or LegacyCouplerOptions()
         tool_options = tool_options or ToolOptions()
         rigid_options = rigid_options or RigidOptions()
+        kinematic_options = kinematic_options or KinematicOptions()
         mpm_options = mpm_options or MPMOptions()
         sph_options = sph_options or SPHOptions()
         fem_options = fem_options or FEMOptions()
@@ -132,6 +139,7 @@ class Scene(RBC):
             coupler_options,
             tool_options,
             rigid_options,
+            kinematic_options,
             mpm_options,
             sph_options,
             fem_options,
@@ -145,27 +153,19 @@ class Scene(RBC):
 
         self.sim_options = sim_options
         self.coupler_options = coupler_options
-        self.tool_options = tool_options
-        self.rigid_options = rigid_options
-        self.mpm_options = mpm_options
-        self.sph_options = sph_options
-        self.fem_options = fem_options
-        self.sf_options = sf_options
-        self.pbd_options = pbd_options
+        self.tool_options = tool_options.model_copy_from(sim_options)
+        self.rigid_options = rigid_options.model_copy_from(sim_options)
+        self.kinematic_options = kinematic_options.model_copy_from(sim_options)
+        self.mpm_options = mpm_options.model_copy_from(sim_options)
+        self.sph_options = sph_options.model_copy_from(sim_options)
+        self.fem_options = fem_options.model_copy_from(sim_options)
+        self.sf_options = sf_options.model_copy_from(sim_options)
+        self.pbd_options = pbd_options.model_copy_from(sim_options)
         self.profiling_options = profiling_options
 
         self.vis_options = vis_options
         self.viewer_options = viewer_options
         self.renderer_options = renderer
-
-        # merge options
-        self.tool_options.copy_attributes_from(self.sim_options)
-        self.rigid_options.copy_attributes_from(self.sim_options)
-        self.mpm_options.copy_attributes_from(self.sim_options)
-        self.sph_options.copy_attributes_from(self.sim_options)
-        self.fem_options.copy_attributes_from(self.sim_options)
-        self.sf_options.copy_attributes_from(self.sim_options)
-        self.pbd_options.copy_attributes_from(self.sim_options)
 
         # simulator
         self._sim = Simulator(
@@ -174,6 +174,7 @@ class Scene(RBC):
             coupler_options=self.coupler_options,
             tool_options=self.tool_options,
             rigid_options=self.rigid_options,
+            kinematic_options=self.kinematic_options,
             mpm_options=self.mpm_options,
             sph_options=self.sph_options,
             fem_options=self.fem_options,
@@ -202,6 +203,7 @@ class Scene(RBC):
         self._uid = gs.UID()
         self._t = 0
         self._is_built = False
+        self._pre_step_callbacks: list = []
 
         gs.logger.info(f"Scene ~~~<{self._uid}>~~~ created.")
 
@@ -214,6 +216,7 @@ class Scene(RBC):
         coupler_options: BaseCouplerOptions,
         tool_options: ToolOptions,
         rigid_options: RigidOptions,
+        kinematic_options: KinematicOptions,
         mpm_options: MPMOptions,
         sph_options: SPHOptions,
         fem_options: FEMOptions,
@@ -235,6 +238,9 @@ class Scene(RBC):
 
         if not isinstance(rigid_options, RigidOptions):
             gs.raise_exception("`rigid_options` should be an instance of `RigidOptions`.")
+
+        if not isinstance(kinematic_options, KinematicOptions):
+            gs.raise_exception("`kinematic_options` should be an instance of `KinematicOptions`.")
 
         if not isinstance(mpm_options, MPMOptions):
             gs.raise_exception("`mpm_options` should be an instance of `MPMOptions`.")
@@ -264,18 +270,6 @@ class Scene(RBC):
             gs.raise_exception("`renderer` should be an instance of `gs.renderers.Renderer`.")
 
         # Validate rigid_options against sim_options
-        if impl.current_cfg().debug:
-            if sim_options.requires_grad and not gs.use_ndarray:
-                gs.raise_exception(
-                    "Genesis debug mode together with performance mode is not supported when gradient computation is "
-                    "enabled, i.e. `sim_options.requires_grad=True`."
-                )
-        else:
-            if sim_options.requires_grad and gs.use_ndarray:
-                gs.logger.info(
-                    "Use Quadrants dynamic array mode while enabling gradient computation is not recommended. Please "
-                    "enable performance mode at init for efficiency, i.e. 'gs.init(..., performance_mode=True)'."
-                )
         if rigid_options.box_box_detection is None:
             rigid_options.box_box_detection = not sim_options.requires_grad
         elif rigid_options.box_box_detection and sim_options.requires_grad:
@@ -294,6 +288,13 @@ class Scene(RBC):
             )
 
     def destroy(self):
+        # Stop tracking this scene right away
+        try:
+            gs._scene_registry.remove(weakref.ref(self))
+        except ValueError:
+            # This scene may have been destroyed previously
+            pass
+
         if getattr(self, "_recorder_manager", None) is not None:
             if self._recorder_manager.is_recording:
                 self._recorder_manager.stop()
@@ -307,12 +308,27 @@ class Scene(RBC):
             self._sim.destroy()
             self._sim = None
 
-        # Stop tracking this scene
-        try:
-            gs._scene_registry.remove(weakref.ref(self))
-        except ValueError:
-            # This scene may have been destroyed previously
-            pass
+    @overload
+    def add_entity(
+        self,
+        morph: Morph | Iterable[Morph],
+        material: None = ...,
+        surface: Surface | None = ...,
+        visualize_contact: bool = ...,
+        vis_mode: str | None = ...,
+        name: str | None = ...,
+    ) -> "RigidEntity": ...
+
+    @overload
+    def add_entity(
+        self,
+        morph: Morph | Iterable[Morph],
+        material: Material[EntityT] = ...,
+        surface: Surface | None = ...,
+        visualize_contact: bool = ...,
+        vis_mode: str | None = ...,
+        name: str | None = ...,
+    ) -> EntityT: ...
 
     @gs.assert_unbuilt
     def add_entity(
@@ -323,7 +339,7 @@ class Scene(RBC):
         visualize_contact: bool = False,
         vis_mode: str | None = None,
         name: str | None = None,
-    ):
+    ) -> "Entity":
         """
         Add an entity to the scene.
 
@@ -364,27 +380,33 @@ class Scene(RBC):
         if is_heterogeneous:
             morph = tuple(morph)
             morph_for_checks = morph[0]
-            if not isinstance(material, gs.materials.Rigid):
-                gs.raise_exception("Heterogeneous morphs (iterable of morphs) are only supported for Rigid materials.")
-            for m in morph:
-                if not isinstance(m, (gs.morphs.Primitive, gs.morphs.Mesh)):
-                    gs.raise_exception(
-                        f"Heterogeneous morphs only support Primitive and Mesh types, got: {type(m).__name__}."
-                    )
+            if not isinstance(material, (gs.materials.Rigid, gs.materials.Kinematic)):
+                gs.raise_exception(
+                    "Heterogeneous morphs (iterable of morphs) are only supported for Rigid and Kinematic materials."
+                )
+            if not all(
+                isinstance(m, (gs.morphs.Primitive, gs.morphs.Mesh, gs.morphs.URDF, gs.morphs.MJCF)) for m in morph
+            ):
+                gs.raise_exception("Heterogeneous morphs only support Primitive, Mesh, URDF and MJCF types.")
+            if len(set(isinstance(m, (gs.morphs.URDF, gs.morphs.MJCF)) for m in morph)) > 1:
+                gs.raise_exception(
+                    "Heterogeneous morphs must be consistent: either all articulated robots (ie URDF, MJCF) or all "
+                    "basic objects (ie Primitive, Mesh)."
+                )
         else:
             morph_for_checks = morph
 
         if isinstance(material, gs.materials.Rigid):
             # small sdf res is sufficient for primitives regardless of size
             if isinstance(morph_for_checks, gs.morphs.Primitive):
-                material._sdf_max_res = 32
+                material.sdf_max_res = 32
 
         # some morph should not smooth surface normal
         if isinstance(morph_for_checks, (gs.morphs.Box, gs.morphs.Cylinder, gs.morphs.Terrain)):
             surface.smooth = False
 
         if isinstance(morph_for_checks, (gs.morphs.URDF, gs.morphs.MJCF, gs.morphs.USD, gs.morphs.Terrain)):
-            if not isinstance(material, (gs.materials.Rigid, gs.materials.Hybrid)):
+            if not isinstance(material, (gs.materials.Kinematic, gs.materials.Hybrid)):
                 gs.raise_exception(f"Unsupported material for morph: {material} and {morph_for_checks}.")
 
         if surface.double_sided is None:
@@ -393,7 +415,7 @@ class Scene(RBC):
         if vis_mode is not None:
             surface.vis_mode = vis_mode
         # validate and populate default surface.vis_mode considering morph type
-        if isinstance(material, (gs.materials.Rigid, gs.materials.Tool)):
+        if isinstance(material, (gs.materials.Kinematic, gs.materials.Tool)):
             if surface.vis_mode is None:
                 surface.vis_mode = "visual"
 
@@ -462,10 +484,27 @@ class Scene(RBC):
             gs.raise_exception()
 
         # Set material-dependent default options
-        if isinstance(morph, gs.morphs.FileMorph):
-            # Rigid entities will convexify geom by default
-            if morph.convexify is None:
-                morph.convexify = isinstance(material, gs.materials.Rigid)
+        morphs_to_configure = morph if is_heterogeneous else (morph,)
+        for morph_variant in morphs_to_configure:
+            if isinstance(morph_variant, gs.morphs.FileMorph):
+                # Rigid entities will convexify geom by default
+                if morph_variant.convexify is None:
+                    morph_variant.convexify = isinstance(material, gs.materials.Rigid)
+                # Decimation simplifies away the very surface detail that a non-convex collision mesh is kept for, so
+                # it defaults off when convexify is off and on otherwise. Only applies to meshes that skip
+                # watertightening (already-watertight inputs); watertighten does its own feature-preserving QEM.
+                if morph_variant.decimate is None:
+                    morph_variant.decimate = morph_variant.convexify
+                # Genesis fills in a default rotor armature for joints whose armature is not specified in the model
+                # file, while MuJoCo's own default may differ. Under MuJoCo compatibility, the default is dropped
+                # unless set manually, deferring to MuJoCo. USD keeps the Genesis default since MuJoCo is not
+                # involved in its parsing.
+                if (
+                    isinstance(morph_variant, (gs.morphs.MJCF, gs.morphs.URDF, gs.morphs.Drone))
+                    and "default_armature" not in morph_variant.model_fields_set
+                    and self._sim.rigid_solver._enable_mujoco_compatibility
+                ):
+                    morph_variant.default_armature = None
 
         entity = self._sim._add_entity(morph, material, surface, visualize_contact, name)
 
@@ -553,8 +592,11 @@ class Scene(RBC):
 
         if not isinstance(morph, (gs.morphs.Primitive, gs.morphs.Mesh)):
             gs.raise_exception("Light morph only supports `gs.morphs.Primitive` or `gs.morphs.Mesh`.")
-        mesh = gs.Mesh.from_morph_surface(morph, gs.surfaces.Plastic(smooth=False))
-        self._visualizer.add_mesh_light(mesh, color, intensity, morph.pos, morph.quat, revert_dir, double_sided, cutoff)
+        meshes = gs.Mesh.from_morph_surface(morph, gs.surfaces.Plastic(smooth=False))
+        for mesh in meshes:
+            self._visualizer.add_mesh_light(
+                mesh, color, intensity, morph.pos, morph.quat, revert_dir, double_sided, cutoff
+            )
 
     @gs.assert_unbuilt
     def add_light(
@@ -599,7 +641,7 @@ class Scene(RBC):
         self.visualizer.add_light(pos, dir, color, intensity, directional, castshadow, cutoff, attenuation)
 
     @gs.assert_unbuilt
-    def add_sensor(self, sensor_options: "SensorOptions"):
+    def add_sensor(self, sensor_options: "SensorOptions[SensorT]") -> "SensorT":
         """
         Add a sensor to the scene.
 
@@ -611,6 +653,26 @@ class Scene(RBC):
             The options for the sensor.
         """
         return self._sim._sensor_manager.create_sensor(sensor_options)
+
+    @gs.assert_built
+    def read_sensors(self, envs_idx=None) -> "dict[type[Sensor], torch.Tensor]":
+        """
+        Read every sensor in the scene as a tensor per sensor class.
+
+        Always returns a fresh tensor independent of the internal sensor storage; the caller is free to mutate the
+        result.
+
+        Parameters
+        ----------
+        envs_idx : array-like | int | slice | None
+            Environment selection. Defaults to all environments.
+
+        Returns
+        -------
+        dict[Type[Sensor], torch.Tensor]
+            For each sensor class present in the scene, a tensor of shape (B, [history,] class_cache_size).
+        """
+        return self._sim._sensor_manager.read_sensors(entity_idx=None, envs_idx=envs_idx)
 
     @gs.assert_unbuilt
     def start_recording(self, data_func: Callable, rec_options: "RecorderOptions") -> "Recorder":
@@ -831,6 +893,16 @@ class Scene(RBC):
             warn_once("`compile_kernels` is deprecated and will be removed in future release.")
             compile_kernels = True
 
+        # Start tracking the scene right away, so that destroy is called even if some error fires during build
+        def _destroy_callback(scene_ref: weakref.ReferenceType["Scene"]):
+            scene = scene_ref()
+            for i, scene_ref_i in enumerate(gs._scene_registry):
+                if scene is scene_ref_i():
+                    del gs._scene_registry[i]
+                    break
+
+        gs._scene_registry.append(weakref.ref(self, _destroy_callback))
+
         with gs.logger.timer(f"Building scene ~~~<{self._uid}>~~~..."):
             self._parallelize(n_envs, env_spacing, n_envs_per_row, center_envs_at_origin)
 
@@ -855,16 +927,6 @@ class Scene(RBC):
 
         # recorders
         self._recorder_manager.build()
-
-        # Update global scene registry
-        def _destroy_callback(scene_ref: weakref.ReferenceType["Scene"]):
-            scene = scene_ref()
-            for i, scene_ref_i in enumerate(gs._scene_registry):
-                if scene is scene_ref_i():
-                    del gs._scene_registry[i]
-                    break
-
-        gs._scene_registry.append(weakref.ref(self, _destroy_callback))
 
     def _parallelize(
         self,
@@ -933,13 +995,16 @@ class Scene(RBC):
         self._reset(state, envs_idx=envs_idx)
         self._recorder_manager.reset(envs_idx)
 
-    def _reset(self, state: SimState | None = None, *, envs_idx=None):
+    def _reset(self, state: SimState | None = None, *, envs_idx=None, keep_init: bool = False):
         if self._is_built:
             if state is None:
                 state = self._init_state
             else:
                 assert isinstance(state, SimState), "state must be a SimState object"
-                self._init_state = state
+                # keep_init=True restores the state while leaving the registered init untouched, so a later bare
+                # reset() still rewinds to the true initial state.
+                if not keep_init:
+                    self._init_state = state
             self._sim.reset(state, envs_idx)
         else:
             self._init_state = self._get_state()
@@ -960,6 +1025,41 @@ class Scene(RBC):
     def _reset_grad(self):
         self._backward_ready = True
 
+    @gs.assert_built
+    def backward(self, loss: torch.Tensor, *args, **kwargs):
+        """
+        Differentiates `loss` through the recorded rollout and restores the pre-backward physics state.
+
+        Unrolling the gradient tape rewinds the physics state to step 0, so this method snapshots the current state
+        first, runs the backward pass, and restores the snapshot afterwards. The scene then sits at the same physics
+        state as before the call, with gradients populated and forward / backward re-armed, ready to continue the
+        rollout or to be reset. The registered initial state (`reset()` with no argument) is preserved.
+
+        Parameters
+        ----------
+        loss : torch.Tensor
+            Scalar loss to differentiate. Extra positional and keyword arguments (e.g. `gradient`, `retain_graph`)
+            are forwarded to `torch.autograd.backward`.
+
+        Returns
+        -------
+        snapshot : SimState
+            The physics state the scene was restored to.
+        """
+        # Snapshot the current state before the gradient-tape unroll rewinds physics to step 0.
+        snapshot = self.get_state()
+        # The sim unroll (self._backward) re-enters the torch graph from each step's queried states, so the graph
+        # must survive the initial autograd pass.
+        if kwargs.setdefault("retain_graph", True) is not True:
+            gs.raise_exception("'retain_graph' must be left unset: scene.backward requires the graph to survive.")
+        # The functional torch.autograd.backward fills torch and queried-state grads while leaving the sim unroll to
+        # the explicit self._backward call below, keeping gs.Tensor.backward's automatic scene._backward out of it.
+        torch.autograd.backward(loss, *args, **kwargs)
+        self._backward()
+        # keep_init semantics: see _reset
+        self._reset(snapshot, keep_init=True)
+        return snapshot
+
     def _get_state(self):
         return self._sim.get_state()
 
@@ -975,25 +1075,40 @@ class Scene(RBC):
         """
         return self._get_state()
 
+    def register_pre_step_callback(self, callback):
+        """Register a callback invoked at the start of each ``step()``, on the stepping thread. A callback
+        may run deferred work there and veto the advance of that step by returning ``True``. The scene calls
+        them opaquely; use this to drive a scene from an external controller without coupling the scene to it."""
+        self._pre_step_callbacks.append(callback)
+
     @gs.assert_built
     def step(self, update_visualizer=True, refresh_visualizer=True):
         """
         Runs a simulation step forward in time.
         """
-        if not self._forward_ready:
-            gs.raise_exception("Forward simulation not allowed after backward pass. Please reset scene state.")
+        # Run pre-step callbacks on the stepping thread. A callback may perform deferred work and veto this
+        # frame's advance by returning True. The scene treats them opaquely, without knowing what they do or who
+        # registered them (e.g. an InteractiveScene driving GUI-requested rebuild/pause). The visualizer is still
+        # refreshed when the advance is vetoed, so the viewer keeps rendering and stays responsive while paused.
+        advance = not any([callback() for callback in tuple(self._pre_step_callbacks)])
 
-        self._sim.step()
-
-        self._t += 1
+        if advance:
+            if not self._forward_ready:
+                gs.raise_exception("Forward simulation not allowed after backward pass. Please reset scene state.")
+            self._sim.step()
+            self._t += 1
 
         if update_visualizer:
-            self._visualizer.update(force=False, auto=refresh_visualizer)
+            # Force the refresh when the sim did not advance (e.g. paused) so edits made off the step loop -
+            # like a GUI joint slider calling set_qpos - are still drawn and the viewer does not appear frozen.
+            self._visualizer.update(force=not advance, auto=refresh_visualizer)
 
-        if self.profiling_options.show_FPS:
-            self.FPS_tracker.step()
-
-        self._recorder_manager.step(self._sim.cur_step_global)
+        if advance:
+            if self.profiling_options.show_FPS:
+                self.FPS_tracker.step()
+            self._recorder_manager.step(self._sim.cur_step_global)
+            for camera in self._visualizer.cameras:
+                camera.update_recording()
 
     def stop_recording(self):
         self._recorder_manager.stop()
@@ -1052,7 +1167,7 @@ class Scene(RBC):
             return self._visualizer.context.draw_debug_arrow(pos, vec, radius, color)
 
     @gs.assert_built
-    def draw_debug_frame(self, T, axis_length=1.0, origin_size=0.015, axis_radius=0.01):
+    def draw_debug_frame(self, T, axis_length=1.0, origin_size=0.015, axis_radius=0.01, color=None):
         """
         Draws a 3-axis coordinate frame in the scene for visualization.
 
@@ -1066,6 +1181,8 @@ class Scene(RBC):
             The size of the origin point (represented as a sphere).
         axis_radius : float, optional
             The radius of the axes (represented as cylinders).
+        color : array_like, shape (4,), optional
+            Uniform RGBA color override for the entire frame. If None, uses standard RGB axis coloring.
 
         Returns
         -------
@@ -1073,10 +1190,10 @@ class Scene(RBC):
             The created debug object.
         """
         with self._visualizer.viewer_lock:
-            return self._visualizer.context.draw_debug_frame(T, axis_length, origin_size, axis_radius)
+            return self._visualizer.context.draw_debug_frame(T, axis_length, origin_size, axis_radius, color)
 
     @gs.assert_built
-    def draw_debug_frames(self, Ts, axis_length=1.0, origin_size=0.015, axis_radius=0.01):
+    def draw_debug_frames(self, Ts, axis_length=1.0, origin_size=0.015, axis_radius=0.01, color=None):
         """
         Draws 3-axis coordinate frames in the scene for visualization.
 
@@ -1090,6 +1207,8 @@ class Scene(RBC):
             The size of the origin point (represented as a sphere).
         axis_radius : float, optional
             The radius of the axes (represented as cylinders).
+        color : array_like, shape (4,), optional
+            Uniform RGBA color override for the entire frame. If None, uses standard RGB axis coloring.
 
         Returns
         -------
@@ -1097,7 +1216,7 @@ class Scene(RBC):
             The created debug object.
         """
         with self._visualizer.viewer_lock:
-            return self._visualizer.context.draw_debug_frames(Ts, axis_length, origin_size, axis_radius)
+            return self._visualizer.context.draw_debug_frames(Ts, axis_length, origin_size, axis_radius, color)
 
     @gs.assert_built
     def draw_debug_mesh(self, mesh, pos=np.zeros(3), T=None):
@@ -1218,6 +1337,57 @@ class Scene(RBC):
             return self._visualizer.context.draw_debug_points(poss, colors)
 
     @gs.assert_built
+    def draw_debug_frustum(self, camera, color=(1.0, 1.0, 1.0, 0.3)):
+        """
+        Draws a camera frustum in the scene for visualization.
+
+        Parameters
+        ----------
+        camera : Camera
+            The camera object whose frustum will be visualized. Works for any
+            camera including sensor cameras.
+        color : array_like, shape (4,), optional
+            The color of the frustum in RGBA format.
+
+        Returns
+        -------
+        node : genesis.ext.pyrender.mesh.Mesh
+            The created debug object.
+        """
+        with self._visualizer.viewer_lock:
+            mesh = mu.create_camera_frustum(camera, color)
+            return self._visualizer.context.draw_debug_mesh(mesh, T=camera.transform)
+
+    @gs.assert_built
+    def draw_debug_trajectory(self, poss, radius=0.002, color=(1.0, 0.5, 0.0, 0.8)):
+        """
+        Draws a trajectory as a series of connected lines in the scene for visualization.
+
+        Parameters
+        ----------
+        poss : array_like, shape (N, 3)
+            The positions of the trajectory points.
+        radius : float, optional
+            The radius of the trajectory lines.
+        color : array_like, shape (4,), optional
+            The color of the trajectory in RGBA format.
+
+        Returns
+        -------
+        node : genesis.ext.pyrender.mesh.Mesh
+            The created debug object (a single merged mesh of all segments).
+        """
+
+        poss = np.asarray(poss)
+        if len(poss) < 2:
+            return None
+
+        segments = [mu.create_line(poss[i], poss[i + 1], radius, color) for i in range(len(poss) - 1)]
+        merged = trimesh.util.concatenate(segments)
+        with self._visualizer.viewer_lock:
+            return self._visualizer.context.draw_debug_mesh(merged)
+
+    @gs.assert_built
     def draw_debug_path(self, qposs, entity, link_idx=-1, density=0.3, frame_scaling=1.0):
         """
         Draws a planned joint trajectory in the scene for visualization.
@@ -1309,9 +1479,26 @@ class Scene(RBC):
         return rgb_out, depth_out, seg_out, normal_out
 
     @gs.assert_built
+    def update_debug_objects(self, objs, poses):
+        """
+        Updates the poses of debug objects previously created by ``draw_debug_*`` methods.
+
+        Parameters
+        ----------
+        objs : tuple of genesis.ext.pyrender.mesh.Mesh
+            The debug objects to update, i.e. visualizer nodes returned by ``draw_debug_*`` methods. Currently only
+            individual sphere, frame, mesh, and arrow objects (returned by ``draw_debug_sphere``, ``draw_debug_frame``,
+            ``draw_debug_mesh``, and ``draw_debug_arrow`` respectively) are supported.
+        poses : tuple of array_like, each of shape (4, 4)
+            The new transformation matrices for each debug object.
+        """
+        with self._visualizer.viewer_lock:
+            self._visualizer.context.update_debug_objects(objs, poses)
+
+    @gs.assert_built
     def clear_debug_object(self, obj):
         """
-        Clears all the debug objects in the scene.
+        Clears the specified debug object from the scene.
         """
         with self._visualizer.viewer_lock:
             self._visualizer.context.clear_debug_object(obj)
@@ -1353,7 +1540,7 @@ class Scene(RBC):
         arrays: dict[str, np.ndarray] = {}
 
         for name, value in self.__dict__.items():
-            if isinstance(value, (qd.Field, qd.Ndarray)):
+            if isinstance(value, (qd.Tensor, qd.Field, qd.Ndarray)):
                 arrays[".".join((self.__class__.__name__, name))] = value.to_numpy()
 
         for solver in self.active_solvers:
@@ -1393,7 +1580,7 @@ class Scene(RBC):
         arrays = state["arrays"]
 
         for name, value in self.__dict__.items():
-            if isinstance(value, (qd.Field, qd.Ndarray)):
+            if isinstance(value, (qd.Tensor, qd.Field, qd.Ndarray)):
                 key = ".".join((self.__class__.__name__, name))
                 if key in arrays:
                     value.from_numpy(arrays[key])
@@ -1419,6 +1606,11 @@ class Scene(RBC):
         if isinstance(envs_idx, (slice, range)):
             return self._envs_idx[envs_idx]
         if isinstance(envs_idx, (int, np.integer)):
+            n_envs = self.n_envs
+            if not -n_envs <= envs_idx < n_envs:
+                gs.raise_exception(f"`envs_idx` out of range: {envs_idx} not in [{-n_envs}, {n_envs}).")
+            if envs_idx < 0:
+                envs_idx = envs_idx + n_envs
             return self._envs_idx[envs_idx : envs_idx + 1]
 
         return sanitize_index(envs_idx, -1, self.n_envs, 0, "envs_idx")
@@ -1560,6 +1752,11 @@ class Scene(RBC):
     def rigid_solver(self):
         """The scene's `rigid_solver`, managing all the `RigidEntity` in the scene."""
         return self._sim.rigid_solver
+
+    @property
+    def kinematic_solver(self):
+        """The scene's `kinematic_solver`, managing all the kinematic (visualization-only) entities in the scene."""
+        return self._sim.kinematic_solver
 
     @property
     def mpm_solver(self):

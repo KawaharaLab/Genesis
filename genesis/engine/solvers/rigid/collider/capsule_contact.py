@@ -8,14 +8,7 @@ import genesis.utils.array_class as array_class
 
 @qd.func
 def func_capsule_capsule_contact(
-    i_ga,
-    i_gb,
-    ga_pos,
-    ga_quat,
-    gb_pos,
-    gb_quat,
-    geoms_info: array_class.GeomsInfo,
-    rigid_global_info: array_class.RigidGlobalInfo,
+    i_ga, i_gb, ga_pos, ga_quat, gb_pos, gb_quat, dyn_info: array_class.DynInfo, rigid_info: array_class.RigidInfo
 ):
     """
     Analytical capsule-capsule collision detection.
@@ -31,19 +24,19 @@ def func_capsule_capsule_contact(
     ga_pos, ga_quat : Position and orientation of capsule A (may be perturbed for multi-contact).
     gb_pos, gb_quat : Position and orientation of capsule B (may be perturbed for multi-contact).
     """
-    EPS = rigid_global_info.EPS[None]
+    EPS = rigid_info.EPS[None]
 
     # Get capsule A parameters
     pos_a = ga_pos
     quat_a = ga_quat
-    radius_a = geoms_info.data[i_ga][0]
-    halflength_a = 0.5 * geoms_info.data[i_ga][1]
+    radius_a = dyn_info.geoms.data[i_ga][0]
+    halflength_a = 0.5 * dyn_info.geoms.data[i_ga][1]
 
     # Get capsule B parameters
     pos_b = gb_pos
     quat_b = gb_quat
-    radius_b = geoms_info.data[i_gb][0]
-    halflength_b = 0.5 * geoms_info.data[i_gb][1]
+    radius_b = dyn_info.geoms.data[i_gb][0]
+    halflength_b = 0.5 * dyn_info.geoms.data[i_gb][1]
 
     # Capsules are aligned along local Z-axis by convention
     local_z_unit = qd.Vector([0.0, 0.0, 1.0], dt=gs.qd_float)
@@ -81,9 +74,9 @@ def func_capsule_capsule_contact(
             # Segments are coincident, use arbitrary perpendicular direction
             # Try cross product with axis_a first
             normal_dir = axis_a_unit.cross(axis_b_unit)
-            normal_dir_len = normal_dir.dot(normal_dir)
-            if normal_dir_len > EPS:
-                normal_unit = normal_dir / normal_dir_len
+            normal_dir_len_sq = normal_dir.norm_sqr()
+            if normal_dir_len_sq > EPS:
+                normal_unit = normal_dir / qd.sqrt(normal_dir_len_sq)
             else:
                 # Axes are parallel, use any perpendicular
                 if qd.abs(axis_a_unit[0]) < 0.9:
@@ -100,14 +93,7 @@ def func_capsule_capsule_contact(
 
 @qd.func
 def func_sphere_capsule_contact(
-    i_ga,
-    i_gb,
-    ga_pos,
-    ga_quat,
-    gb_pos,
-    gb_quat,
-    geoms_info: array_class.GeomsInfo,
-    rigid_global_info: array_class.RigidGlobalInfo,
+    i_ga, i_gb, ga_pos, ga_quat, gb_pos, gb_quat, dyn_info: array_class.DynInfo, rigid_info: array_class.RigidInfo
 ):
     """
     Analytical sphere-capsule collision detection.
@@ -122,25 +108,15 @@ def func_sphere_capsule_contact(
     ga_pos, ga_quat : Position and orientation of geom A (may be perturbed for multi-contact).
     gb_pos, gb_quat : Position and orientation of geom B (may be perturbed for multi-contact).
     """
-    EPS = rigid_global_info.EPS[None]
+    EPS = rigid_info.EPS[None]
 
-    # Ensure sphere is always i_ga and capsule is i_gb
-    normal_dir = 1
+    # Caller guarantees sphere is i_ga and capsule is i_gb (geoms are sorted by ascending type).
     sphere_center = ga_pos
     capsule_center = gb_pos
-    capsule_q = gb_quat
-    if geoms_info.type[i_gb] == gs.GEOM_TYPE.SPHERE:
-        i_ga, i_gb = i_gb, i_ga
-        sphere_center = gb_pos
-        capsule_center = ga_pos
-        capsule_q = ga_quat
-        normal_dir = -1
-
-    sphere_radius = geoms_info.data[i_ga][0]
-
-    capsule_quat = capsule_q
-    capsule_radius = geoms_info.data[i_gb][0]
-    capsule_halflength = 0.5 * geoms_info.data[i_gb][1]
+    capsule_quat = gb_quat
+    sphere_radius = dyn_info.geoms.data[i_ga][0]
+    capsule_radius = dyn_info.geoms.data[i_gb][0]
+    capsule_halflength = 0.5 * dyn_info.geoms.data[i_gb][1]
 
     # Capsule is aligned along local Z-axis
     local_z_unit = qd.Vector([0.0, 0.0, 1.0], dt=gs.qd_float)
@@ -193,4 +169,4 @@ def func_sphere_capsule_contact(
         # Contact position at midpoint between surfaces
         contact_pos = sphere_center - (sphere_radius - 0.5 * penetration) * normal_unit
 
-    return is_col, normal_unit * normal_dir, contact_pos, penetration
+    return is_col, normal_unit, contact_pos, penetration

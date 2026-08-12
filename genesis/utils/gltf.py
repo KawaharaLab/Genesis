@@ -1,5 +1,7 @@
 from io import BytesIO
 from urllib import request
+
+import DracoPy
 import numpy as np
 import pygltflib
 import trimesh
@@ -201,17 +203,23 @@ def parse_glb_material(glb, material_index, surface):
             opacity_texture.apply_cutoff(alpha_cutoff)
 
     if "KHR_materials_unlit" in material.extensions:
-        # No unlit material implemented in renderers. Use emissive texture.
+        # No unlit material implemented in renderers, so surface the base color through emissive and give the base a
+        # black factor. get_rgba then falls back to that emissive as the albedo, instead of the white base that
+        # update_texture installs for an absent color, which would otherwise hide the unlit imagery.
         if color_texture is not None:
             emissive_texture = color_texture
-            color_texture = None
+            color_texture = mu.create_texture(None, (0.0, 0.0, 0.0), "srgb")
         material.extensions.pop("KHR_materials_unlit")
     else:
         # parse emissive
         emissive_image = None
         if material.emissiveTexture is not None:
             texture = glb.textures[material.emissiveTexture.index]
-            if material.emissiveTexture.texCoord is not None:
+            # The single baked UV set follows whichever texture actually samples it. The base color owns it only
+            # when it is an atlas that requires UVs and is not black; otherwise (absent, black, or a flat factor) the
+            # emissive atlas owns it, so its texCoord is not silently replaced by the base's unused one.
+            base_owns_uvs = color_texture is not None and not color_texture.is_black and color_texture.requires_uv
+            if material.emissiveTexture.texCoord is not None and not base_owns_uvs:
                 uvs_used = material.emissiveTexture.texCoord
             emissive_image = get_glb_image(glb, texture.source, "RGB")
 
@@ -220,7 +228,7 @@ def parse_glb_material(glb, material_index, surface):
             emissive_factor = np.array(material.emissiveFactor, dtype=np.float32)
 
         emissive_texture = mu.create_texture(emissive_image, emissive_factor, "srgb")
-        if emissive_texture.is_black():  # Make sure to check emissive
+        if emissive_texture.is_black:  # Make sure to check emissive
             emissive_texture = None
 
     # TODO: Parse them!
@@ -243,7 +251,7 @@ def parse_glb_material(glb, material_index, surface):
             # https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_ior/README.md
             ior = extension_material.get("ior", 1.5)
 
-    material_surface = surface.copy()
+    material_surface = surface.model_copy()
     material_surface.update_texture(
         color_texture=color_texture,
         opacity_texture=opacity_texture,
@@ -306,6 +314,7 @@ def parse_mesh_glb(path, group_by_material, scale, is_mesh_zup, surface):
 
     mesh_infos = mu.MeshInfoGroup()
     materials = {}
+    is_visual_overwritten = surface.texture is not None
 
     for i, (mesh_index, mesh_transform) in enumerate(mesh_list):
         mesh_glb = glb.meshes[mesh_index]
@@ -319,12 +328,10 @@ def parse_mesh_glb(path, group_by_material, scale, is_mesh_zup, surface):
                         primitive.material, parse_glb_material(glb, primitive.material, surface)
                     )
             else:
-                material, uv_used, material_name = surface.copy(), 0, ""
+                material, uv_used, material_name = surface.model_copy(), 0, ""
 
             uvs = None
             if "KHR_draco_mesh_compression" in primitive.extensions:
-                import DracoPy
-
                 KHR_index = primitive.extensions["KHR_draco_mesh_compression"]["bufferView"]
                 mesh_buffer_view = glb.bufferViews[KHR_index]
                 mesh_data = get_glb_bufferview_data(glb, mesh_buffer_view)
@@ -333,8 +340,8 @@ def parse_mesh_glb(path, group_by_material, scale, is_mesh_zup, surface):
                 )
                 points = mesh_glb.points
                 triangles = mesh_glb.faces
-                normals = mesh_glb.normals if len(mesh_glb.normals) > 0 else None
-                uvs = mesh_glb.tex_coord if len(mesh_glb.tex_coord) > 0 else None
+                normals = mesh_glb.normals if mesh_glb.normals is not None and len(mesh_glb.normals) > 0 else None
+                uvs = mesh_glb.tex_coord if mesh_glb.tex_coord is not None and len(mesh_glb.tex_coord) > 0 else None
 
             else:
                 # "primitive.attributes" records accessor indices in "glb.accessors", like:
@@ -388,13 +395,20 @@ def parse_mesh_glb(path, group_by_material, scale, is_mesh_zup, surface):
             if normals is None:
                 normals = trimesh.Trimesh(points, triangles, process=False).vertex_normals
 
-            group_idx = primitive.material if group_by_material else i
+            # A single glTF mesh may hold several primitives with distinct materials. When not grouping by material,
+            # primitives must still be separated by material so each keeps its own surface and texture; otherwise
+            # primitives sharing a mesh would be merged under the first primitive's material and the rest lost.
+            group_idx = primitive.material if group_by_material else (i, primitive.material)
             mesh_info, first_created = mesh_infos.get(group_idx)
             if first_created:
-                mesh_info.set_property(
-                    surface=material,
-                    metadata={"mesh_path": path, "name": material_name if group_by_material else mesh_name},
-                )
+                metadata = {"mesh_path": path, "name": material_name if group_by_material else mesh_name}
+                if not group_by_material:
+                    # Record the source mesh node so per-material submeshes can be regrouped into one physical body
+                    # (e.g. merged into a single collision geom) while still rendering with their own textures.
+                    metadata["node_index"] = i
+                mesh_info.set_property(surface=material, metadata=metadata)
             mesh_info.append(points, triangles, normals, uvs)
-
-    return mesh_infos.export_meshes(scale=scale, is_mesh_zup=is_mesh_zup)
+    meshes = mesh_infos.export_meshes(scale=scale, is_mesh_zup=is_mesh_zup)
+    for mesh in meshes:
+        mesh.metadata["is_visual_overwritten"] = is_visual_overwritten
+    return meshes

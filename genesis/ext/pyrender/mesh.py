@@ -135,6 +135,7 @@ class Mesh(object):
         double_sided=False,
         is_floor=False,
         env_shared=True,
+        active_envs=None,
     ):
         """Create a Mesh from a :class:`~trimesh.base.Trimesh`.
 
@@ -191,10 +192,11 @@ class Mesh(object):
             # Compute colors, texture coords, and material properties
             color_0, texcoord_0, primitive_material = Mesh._get_trimesh_props(m, smooth=smooth, material=material)
 
-            # Override if material is given.
+            # Override if material is given. Shallow-copy so per-primitive state (e.g. wireframe) stays isolated, while
+            # the heavy Texture objects stay shared with the source material. Primitives reusing one material then
+            # expose the same Texture instances, which the renderer deduplicates into a single host array and upload.
             if material is not None:
-                # primitive_material = copy.copy(material)
-                primitive_material = copy.deepcopy(material)  # TODO
+                primitive_material = copy.copy(material)
 
             if primitive_material is None:
                 # Replace material with default if needed
@@ -219,6 +221,7 @@ class Mesh(object):
                     double_sided=double_sided,
                     is_floor=is_floor,
                     env_shared=env_shared,
+                    active_envs=active_envs,
                 )
             )
 

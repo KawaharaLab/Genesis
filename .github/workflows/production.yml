@@ -19,11 +19,17 @@ env:
   # Note that secrets are not passed to workflows that are triggered by a pull request from a fork
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   HF_HUB_DOWNLOAD_TIMEOUT: 60
-  GENESIS_IMAGE_VER: "1_22"
+  # Increment to switch new jobs to fresh caches before deleting the previous version.
+  CACHE_VERSION: "1"
+  GENESIS_IMAGE_VER: "1_25"
   TIMEOUT_MINUTES: 60
   FORCE_COLOR: 1
   PY_COLORS: 1
   MADRONA_DISABLE_CUDA_HEAP_SIZE: "1"
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -exo pipefail {0}
 
 jobs:
   unit-tests:
@@ -35,7 +41,8 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        GS_ENABLE_NDARRAY: ["0", "1"]
+        # Run ndarray mode first, because it is twice faster.
+        GS_ENABLE_NDARRAY: ["1", "0"]
 
     env:
       GS_ENABLE_NDARRAY: ${{ matrix.GS_ENABLE_NDARRAY }}
@@ -53,20 +60,25 @@ jobs:
                --container-name=${CONTAINER_NAME} \
                --container-mounts=\
           ${{ github.workspace }}:/root/workspace,\
-          ${HOME}/.cache/uv:/root/.cache/uv,\
-          ${HOME}/.cache/genesis:/root/.cache/genesis,\
-          ${HOME}/.cache/huggingface:/root/.cache/huggingface \
+          ${HOME}/.cache/${CACHE_VERSION}/uv:/root/.cache/uv,\
+          ${HOME}/.cache/${CACHE_VERSION}/genesis:/root/.cache/genesis,\
+          ${HOME}/.cache/${CACHE_VERSION}/quadrants:/root/.cache/quadrants,\
+          ${HOME}/.cache/${CACHE_VERSION}/huggingface:/root/.cache/huggingface \
                --no-container-mount-home \
                --container-workdir=/root/workspace"
           SLURM_ENV_VARS="NVIDIA_DRIVER_CAPABILITIES=all,BASH_ENV=/root/.bashrc,HF_TOKEN,GS_ENABLE_NDARRAY=${GS_ENABLE_NDARRAY}"
 
-          mkdir -p ${HOME}/.cache/uv ${HOME}/.cache/genesis ${HOME}/.cache/huggingface
+          mkdir -p \
+            "${HOME}/.cache/${CACHE_VERSION}/uv" \
+            "${HOME}/.cache/${CACHE_VERSION}/genesis" \
+            "${HOME}/.cache/${CACHE_VERSION}/quadrants" \
+            "${HOME}/.cache/${CACHE_VERSION}/huggingface"
 
           JOBID_FIFO="${{ github.workspace }}/.slurm_job_id_fifo"
           [[ -e "$JOBID_FIFO" ]] && rm -f "$JOBID_FIFO"
           mkfifo "$JOBID_FIFO"
           salloc --job-name="${SLURM_JOB_NAME}" \
-                 --partition=rtx-high --nodes=1 --gpus=8 --exclusive \
+                 --partition=rtx-high --nodes=1 --mem=768G --gpus=8 --exclusive \
                  --time="${TIMEOUT_MINUTES}" \
                  bash -c "echo \$SLURM_JOB_ID > $JOBID_FIFO; sleep ${TIMEOUT_MINUTES}m" &
           SLURM_JOB_ID=$(cat "$JOBID_FIFO")
@@ -87,7 +99,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           srun ${SRUN_COMMON} bash -s <<'EOF'
-            set -e
+            set -ex
             source /venv/bin/activate
 
             # sudo apt update
@@ -139,21 +151,22 @@ jobs:
                --container-mounts=\
           /mnt/data/artifacts:/mnt/data/artifacts,\
           ${{ github.workspace }}:/root/workspace,\
-          ${HOME}/.cache/uv:/root/.cache/uv,\
-          ${HOME}/.cache/genesis:/root/.cache/genesis,\
-          ${HOME}/.cache/huggingface:/root/.cache/huggingface \
+          ${HOME}/.cache/${CACHE_VERSION}/uv:/root/.cache/uv,\
+          ${HOME}/.cache/${CACHE_VERSION}/huggingface:/root/.cache/huggingface \
                --no-container-mount-home \
                --container-workdir=/root/workspace"
           SLURM_ENV_VARS="NVIDIA_DRIVER_CAPABILITIES=all,BASH_ENV=/root/.bashrc,HF_TOKEN,GS_ENABLE_NDARRAY=${GS_ENABLE_NDARRAY}"
-          if [[ "${{ github.repository }}" == 'Genesis-Embodied-AI/Genesis' && "${{ github.ref }}" == 'refs/heads/main' ]] ; then
+          if [[ "${{ github.repository }}" == 'Genesis-Embodied-AI/genesis-world' && "${{ github.ref }}" == 'refs/heads/main' ]] ; then
             SLURM_ENV_VARS="${SLURM_ENV_VARS},WANDB_API_KEY"
           fi
+
+          mkdir -p "${HOME}/.cache/${CACHE_VERSION}/uv" "${HOME}/.cache/${CACHE_VERSION}/huggingface"
 
           JOBID_FIFO="${{ github.workspace }}/.slurm_job_id_fifo"
           [[ -e "$JOBID_FIFO" ]] && rm -f "$JOBID_FIFO"
           mkfifo "$JOBID_FIFO"
           salloc --job-name="${SLURM_JOB_NAME}" \
-                 --partition=rtx-high --nodes=1 --gpus=8 --exclusive \
+                 --partition=rtx-high --nodes=1 --mem=768G --gpus=8 --exclusive \
                  --time="${TIMEOUT_MINUTES}" \
                  bash -c "echo \$SLURM_JOB_ID > $JOBID_FIFO; sleep ${TIMEOUT_MINUTES}m" &
           SLURM_JOB_ID=$(cat "$JOBID_FIFO")
@@ -172,14 +185,15 @@ jobs:
       - name: Run benchmarks
         run: |
           srun ${SRUN_COMMON} bash -s <<'EOF'
-            set -e
+            set -ex
             source /venv/bin/activate
 
             pytest --mem-monitoring-filepath "/mnt/data/artifacts/mem_test_${SLURM_JOB_NAME}.txt" \
                    --print -m "benchmarks" ./tests
 
             cat speed_test*.txt > "/mnt/data/artifacts/speed_test_${SLURM_JOB_NAME}.txt"
-            if [ -n "${WANDB_API_KEY}" ] ; then {
+            if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ] ; then (
+              ls -lh /mnt/data/artifacts/*.txt
               python tests/upload_benchmarks_table_to_wandb.py \
                   --in-file "/mnt/data/artifacts/mem_test_${SLURM_JOB_NAME}.txt" \
                   --project genesis-benchmarks-2 \
@@ -190,7 +204,9 @@ jobs:
                   --project genesis-benchmarks-2 \
                   --metrics compile_time runtime_fps realtime_factor \
                   --run-prefix speed
-            } fi
+            ) else (
+              echo "Not on main branch => skipping wandb uploads"
+            ) fi
           EOF
       - name: Kill Slurm job
         if: always()

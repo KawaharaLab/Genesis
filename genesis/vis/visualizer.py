@@ -1,5 +1,7 @@
 import sys
 
+import pyglet
+
 import genesis as gs
 from genesis.repr_base import RBC
 
@@ -8,6 +10,9 @@ from .rasterizer import Rasterizer
 
 VIEWER_DEFAULT_HEIGHT_RATIO = 0.5
 VIEWER_DEFAULT_ASPECT_RATIO = 0.75
+# Headless fallback screen height. With the ratios above it yields a 640x480 default window, small enough to fit the
+# constrained virtual displays of CI runners (e.g. GitHub-hosted macOS).
+VIEWER_DEFAULT_SCREEN_HEIGHT = 960
 
 
 class DummyViewerLock:
@@ -44,13 +49,19 @@ class Visualizer(RBC):
             gs.raise_exception_from("Rendering not working on this machine.", e)
         self._context = RasterizerContext(vis_options)
 
-        try:
-            screen_height, _screen_width, screen_scale = gs.utils.try_get_display_size()
-            self._has_display = True
-        except Exception as e:
-            if show_viewer:
-                gs.raise_exception_from("No display detected. Use `show_viewer=False` for headless mode.", e)
+        if pyglet.options["headless"]:
+            # Headless: there is no real display to measure. The viewer renders offscreen, so fall back to a default
+            # screen size for computing the default window resolution below.
+            screen_height, screen_scale = VIEWER_DEFAULT_SCREEN_HEIGHT, 1.0
             self._has_display = False
+        else:
+            try:
+                screen_height, _screen_width, screen_scale = gs.utils.try_get_display_size()
+                self._has_display = True
+            except Exception as e:
+                if show_viewer:
+                    gs.raise_exception_from("No display detected. Use `show_viewer=False` for headless mode.", e)
+                self._has_display = False
 
         if show_viewer:
             if gs._scene_registry:
@@ -99,6 +110,10 @@ class Visualizer(RBC):
         self.destroy()
 
     def destroy(self):
+        # Cameras go first, so that a recording still running is finalized while the renderers are alive.
+        for camera in self._cameras:
+            camera.destroy()
+
         if self._rasterizer is not None:
             self._rasterizer.destroy()
             self._rasterizer = None
@@ -199,10 +214,7 @@ class Visualizer(RBC):
         if force:  # force update
             self.reset()
         elif self._viewer is not None:
-            if self._viewer.is_alive():
-                self._viewer.update(auto_refresh=auto, force=force)
-            else:
-                gs.raise_exception("Viewer closed.")
+            self._viewer.update(auto_refresh=auto, force=force)
 
     def update_visual_states(self, force_render: bool = False):
         """
@@ -229,6 +241,10 @@ class Visualizer(RBC):
                     entity.update_propeller_vgeoms()
 
             self._scene.rigid_solver.update_vgeoms_render_T()
+
+        if self._scene.kinematic_solver.is_active:
+            self._scene.kinematic_solver.update_vgeoms()
+            self._scene.kinematic_solver.update_vgeoms_render_T()
 
         if self._scene.mpm_solver.is_active:
             self._scene.mpm_solver.update_render_fields()
@@ -262,6 +278,17 @@ class Visualizer(RBC):
     @property
     def rasterizer(self):
         return self._rasterizer
+
+    @property
+    @gs.assert_built
+    def is_software(self):
+        if self._batch_renderer is not None or self._raytracer is not None:
+            return False
+        if self._viewer is not None:
+            assert self._viewer._pyrender_viewer is not None
+            return self._viewer._pyrender_viewer._is_software
+        assert self._rasterizer is not None and self._rasterizer._renderer is not None
+        return self._rasterizer._renderer._is_software
 
     @property
     def batch_renderer(self):

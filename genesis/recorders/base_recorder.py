@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Callable, Generic, TypeVar
 
 import genesis as gs
 from genesis.options.recorders import RecorderOptions
+from genesis.utils import data_to_array
 
 if TYPE_CHECKING:
     from .recorder_manager import RecorderManager
@@ -120,18 +121,16 @@ class Recorder(Generic[T]):
     def start(self):
         """Start the recording thread if run_in_thread is True."""
         self._is_recording = True
-
         if self.run_in_thread:
             self.start_thread()
 
     @gs.assert_built
     def stop(self):
         """Stop the recording thread and cleanup resources."""
-        if self._is_recording:
-            self._is_recording = False
-            if self.run_in_thread:
-                self.join_thread()
-            self.cleanup()
+        self._is_recording = False
+        if self.run_in_thread:
+            self.join_thread()
+        self.cleanup()
 
     @gs.assert_built
     def join_thread(self):
@@ -140,8 +139,6 @@ class Recorder(Generic[T]):
             self._processor_thread.join()
             self._processor_thread = None
             self._data_queue = None
-        else:
-            gs.logger.warning(f"[{type(self).__name__}] join_thread(): No processor thread to join.")
 
     @gs.assert_built
     def start_thread(self):
@@ -150,6 +147,12 @@ class Recorder(Generic[T]):
             self._data_queue = queue.Queue(maxsize=self._options.buffer_size)
             self._processor_thread = threading.Thread(target=self._process_data_loop)
             self._processor_thread.start()
+            try:
+                # Note that it is necessary to rely on private threading atexit because functions registered using
+                # 'atexit.register' are called AFTER 'threading._shutdown', causing deadlock for non-daemon threads.
+                threading._register_atexit(self.stop)
+            except AttributeError:
+                pass
         else:
             gs.logger.warning(f"[{type(self).__name__}] start_thread(): Processor thread already exists.")
 
@@ -187,7 +190,9 @@ class Recorder(Generic[T]):
             return
 
         global_time = global_step * self._manager._step_dt
-        data = self._data_func()
+        # Sanitize to CPU numpy once at the boundary: process() code never has to branch on torch vs numpy, and no
+        # GPU tensor is ever queued for cross-thread access in threaded mode.
+        data = data_to_array(self._data_func())
 
         if not self.run_in_thread:
             # non-threaded mode: process data synchronously

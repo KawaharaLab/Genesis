@@ -2,14 +2,18 @@ import torch
 
 from genesis.options.sensors import DepthCamera as DepthCameraOptions
 
-from .raycaster import RaycasterData, RaycasterSensor, RaycasterSharedMetadata
-from .sensor_manager import register_sensor
+from .base_sensor import Sensor
+from .raycaster import RaycastContext, RaycasterReturnType, RaycasterSensor, RaycasterSharedMetadata
 
 
-@register_sensor(DepthCameraOptions, RaycasterSharedMetadata, RaycasterData)
-class DepthCameraSensor(RaycasterSensor):
+# DepthCamera declares no fourth (context) parameter, so it inherits RaycasterSensor's ``_shared_context_cls``
+# (RaycastContext) and shares the one BVH set with any Raycaster in the scene.
+class DepthCameraSensor(
+    RaycasterSensor, Sensor[DepthCameraOptions, RaycastContext, RaycasterSharedMetadata, RaycasterReturnType]
+):
     def build(self):
         super().build()
+
         batch_shape = (self._manager._sim._B,) if self._manager._sim.n_envs > 0 else ()
         self._shape = (*batch_shape, self._options.pattern.height, self._options.pattern.width)
 

@@ -9,7 +9,19 @@ import genesis as gs
 from genesis.utils import geom as gu
 
 from .usd_context import UsdContext
-from .usd_utils import AXES_T, usd_attr_array_to_numpy, usd_primvar_array_to_numpy
+from .usd_utils import AXES_T, AXES_VECTOR, usd_attr_array_to_numpy, usd_primvar_array_to_numpy
+
+
+# UsdPhysics.MeshCollisionAPI 'approximation' tokens -> per-geom collision post-processing overrides
+# consumed by RigidEntity._postprocess_geoms_info. 'boundingCube'/'boundingSphere' are handled
+# separately by fitting a primitive geom in the parser.
+_APPROXIMATION_OVERRIDES = {
+    "convexHull": {"convexify": True, "decompose_error_threshold": float("inf")},  # single hull, no decomposition
+    "convexDecomposition": {"convexify": True},  # allow decomposition per the morph threshold
+    "none": {"convexify": False, "decimate": False},  # exact raw triangle mesh
+    "meshSimplification": {"convexify": False, "decimate": True},  # decimated triangle mesh
+    "sdf": {"convexify": False},  # signed distance field (SDF): Genesis' nonconvex mesh path is SDF-based
+}
 
 
 def geom_exception(geom_type, geom_id, stage_file, reason_msg):
@@ -67,6 +79,7 @@ def parse_prim_geoms(
 
         # parse geometry
         meshes = []
+        axis_T = None  # Set for primitives with axis attribute (Capsule, Cylinder, Plane)
         if prim.IsA(UsdGeom.Mesh):
             mesh_prim = UsdGeom.Mesh(prim)
 
@@ -186,9 +199,8 @@ def parse_prim_geoms(
                     faces=subset_triangles,
                     vertex_normals=normals,
                     visual=trimesh.visual.TextureVisuals(uv=subset_uv) if subset_uv is not None else None,
-                    process=True,
+                    process=False,
                 )
-                # TODO: use a more efficient custom function to remove unreferenced vertices
                 processed_mesh.remove_unreferenced_vertices()
                 processed_mesh.apply_transform(geom_ST)
                 subset_points = processed_mesh.vertices
@@ -196,6 +208,24 @@ def parse_prim_geoms(
                 subset_normals = processed_mesh.vertex_normals
                 if subset_uv is not None:
                     subset_uv = processed_mesh.visual.uv
+
+                # Deduplicate vertices by (position, normal, UV) deterministically using np.unique.
+                # This replaces trimesh's process=True which internally calls fix_normals(), causing
+                # non-deterministic normal modifications that break cross-format mesh comparison.
+                # Round to 8 decimal places to merge near-identical vertices from USD face-varying
+                # encoding while preserving truly distinct vertices.
+                attrs = [subset_points, subset_normals]
+                if subset_uv is not None:
+                    attrs.append(subset_uv)
+                all_attrs = np.concatenate(attrs, axis=1)
+                _, unique_idx, inverse_idx = np.unique(
+                    np.round(all_attrs, 8), axis=0, return_index=True, return_inverse=True
+                )
+                subset_points = subset_points[unique_idx]
+                subset_normals = subset_normals[unique_idx]
+                if subset_uv is not None:
+                    subset_uv = subset_uv[unique_idx]
+                subset_triangles = inverse_idx[subset_triangles]
 
                 mesh = gs.Mesh.from_attrs(
                     verts=subset_points,
@@ -217,12 +247,21 @@ def parse_prim_geoms(
             gs_type = gs.GEOM_TYPE.MESH
 
         else:  # primitive geometries
-            geom_S_diag = np.diag(geom_S)
+            # Reflection from negative xformOp:scale is carried by geom_ST; collision sizes stay positive.
+            geom_S_diag = np.abs(np.diag(geom_S))
+            if not np.allclose(geom_S_diag, geom_S_diag[0], atol=1e-6):
+                gs.logger.warning(
+                    f"Non-uniform scale {geom_S_diag} on primitive {prim.GetPath()}. "
+                    "Using first axis scale for collision geometry data."
+                )
+            geom_scale = float(geom_S_diag[0])
+
             if prim.IsA(UsdGeom.Plane):
                 plane_prim = UsdGeom.Plane(prim)
                 width = plane_prim.GetWidthAttr().Get()
                 length = plane_prim.GetLengthAttr().Get()
-                axis_T = AXES_T[plane_prim.GetAxisAttr().Get() or "Z"]
+                plane_axis_str = plane_prim.GetAxisAttr().Get() or "Z"
+                axis_T = AXES_T[plane_axis_str]
 
                 w = float(width) * 0.5
                 l = float(length) * 0.5
@@ -231,15 +270,14 @@ def parse_prim_geoms(
                     faces=np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32),
                     face_normals=np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=np.float32),
                 )
-                tmesh.apply_transform(axis_T)
-                geom_data = np.array([0.0, 0.0, 1.0])
+                geom_data = AXES_VECTOR[plane_axis_str]
                 gs_type = gs.GEOM_TYPE.PLANE
 
             elif prim.IsA(UsdGeom.Sphere):
                 sphere_prim = UsdGeom.Sphere(prim)
                 radius = sphere_prim.GetRadiusAttr().Get()
                 tmesh = trimesh.creation.icosphere(radius=radius, subdivisions=2)
-                geom_data = np.array([radius]) * geom_S_diag
+                geom_data = np.array([radius * geom_scale])
                 gs_type = gs.GEOM_TYPE.SPHERE
 
             elif prim.IsA(UsdGeom.Capsule):
@@ -247,16 +285,14 @@ def parse_prim_geoms(
                 radius = capsule_prim.GetRadiusAttr().Get()
                 height = capsule_prim.GetHeightAttr().Get()
                 axis_T = AXES_T[capsule_prim.GetAxisAttr().Get() or "Z"]
-                # TODO: create different trimesh for visual and collision
                 tmesh = trimesh.creation.capsule(radius=radius, height=height, count=(8, 12))
-                tmesh.apply_transform(axis_T)
-                geom_data = np.array([radius, height, 1.0]) * geom_S_diag  # TODO: use the correct direction
+                geom_data = np.array([radius * geom_scale, height * geom_scale])
                 gs_type = gs.GEOM_TYPE.CAPSULE
 
             elif prim.IsA(UsdGeom.Cube):
                 cube_prim = UsdGeom.Cube(prim)
                 size = cube_prim.GetSizeAttr().Get()
-                extents = np.array([size, size, size], dtype=np.float32)
+                extents = np.array([size, size, size])
                 tmesh = trimesh.creation.box(extents=extents)
                 geom_data = extents * geom_S_diag
                 geom_surface.smooth = False
@@ -268,14 +304,15 @@ def parse_prim_geoms(
                 height = cylinder_prim.GetHeightAttr().Get()
                 axis_T = AXES_T[cylinder_prim.GetAxisAttr().Get() or "Z"]
                 tmesh = trimesh.creation.cylinder(radius=radius, height=height, count=(8, 12))
-                tmesh.apply_transform(axis_T)
-                geom_data = np.array([radius, height, 1.0]) * geom_S_diag  # TODO: use the correct direction
+                geom_data = np.array([radius * geom_scale, height * geom_scale])
                 geom_surface.smooth = False
                 gs_type = gs.GEOM_TYPE.CYLINDER
 
             else:
                 gs.raise_exception(f"Unsupported geometry type: {prim.GetTypeName()}")
 
+            # Mesh stays Z-aligned; axis orientation is handled by the quat (matching MuJoCo pattern).
+            # axis_T is NOT baked into mesh vertices — it goes into geom_Q instead.
             tmesh.apply_transform(geom_ST)
             metadata = {
                 "name": geom_id,
@@ -283,13 +320,17 @@ def parse_prim_geoms(
             }
             meshes.append(gs.Mesh.from_trimesh(tmesh, surface=geom_surface, metadata=metadata))
 
+        # Compose axis rotation into geom transform for oriented primitives.
+        if axis_T is not None:
+            geom_Q = geom_Q @ axis_T
+
         geom_pos = geom_Q[:3, 3]
         geom_quat = gu.R_to_quat(geom_Q[:3, :3])
 
         is_guide = str(gprim.GetPurposeAttr().Get() or "default") == "guide"
         is_visible = str(gprim.ComputeVisibility()) != "invisible"
         is_visual = (is_visible and not is_guide) and (match_visual or not (match_collision or match_visual))
-        is_collision = match_collision or not (match_collision or match_visual)
+        is_collision = is_visible and (match_collision or not (match_collision or match_visual))
 
         g_infos = links_g_infos[link_path_to_idx[str(link_prim.GetPath())]]
         if is_visual:
@@ -306,21 +347,82 @@ def parse_prim_geoms(
                     )
                 )
         if is_collision:
-            # TODO: use "physics:material:binding" (UsdPhysicsMaterialAPI) to extract frictions
-            for mesh in meshes:
+            # A bound UsdPhysicsMaterialAPI overrides the default friction. Prefer dynamic friction,
+            # falling back to static; restitution has no rigid-rigid equivalent in the solver and is
+            # dropped (with a one-time warning).
+            geom_friction = gu.default_friction()
+            physics_material = context.get_physics_material(prim)
+            if physics_material is not None:
+                # PhysicsMaterial fields are None when unauthored, so an explicitly authored 0 (a
+                # frictionless collider) is honored. Prefer dynamic friction, fall back to static.
+                if physics_material.dynamic_friction is not None:
+                    geom_friction = physics_material.dynamic_friction
+                elif physics_material.static_friction is not None:
+                    geom_friction = physics_material.static_friction
+                if physics_material.restitution:
+                    context.note_unsupported_restitution()
+
+            # Per-geom collision approximation hint (UsdPhysics.MeshCollisionAPI), honored only when
+            # explicitly authored. Meaningful for mesh collision; primitives are already exact.
+            approximation = None
+            if prim.IsA(UsdGeom.Mesh) and prim.HasAPI(UsdPhysics.MeshCollisionAPI):
+                approximation_attr = UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr()
+                if approximation_attr.HasAuthoredValue():
+                    approximation = approximation_attr.Get()
+
+            # 'prim_path' resolves collision-group membership (see usd_collision) and 'density' feeds
+            # the density-derived link mass; parse_usd_rigid_entity strips both once consumed.
+            collision_g_info = dict(
+                pos=geom_pos,
+                quat=geom_quat,
+                contype=1,
+                conaffinity=1,
+                friction=geom_friction,
+                prim_path=str(prim.GetPath()),
+            )
+            if physics_material is not None and physics_material.density is not None:
+                collision_g_info["density"] = physics_material.density
+
+            if approximation in ("boundingCube", "boundingSphere") and meshes:
+                # Fit a single primitive to the collision vertices, replacing the mesh collider.
+                verts = np.vstack([mesh.verts for mesh in meshes])
+                lo, hi = verts.min(axis=0), verts.max(axis=0)
+                center = (lo + hi) * 0.5
+                prim_pos = geom_pos + gu.transform_by_quat(center, geom_quat)
+                if approximation == "boundingCube":
+                    extents = hi - lo
+                    bv_tmesh = trimesh.creation.box(extents=extents)
+                    bv_type, bv_data = gs.GEOM_TYPE.BOX, extents
+                else:
+                    radius = np.linalg.norm(verts - center, axis=1).max()
+                    bv_tmesh = trimesh.creation.icosphere(radius=radius, subdivisions=2)
+                    bv_type, bv_data = gs.GEOM_TYPE.SPHERE, np.array([radius])
+                bv_mesh = gs.Mesh.from_trimesh(bv_tmesh, surface=geom_surface, metadata={"name": geom_id})
                 g_infos.append(
-                    dict(
-                        mesh=mesh,
-                        pos=geom_pos,
-                        quat=geom_quat,
-                        contype=1,
-                        conaffinity=1,
-                        type=gs_type,
-                        data=geom_data,
-                        friction=gu.default_friction(),
-                        sol_params=gu.default_solver_params(),
-                    )
+                    {
+                        **collision_g_info,
+                        "mesh": bv_mesh,
+                        "pos": prim_pos,
+                        "sol_params": gu.default_solver_params(),
+                        "type": bv_type,
+                        "data": bv_data,
+                        # Already a primitive: skip mesh convexify for this geom.
+                        "convexify": False,
+                    }
                 )
+            else:
+                approximation_overrides = _APPROXIMATION_OVERRIDES.get(approximation, {})
+                for mesh in meshes:
+                    g_infos.append(
+                        {
+                            **collision_g_info,
+                            "mesh": mesh,
+                            "sol_params": gu.default_solver_params(),
+                            "type": gs_type,
+                            "data": geom_data,
+                            **approximation_overrides,
+                        }
+                    )
 
     predicate = Usd.TraverseInstanceProxies()
     prim_range = Usd.PrimRange(prim, predicate)

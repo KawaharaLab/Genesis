@@ -8,6 +8,7 @@ import OpenGL
 import genesis as gs
 from genesis.repr_base import RBC
 from genesis.ext import pyrender
+from genesis.vis.camera import Camera
 
 
 class Rasterizer(RBC):
@@ -72,28 +73,28 @@ class Rasterizer(RBC):
         self.update_camera(camera)
 
         rgb_arr, depth_arr, seg_idxc_arr, normal_arr = None, None, None, None
+        skip_markers = not camera.debug if isinstance(camera, Camera) else True
+        # Force env-separate rendering when the camera has a per-env pose (attached camera in batched scene)
+        camera_node = self._camera_nodes[camera.uid]
+        env_separate_rigid = self._context.env_separate_rigid or camera_node.matrix.ndim == 3
         if self._offscreen:
             # Set the context
             self._renderer.make_current()
 
-            # Update the context if not already done before
-            self._context.jit.update_buffer(self._context.buffer)
-            self._context.buffer.clear()
-
-            # Render
             try:
                 if rgb or depth or normal:
                     retval = self._renderer.render(
                         self._context._scene,
                         self._camera_targets[camera.uid],
                         camera_node=self._camera_nodes[camera.uid],
-                        env_separate_rigid=self._context.env_separate_rigid,
+                        env_separate_rigid=env_separate_rigid,
                         rgb=rgb,
                         normal=normal,
                         seg=False,
                         depth=depth,
                         plane_reflection=rgb and self._context.plane_reflection,
                         shadow=rgb and self._context.shadow,
+                        skip_markers=skip_markers,
                     )
 
                 if segmentation:
@@ -101,13 +102,14 @@ class Rasterizer(RBC):
                         self._context._scene,
                         self._camera_targets[camera.uid],
                         camera_node=self._camera_nodes[camera.uid],
-                        env_separate_rigid=self._context.env_separate_rigid,
+                        env_separate_rigid=env_separate_rigid,
                         rgb=False,
                         normal=False,
                         seg=True,
                         depth=False,
                         plane_reflection=False,
                         shadow=False,
+                        skip_markers=skip_markers,
                     )
             finally:
                 # Unset the context
@@ -122,6 +124,8 @@ class Rasterizer(RBC):
                     depth=depth,
                     normal=normal,
                     seg=False,
+                    skip_markers=skip_markers,
+                    env_separate_rigid=env_separate_rigid,
                 )
 
             if segmentation:
@@ -132,6 +136,8 @@ class Rasterizer(RBC):
                     depth=False,
                     normal=False,
                     seg=True,
+                    skip_markers=skip_markers,
+                    env_separate_rigid=env_separate_rigid,
                 )
 
         if segmentation:
@@ -152,24 +158,37 @@ class Rasterizer(RBC):
         for node in self._camera_nodes.values():
             self._context.remove_node(node)
         self._camera_nodes.clear()
-        for camera_target in self._camera_targets.values():
-            try:
-                if self._offscreen:
-                    camera_target.delete()
-                elif self._viewer is not None:
-                    self._viewer.close_offscreen(camera_target)
-            except (OpenGL.error.NullFunctionError, OSError):
-                pass
-        self._camera_targets.clear()
 
-        if self._offscreen and self._renderer is not None:
-            try:
-                self._renderer.make_current()
-                self._renderer.delete()
-            except (OpenGL.error.GLError, OpenGL.error.NullFunctionError, ImportError):
-                pass
-            del self._renderer
-            self._renderer = None
+        if self._offscreen:
+            if self._renderer is not None:
+                # Freeing this renderer's GL resources (its camera targets and its own context) requires its
+                # context to be current, but the current context is process/thread-global and may belong to
+                # another renderer (e.g. one mid-render). Save it, free on our context, then restore it after
+                # destroying our context so the other renderer is left current rather than stranded. The saved
+                # restore callable is self-contained, so it still works once our own platform is gone.
+                try:
+                    restore_context = self._renderer.save_current_context()
+                    self._renderer.make_current()
+                    for camera_target in self._camera_targets.values():
+                        try:
+                            camera_target.delete()
+                        except (OpenGL.error.NullFunctionError, OSError):
+                            pass
+                    self._renderer.delete()
+                    if restore_context is not None:
+                        restore_context()
+                except (OpenGL.error.GLError, OpenGL.error.NullFunctionError, ImportError):
+                    pass
+                del self._renderer
+                self._renderer = None
+        else:
+            for camera_target in self._camera_targets.values():
+                try:
+                    if self._viewer is not None:
+                        self._viewer.close_offscreen(camera_target)
+                except (OpenGL.error.NullFunctionError, OSError):
+                    pass
+        self._camera_targets.clear()
 
     @property
     def viewer(self):
