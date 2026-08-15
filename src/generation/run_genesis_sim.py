@@ -5,6 +5,7 @@ import sys
 import time
 import json
 import os
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -45,13 +46,11 @@ MATERIAL_TYPE = "Rigid"
 # TARGET_CHOICES = ["drop_simple", "drop", "inclined", "gentle_simple", "firm_simple"]
 # TARGET_CHOICES = ["gentle", "firm", "gentle_simple", "inclined"]
 # TARGET_CHOICES = ["drop_simple", "drop", "inclined", "gentle_simple", "firm_simple"]
-# TARGET_CHOICES = [
-#     choice.strip()
-#     for choice in os.environ.get("TARGET_CHOICES", ",".join(DEFAULT_TARGET_CHOICES)).split(",")
-#     if choice.strip()
-# ]
+
 """Eval"""
 # TARGET_CHOICES = ["drop_simple", "drop", "inclined", "gentle_simple", "firm_simple", "gentle", "gentle_simple"]
+#TARGET_CHOICES = ["drop_simple", "drop", "inclined", "step", "gentle_simple", "firm_simple"]
+
 DEFAULT_TARGET_CHOICES = ["drop_simple", "drop", "inclined", "step", "gentle_simple", "firm_simple"]
 TARGET_CHOICES = [
     choice.strip()
@@ -64,6 +63,12 @@ GRASP_TO_LIFT_WAIT_STEPS = 100
 MAX_PARALLEL_PROCESSES = int(os.environ.get("MAX_PARALLEL_PROCESSES", "8"))
 if MAX_PARALLEL_PROCESSES < 1:
     raise ValueError("MAX_PARALLEL_PROCESSES must be at least 1.")
+WORKER_SPAWN_DELAY_SECONDS = float(os.environ.get("WORKER_SPAWN_DELAY_SECONDS", "5"))
+if WORKER_SPAWN_DELAY_SECONDS < 0:
+    raise ValueError("WORKER_SPAWN_DELAY_SECONDS must be non-negative.")
+REQUIRED_RUNS_PER_TASK = int(os.environ.get("REQUIRED_RUNS_PER_TASK", "0"))
+if REQUIRED_RUNS_PER_TASK < 0:
+    raise ValueError("REQUIRED_RUNS_PER_TASK must be non-negative.")
 DATASET = os.environ.get("DATASET", "eval_21072026")
 DATASET_TYPE = "ycb" if "eval" in DATASET else "gso"  # Options: "ycb", "gso"
 OUTPUT_VARIANT_LABEL = "vary"  # e.g. "heavy", "light", "v2"; set "" to disable
@@ -270,7 +275,7 @@ def sample_place_target(source_xy, robot_xy=(0.0, 0.0)):
 
 
 def _is_simple_mode(place_mode: str) -> bool:
-    return place_mode in ("drop_simple", "gentle_simple")
+    return place_mode in ("drop_simple", "gentle_simple", "firm_simple")
 
 
 def _inclined_angle_deg(place_mode: str) -> float | None:
@@ -671,6 +676,7 @@ def _run_place_phase(
             steps=120,
             cam_wrist=cam_wrist,
         )
+        seg_df.loc[len(seg_df)] = ["release", int(scene.t)]
         set_intentional_release(True)
         mm.release_object(
             scene=scene,
@@ -751,6 +757,7 @@ def _run_place_phase(
                 gripper_force=-current_force,
                 cam_wrist=cam_wrist,
             )
+        seg_df.loc[len(seg_df)] = ["release", int(scene.t)]
         set_intentional_release(True)
         mm.release_object(
             scene=scene,
@@ -791,7 +798,7 @@ def _run_place_phase(
         _store_placement_outcome(metadata, quat_at_release, quat_after_retreat)
         return
 
-    if place_mode in ("press", "firm"):
+    if place_mode in ("press", "firm", "firm_simple"):
         seg_df.loc[len(seg_df)] = ["press_place", int(scene.t)]
         mm.descend_to_place_cautiously(
             scene=scene,
@@ -816,6 +823,7 @@ def _run_place_phase(
 
         press_depth = 0.03
         press_steps = 120
+        seg_df.loc[len(seg_df)] = ["press", int(scene.t)]
         for step in range(press_steps):
             z_target = place_eef_z_nominal - press_depth * (step + 1) / press_steps
             qpos = franka.inverse_kinematics(link=end_effector, pos=np.array([place_x, place_y, z_target]), quat=np.array([0, 1, 0, 0]))
@@ -854,6 +862,7 @@ def _run_place_phase(
                 gripper_force=-current_force,
                 cam_wrist=cam_wrist,
             )
+        seg_df.loc[len(seg_df)] = ["release", int(scene.t)]
         set_intentional_release(True)
         mm.release_object(
             scene=scene,
@@ -919,6 +928,7 @@ def _run_place_phase(
                 cam_wrist=cam_wrist,
             )
 
+        seg_df.loc[len(seg_df)] = ["release", int(scene.t)]
         set_intentional_release(True)
         mm.release_object(
             scene=scene,
@@ -1553,6 +1563,41 @@ def main(object_name: str, target_choice: str = "gentle", gpu_id: int | None = N
         print(f"❌ Finished with early-drop result for '{object_name}' / '{target_choice}'.")
 
 
+def _completed_runs_by_task() -> Counter:
+    """Count completed top-level invocations from their saved metadata."""
+    completed = Counter()
+    csv_root = DATA_ROOT / DATASET / "csv"
+    if not csv_root.exists():
+        return completed
+
+    for metadata_path in csv_root.glob("*/Rigid/*/*_metadata_*.json"):
+        if metadata_path.parent.name.startswith("_attempt_"):
+            # A working directory can contain partially saved metadata when the
+            # batch is interrupted between save and final rename.
+            continue
+        try:
+            with open(metadata_path, encoding="utf-8") as file:
+                metadata = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        object_name = str(metadata.get("object_name") or metadata_path.parents[2].name)
+        source_target = metadata.get("source_target_choice")
+        if not source_target:
+            continue
+
+        if bool(metadata.get("terminated_early_drop")):
+            # Attempt 1 is not a completed invocation because main() retries it.
+            # A saved attempt 2 means the invocation ended after both failures.
+            attempt_choice = str(metadata.get("attempt_choice") or "")
+            if not attempt_choice.startswith("_attempt_2_"):
+                continue
+
+        completed[(object_name, str(source_target))] += 1
+
+    return completed
+
+
 def get_tasks_to_run():
     if 0: # DO NOT CHANGE
         return [("001_chips_can", "bump")]
@@ -1564,14 +1609,30 @@ def get_tasks_to_run():
         print(f"❌ Error: Input directory '{objects_dir}' not found.")
         return []
 
-    object_names = [d.name for d in objects_dir.iterdir() if d.is_dir()]
-    print(f"🔍 Found {len(object_names)} objects in '{objects_dir}'.")
+    object_names = [
+        directory.name
+        for directory in objects_dir.iterdir()
+        if directory.is_dir() and (directory / "model.obj").is_file()
+    ]
+    print(f"🔍 Found {len(object_names)} runnable objects in '{objects_dir}'.")
     expanded_targets = _expand_target_choices(TARGET_CHOICES)
+    completed_runs = _completed_runs_by_task() if REQUIRED_RUNS_PER_TASK else Counter()
     for target in expanded_targets:
-        print(f"🔄 Queueing one full object pass for target '{target}'.")
+        queued_for_target = 0
         for name in object_names:
-            print(f"  - Queueing '{name}' with target '{target}' (no previous runs).")
+            completed_count = completed_runs[(name, target)]
+            if REQUIRED_RUNS_PER_TASK and completed_count >= REQUIRED_RUNS_PER_TASK:
+                continue
+            if REQUIRED_RUNS_PER_TASK:
+                print(
+                    f"  - Resuming '{name}' / '{target}' "
+                    f"({completed_count}/{REQUIRED_RUNS_PER_TASK} completed)."
+                )
+            else:
+                print(f"  - Queueing '{name}' with target '{target}' (unbounded mode).")
             tasks.append((name, target))
+            queued_for_target += 1
+        print(f"🔄 Target '{target}': queued {queued_for_target} object(s).")
 
     return tasks
 
@@ -1632,7 +1693,7 @@ if __name__ == "__main__":
                 child_env["GENESIS_ASSIGNED_GPU"] = str(physical_gpu_id)
             p = subprocess.Popen([sys.executable, str(Path(__file__).resolve())], env=child_env)
             processes.append((p, physical_gpu_id))
-            time.sleep(5)
+            time.sleep(WORKER_SPAWN_DELAY_SECONDS)
 
         for p, _ in processes:
             if p.wait() != 0:

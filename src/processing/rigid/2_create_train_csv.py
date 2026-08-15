@@ -30,8 +30,14 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
         text = (annotation or "").lower()
         if "accidental drop" in text:
             return "accidental drop"
+        if "placing" in text and "then releasing" in text:
+            return "place then release"
         if "pressing" in text and "then releasing" in text:
             return "press then release"
+        if "releasing" in text and "midair" in text:
+            return "release midair"
+        if "releasing" in text:
+            return "release"
         if "pressing" in text:
             return "press"
         if "bumping" in text:
@@ -105,10 +111,13 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
         ].map(_fallback_placement_outcome)
 
     # Placement outcome is defined only for windows labeled as placement.
-    df.loc[df["action"] != "place", "placement_outcome"] = ""
+    df.loc[~df["action"].isin(["place", "place then release"]), "placement_outcome"] = ""
 
-    # For drop categories, interaction is intentionally omitted.
-    df.loc[df["action"].isin(["accidental drop", "drop"]), "interaction"] = ""
+    # Release/drop categories do not have an ongoing grasp interaction.
+    df.loc[
+        df["action"].isin(["accidental drop", "drop", "release", "release midair"]),
+        "interaction",
+    ] = ""
 
     def _to_label(row: pd.Series) -> str:
         action = row["action"]
@@ -120,11 +129,20 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
             return "place gently"
         if action in {"place firmly"}:
             return "place firmly"
-        if "press" in action:
-            return "press"
+        if action in {"press", "press then release", "place then release"}:
+            return action
         if "grasp" in action:
             return "grasp"
-        if action in {"lift", "place", "bump", "hold", "accidental drop", "drop"}:
+        if action in {
+            "lift",
+            "place",
+            "bump",
+            "hold",
+            "accidental drop",
+            "drop",
+            "release",
+            "release midair",
+        }:
             return action
         return "unknown"
 

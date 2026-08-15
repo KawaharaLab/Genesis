@@ -27,6 +27,8 @@ INCLUDE_PLACEMENT_OUTCOME = os.environ.get(
 ).lower() in {"1", "true", "yes"}
 SLOW_SLIP_THRESHOLD = 0.002
 FAST_SLIP_THRESHOLD = 0.004
+PRESS_FORCE_MIN_N = float(os.environ.get("PRESS_FORCE_MIN_N", "1.0"))
+PRESS_DESCENT_EPS_M = float(os.environ.get("PRESS_DESCENT_EPS_M", "1e-5"))
 PLACE_ACTION = "place"
 
 
@@ -97,6 +99,29 @@ def split_for_model(force_df: pd.DataFrame) -> list[dict]:
             windows.append({"start": start})
         start += WINDOW_STRIDE
     return windows
+
+
+def _append_terminal_window(
+    force_df: pd.DataFrame, windows: list[dict], event_idx: int | None
+) -> None:
+    """Include an episode-ending event that falls between regular stride starts."""
+    if len(force_df) < SEQUENCE_LENGTH or event_idx is None:
+        return
+    if any(
+        int(window["start"]) <= event_idx < int(window["start"]) + SEQUENCE_LENGTH
+        for window in windows
+    ):
+        return
+    start = len(force_df) - SEQUENCE_LENGTH
+    if any(int(window["start"]) == start for window in windows):
+        return
+    if (
+        not detect_bugs(force_df, start)
+        and not force_window_is_all_zero(force_df, start)
+        and _has_bimanual_contact(force_df, start)
+    ):
+        windows.append({"start": start})
+        windows.sort(key=lambda window: int(window["start"]))
 
 
 def _load_metadata(csv_path: str, obj_name: str, material: str, deformation: str) -> dict:
@@ -190,7 +215,12 @@ def _support_contact_series(force_df: pd.DataFrame, metadata: dict | None = None
 def _first_support_contact_after(
     force_df: pd.DataFrame, metadata: dict, start_step: int | None
 ) -> int | None:
-    return _first_sustained_state(_target_contact_series(force_df, metadata), True, start_step)
+    return _first_sustained_state(
+        _support_contact_series(force_df, metadata),
+        True,
+        start_step,
+        require_opposite_before=True,
+    )
 
 
 def _first_support_detach_after(
@@ -227,6 +257,50 @@ def _first_release_index(force_df: pd.DataFrame, start_step: int | None = None) 
         start_step,
         require_opposite_before=True,
     )
+
+
+def _confirmed_mask(series: np.ndarray, confirm_steps: int = CONTACT_CONFIRM_STEPS) -> np.ndarray:
+    """Keep complete runs that persist for at least ``confirm_steps``."""
+    series = np.asarray(series, dtype=bool)
+    confirmed = np.zeros(series.size, dtype=bool)
+    run_start = None
+    for index, value in enumerate(series):
+        if value and run_start is None:
+            run_start = index
+        if run_start is not None and (not value or index == len(series) - 1):
+            run_end = index if value and index == len(series) - 1 else index - 1
+            if run_end - run_start + 1 >= confirm_steps:
+                confirmed[run_start : run_end + 1] = True
+            run_start = None
+    return confirmed
+
+
+def _pressing_series(
+    force_df: pd.DataFrame,
+    metadata: dict,
+    place_idx: int | None,
+    release_command_step: int | None,
+) -> np.ndarray:
+    """Detect supported, finger-driven downward pressing after the place event."""
+    if force_df.empty or place_idx is None:
+        return np.zeros(len(force_df), dtype=bool)
+
+    support = _support_contact_series(force_df, metadata)
+    finger = np.logical_or(
+        force_df["obj_left_finger"].to_numpy(dtype=bool),
+        force_df["obj_right_finger"].to_numpy(dtype=bool),
+    )
+    eef_z = force_df["eef_z"].to_numpy(dtype=float)
+    descending = np.r_[False, np.diff(eef_z) < -PRESS_DESCENT_EPS_M]
+    vertical_force = (
+        np.abs(force_df["left_fz"].to_numpy(dtype=float))
+        + np.abs(force_df["right_fz"].to_numpy(dtype=float))
+    )
+    pressing = support & finger & (descending | (vertical_force >= PRESS_FORCE_MIN_N))
+    pressing[: place_idx + 1] = False
+    if release_command_step is not None:
+        pressing[max(0, int(release_command_step)) :] = False
+    return _confirmed_mask(pressing)
 
 
 def _first_grasp_contact_index(force_df: pd.DataFrame, start_step: int | None = None) -> int | None:
@@ -316,27 +390,29 @@ def _estimate_interaction(force_segment: pd.DataFrame) -> str:
 def _determine_action(
     start: int,
     force_segment: pd.DataFrame,
-    place_start_step: int | None,
     first_support_contact_idx: int | None,
     first_grasp_contact_idx: int | None,
     first_lift_idx: int | None,
-    first_release_idx: int | None,
+    accidental_release_idx: int | None,
+    release_event_idx: int | None,
+    release_midair: bool,
     first_obstacle_contact_idx: int | None,
-    bump_push_step: int | None,
-    press_place_step: int | None,
     lift_command_step: int | None,
     early_drop_case: bool,
     place_mode: str,
-    target_contact: np.ndarray,
+    pressing: np.ndarray,
 ) -> str | None:
     seg_end = start + len(force_segment) - 1
     includes_grasp_contact = first_grasp_contact_idx is not None and (start <= first_grasp_contact_idx <= seg_end)
     includes_lift = first_lift_idx is not None and (start <= first_lift_idx <= seg_end)
-    includes_release = first_release_idx is not None and (start <= first_release_idx <= seg_end)
-    includes_target_contact = first_support_contact_idx is not None and (start <= first_support_contact_idx <= seg_end)
+    includes_accidental_release = accidental_release_idx is not None and start <= accidental_release_idx <= seg_end
+    includes_release = release_event_idx is not None and start <= release_event_idx <= seg_end
+    includes_place = first_support_contact_idx is not None and start <= first_support_contact_idx <= seg_end
     includes_obstacle_contact = (
         first_obstacle_contact_idx is not None and (start <= first_obstacle_contact_idx <= seg_end)
     )
+    segment_pressing = pressing[start : seg_end + 1]
+    includes_pressing = bool(np.any(segment_pressing))
 
     # A failed lift can contain the commanded lift and confirmed finger-contact loss
     # in the same model window. Keep both semantics in the annotation while mapping
@@ -344,49 +420,43 @@ def _determine_action(
     includes_lift_command = lift_command_step is not None and start <= lift_command_step <= seg_end
     lift_was_attempted = (
         lift_command_step is not None
-        and first_release_idx is not None
-        and first_release_idx >= lift_command_step
+        and accidental_release_idx is not None
+        and accidental_release_idx >= lift_command_step
     )
-    if early_drop_case and includes_release:
+    if early_drop_case and includes_accidental_release:
         return (
             "lift then accidental drop"
             if lift_was_attempted or includes_lift_command or includes_lift
             else "accidental drop"
         )
 
-    if place_mode in {"drop", "drop_simple"} and includes_release:
-        return "drop"
-
     if place_mode == "bump" and includes_obstacle_contact:
         return "bump"
 
-    if includes_target_contact:
+    if includes_release:
+        if release_midair:
+            return "release midair"
+        if includes_place and first_support_contact_idx <= release_event_idx:
+            return "place then release"
+        if includes_pressing:
+            return "press then release"
+        return "release"
+
+    # A window containing the initial support-contact event is always place,
+    # even if downward pressing begins near its end.  This prevents the
+    # deliberately unsupported "place then press" composite label.
+    if includes_place:
         return PLACE_ACTION
 
-    # A gentle placement is annotated only by windows containing the first
-    # confirmed target contact.  Subsequent waiting is neither pressing nor a
-    # meaningful holding example, so omit those windows from the dataset.
-    if (
-        place_mode in {"gentle", "gentle_simple"}
-        and first_support_contact_idx is not None
-        and first_support_contact_idx < start
-    ):
-        return None
+    if includes_pressing:
+        return "press"
 
-    segment_target_contact = target_contact[start : seg_end + 1]
-    segment_finger_contact = np.logical_or(
-        force_segment["obj_left_finger"].to_numpy(dtype=bool),
-        force_segment["obj_right_finger"].to_numpy(dtype=bool),
-    )
-    firm_mode = place_mode in {"firm", "firm_simple"} or press_place_step is not None
-    pressing_phase = (
-        firm_mode
-        and press_place_step is not None
-        and seg_end >= press_place_step
-        and np.any(segment_target_contact & segment_finger_contact)
-    )
-    if pressing_phase:
-        return "press then release" if includes_release else "press"
+    # Once placement or intentional release has happened, unsupported waiting,
+    # settling and retreat have no action annotation.
+    if first_support_contact_idx is not None and first_support_contact_idx < start:
+        return None
+    if release_event_idx is not None and release_event_idx < start:
+        return None
 
     if includes_grasp_contact and includes_lift:
         return "grasp then lift"
@@ -407,7 +477,7 @@ def _weight_descriptor(force_segment: pd.DataFrame) -> str:
 
 
 def _placement_outcome(action: str, metadata: dict) -> str | None:
-    if not INCLUDE_PLACEMENT_OUTCOME or action != PLACE_ACTION:
+    if not INCLUDE_PLACEMENT_OUTCOME or action not in {PLACE_ACTION, "place then release"}:
         return None
     toppled = metadata.get("toppled")
     if toppled is True:
@@ -461,8 +531,11 @@ def _build_annotation(
     if action == "lift then accidental drop":
         return f"Attempted to lift {obj_phrase}, but accidentally dropped it."
 
-    if action == "drop":
-        return f"Released {obj_phrase}, dropping it."
+    if action == "release":
+        return f"Releasing {obj_phrase} from the supporting surface."
+
+    if action == "release midair":
+        return f"Releasing {obj_phrase} in midair."
 
     if action == "bump":
         if fast_slip:
@@ -483,6 +556,9 @@ def _build_annotation(
         if placement_outcome in {"upright", "remains upright"}:
             return f"{annotation}; it remains upright after release."
         return f"{annotation}."
+
+    if action == "place then release":
+        return f"Placing {obj_phrase} on the supporting surface and then releasing it."
 
     if action == "press":
         if fast_slip:
@@ -562,19 +638,60 @@ def main(obj_name: str, csv_path: str, deformation: str, material: str = "Rigid"
     rollout_bug = detect_rollout_bug(force_df)
     windows = split_for_model(force_df)
     place_start_step = _first_step(steps_df, {"place", "drop", "gentle_place", "press_place", "bump_push"})
-    bump_push_step = _first_step(steps_df, {"bump_push"})
-    press_place_step = _first_step(steps_df, {"press_place"})
+    release_command_step = _first_step(steps_df, {"release"})
     lift_command_step = _first_step(steps_df, {"lift"})
-    target_contact = _target_contact_series(force_df, metadata)
     first_support_contact_idx = _first_support_contact_after(force_df, metadata, start_step=place_start_step)
     first_obstacle_contact_idx = _first_obstacle_contact_after(force_df, start_step=place_start_step)
     first_grasp_contact_idx = _first_grasp_contact_index(force_df)
     first_lift_idx = _first_support_detach_after(force_df, metadata, start_step=lift_command_step)
     hold_start_step = _first_step(steps_df, {"hold"})
     release_search_start = hold_start_step if hold_start_step is not None else place_start_step
-    first_release_idx = _first_release_index(force_df, release_search_start)
     early_drop_case = _is_early_drop_case(deformation, metadata, steps_df)
     place_mode = _infer_place_mode(deformation, metadata, steps_df)
+    if early_drop_case:
+        # A failed pickup/transport may hit the floor before the five-frame
+        # finger-loss confirmation completes.  That impact belongs to the
+        # accidental-drop event and must never be relabeled as intentional place.
+        first_support_contact_idx = None
+    accidental_release_idx = (
+        _first_release_index(force_df, release_search_start) if early_drop_case else None
+    )
+    if early_drop_case:
+        _append_terminal_window(force_df, windows, accidental_release_idx)
+
+    # New rollouts log the beginning of hand opening explicitly.  Confirm that
+    # object contact is subsequently lost, then use the command step so the
+    # selected window actually contains the opening motion.  Keep a legacy
+    # fallback for already-generated, non-early-drop rollouts.
+    if release_command_step is not None:
+        confirmed_release_idx = _first_release_index(force_df, release_command_step)
+        release_event_idx = release_command_step if confirmed_release_idx is not None else None
+    elif not early_drop_case:
+        confirmed_release_idx = _first_release_index(force_df, place_start_step)
+        release_event_idx = confirmed_release_idx
+    else:
+        confirmed_release_idx = None
+        release_event_idx = None
+
+    support_contact = _support_contact_series(force_df, metadata)
+    release_midair = False
+    if release_event_idx is not None:
+        release_begin = max(0, int(release_event_idx))
+        release_end = min(len(support_contact), release_begin + CONTACT_CONFIRM_STEPS)
+        release_midair = release_end - release_begin < CONTACT_CONFIRM_STEPS or not bool(
+            np.all(support_contact[release_begin:release_end])
+        )
+
+    pressing = (
+        np.zeros(len(force_df), dtype=bool)
+        if early_drop_case
+        else _pressing_series(
+            force_df,
+            metadata,
+            place_idx=first_support_contact_idx,
+            release_command_step=release_event_idx,
+        )
+    )
 
     if rollout_bug is not None:
         print(f"Excluding invalid rollout {obj_name}/{deformation}: {rollout_bug}")
@@ -596,24 +713,28 @@ def main(obj_name: str, csv_path: str, deformation: str, material: str = "Rigid"
         action = _determine_action(
             start=start,
             force_segment=force_segment,
-            place_start_step=place_start_step,
             first_support_contact_idx=first_support_contact_idx,
             first_grasp_contact_idx=first_grasp_contact_idx,
             first_lift_idx=first_lift_idx,
-            first_release_idx=first_release_idx,
+            accidental_release_idx=accidental_release_idx,
+            release_event_idx=release_event_idx,
+            release_midair=release_midair,
             first_obstacle_contact_idx=first_obstacle_contact_idx,
-            bump_push_step=bump_push_step,
-            press_place_step=press_place_step,
             lift_command_step=lift_command_step,
             early_drop_case=early_drop_case,
             place_mode=place_mode,
-            target_contact=target_contact,
+            pressing=pressing,
         )
         if action is None:
             continue
         interaction = (
             None
-            if action in {"accidental drop", "lift then accidental drop", "drop"}
+            if action in {
+                "accidental drop",
+                "lift then accidental drop",
+                "release",
+                "release midair",
+            }
             else _estimate_interaction(force_segment)
         )
         placement_outcome = _placement_outcome(action, metadata)

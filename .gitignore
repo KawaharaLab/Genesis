@@ -13,6 +13,7 @@ uv.lock
 *.mp4
 *.sh
 playground.py
+*.tex
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

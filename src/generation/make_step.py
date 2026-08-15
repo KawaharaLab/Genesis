@@ -157,10 +157,10 @@ def _execute_simulation_step(
     # # Return False to stop the simulation if forces are too high (indicating instability)
     # if abs(df.iloc[-1, 8]) > 100:
     #     return False
-    if EARLY_DROP_MONITOR and not INTENTIONAL_RELEASE and EARLY_DROP_PENDING and (force_photo or (t % photo_interval == 0)):
+    if EARLY_DROP_MONITOR and not INTENTIONAL_RELEASE and EARLY_DROP_PENDING:
         raise EarlyDropDetected(
             f"Object lost finger contact for >={CONTACT_LOSS_CONFIRM_STEPS} consecutive steps; "
-            f"terminated after image save at step {int(scene.t)}."
+            f"terminated at step {int(scene.t)}."
         )
 
     return True
